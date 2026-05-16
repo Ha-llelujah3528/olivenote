@@ -1,0 +1,235 @@
+function BoardView({ tasks, members, categories, onTaskClick, onDropTask }) {
+      const [dragOverTaskId, setDragOverTaskId] = useState(null);
+      const scrollTimer = useRef(null);
+
+      // ★ スマホ判定（768px未満ならタブ切替式に変える）
+      const [isMobile, setIsMobile] = useState(() =>
+        typeof window !== 'undefined' && window.innerWidth < 768
+      );
+      useEffect(() => {
+        const onResize = () => setIsMobile(window.innerWidth < 768);
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+      }, []);
+
+      // ★ モバイル時に表示するステータス（初期値: 未対応）
+      const [mobileStatusId, setMobileStatusId] = useState('todo');
+
+      const stopScroll = () => {
+        if (scrollTimer.current) {
+          clearInterval(scrollTimer.current);
+          scrollTimer.current = null;
+        }
+      };
+
+      const getDueDateInfo = (dueDateStr, status) => {
+        if (!dueDateStr || status === 'done') return { color: 'text-gray-500', isFlame: false };
+        const diffDays = Math.ceil((new Date(dueDateStr) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24));
+        if (diffDays < 0) return { color: 'text-red-600 font-bold', isFlame: true };
+        if (diffDays >= 0 && diffDays <= 3) return { color: 'text-yellow-600 font-bold', isFlame: false };
+        return { color: 'text-gray-500', isFlame: false };
+      };
+
+      // 各ステータスごとの件数を事前計算（タブのバッジ用）
+      const statusCounts = useMemo(() => {
+        const map = {};
+        STATUSES.forEach(s => { map[s.id] = 0; });
+        tasks.forEach(t => { if (map[t.status] !== undefined) map[t.status]++; });
+        return map;
+      }, [tasks]);
+
+      // 共通：1枚のタスクカードをレンダリングするヘルパー
+      const renderTaskCard = (task, statusIdForDrop) => {
+        const priorityObj = PRIORITIES.find(p => p.id === task.priority) || PRIORITIES[1];
+        const dueInfo = getDueDateInfo(task.dueDate, task.status);
+        const member = members.find(m => m.email === task.assigneeEmail);
+        const isDragOver = dragOverTaskId === task.id;
+        const catObj = categories.find(c => c.name === task.category);
+        const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+
+        return (
+          <div
+            key={task.id} draggable
+            onDragStart={(e) => { e.dataTransfer.setData('taskId', task.id); e.dataTransfer.effectAllowed = 'move'; }}
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(task.id); }}
+            onDragLeave={() => setDragOverTaskId(null)}
+            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(null); const draggedTaskId = e.dataTransfer.getData('taskId'); if (draggedTaskId && draggedTaskId !== task.id) onDropTask(draggedTaskId, statusIdForDrop, task.id); }}
+            onClick={() => onTaskClick(task)}
+            style={{ boxShadow: isDragOver ? '0 -4px 0 0 #3b82f6' : '' }}
+            className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-blue-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
+          >
+            <div className="flex flex-wrap items-center justify-between mb-2 gap-1">
+              <span className="text-[11px] text-gray-400 font-mono tracking-tighter">{task.id}</span>
+              <div className="flex gap-1.5 ml-auto">
+                {catColor && <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${catColor.bg} ${catColor.border} ${catColor.text} flex items-center gap-0.5`}><Tag size={10}/> {task.category}</span>}
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${priorityObj.bgColor} ${priorityObj.borderColor} ${priorityObj.textColor}`}>{priorityObj.label}</span>
+              </div>
+            </div>
+            <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-blue-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
+            {task.parentId && <div className="text-[10px] text-gray-500 mb-2 flex items-center gap-1 bg-gray-50 p-1.5 rounded border border-gray-100"><LinkIcon size={10} /> 親: {task.parentId}</div>}
+            <div className="flex items-center justify-between text-xs mt-auto pt-2 border-t border-gray-100">
+              <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>
+              <div className="flex items-center gap-3 text-gray-500">
+                {task.attachments?.length > 0 && <div className="flex items-center gap-1" title="添付ファイル"><Paperclip size={12} />{task.attachments.length}</div>}
+                {task.comments?.length > 0 && <div className="flex items-center gap-1" title="コメント数"><MessageSquare size={12} />{task.comments.length}</div>}
+                <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 px-1.5 py-0.5 rounded-md shadow-sm" title="担当者"><span className="text-[10px]">{member ? member.avatar : '👤'}</span><span className="truncate max-w-[60px] font-medium">{task.assigneeName || '未設定'}</span></div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      // ============================================================
+      // ★ モバイル時：上部にステータスタブ + 選択中ステータスのみ縦リスト
+      // ============================================================
+      if (isMobile) {
+        const currentStatus = STATUSES.find(s => s.id === mobileStatusId) || STATUSES[0];
+        const columnTasks = tasks.filter(t => t.status === currentStatus.id);
+
+        return (
+          <div className="flex-1 flex flex-col h-full overflow-hidden">
+            {/* ステータスタブ */}
+            <div className="flex gap-1.5 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden shrink-0 snap-x">
+              {STATUSES.map(s => {
+                const isActive = s.id === mobileStatusId;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => setMobileStatusId(s.id)}
+                    className={`shrink-0 snap-start px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 border transition-all ${
+                      isActive
+                        ? `${s.bgColor} ${s.textColor} ${s.borderColor} shadow-sm`
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${s.barColor}`}></span>
+                    {s.label}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${isActive ? 'bg-white/60' : 'bg-gray-100 text-gray-500'}`}>
+                      {statusCounts[s.id] ?? 0}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 選択中ステータスのカラム本体 */}
+            <div
+              className={`flex-1 flex flex-col ${currentStatus.bgColor.replace('bg-', 'bg-').replace('100', '50').replace('200', '50').replace('300', '100')}/40 rounded-xl border border-gray-200/50 overflow-hidden shadow-inner`}
+              onDragOver={(e) => { e.preventDefault(); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverTaskId(null);
+                const draggedTaskId = e.dataTransfer.getData('taskId');
+                if (draggedTaskId) onDropTask(draggedTaskId, currentStatus.id, null);
+              }}
+            >
+              <div className="px-3 py-2 border-b flex items-center justify-between shrink-0 bg-white shadow-sm">
+                <div className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-full ${currentStatus.barColor}`}></div>
+                  <h3 className="font-bold text-gray-800 text-sm">{currentStatus.label}</h3>
+                </div>
+                <span className="bg-gray-100 text-xs px-2.5 py-1 rounded-full font-bold text-gray-600">{columnTasks.length}件</span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                {columnTasks.map(task => renderTaskCard(task, currentStatus.id))}
+                {columnTasks.length === 0 && (
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl h-24 flex items-center justify-center text-gray-400 text-sm pointer-events-none">
+                    このステータスのタスクはありません
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ============================================================
+      // PC時：従来通りの横並びカンバン
+      // ============================================================
+      return (
+        <div className="flex-1 flex gap-4 overflow-x-auto pb-4 h-full">
+          {STATUSES.map(status => {
+            const columnTasks = tasks.filter(t => t.status === status.id);
+            return (
+              <div
+                key={status.id}
+                className="flex-1 min-w-[320px] flex flex-col bg-[#e2e8f0]/60 rounded-xl border border-gray-200/50 h-full overflow-hidden shadow-inner"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  const container = e.currentTarget.querySelector('.overflow-y-auto');
+                  if (!container) return;
+                  const rect = container.getBoundingClientRect();
+                  if (e.clientY - rect.top < 60) {
+                    if (!scrollTimer.current) scrollTimer.current = setInterval(() => container.scrollTop -= 15, 30);
+                  } else if (rect.bottom - e.clientY < 60) {
+                    if (!scrollTimer.current) scrollTimer.current = setInterval(() => container.scrollTop += 15, 30);
+                  } else {
+                    stopScroll(); 
+                  }
+                }} 
+                onDragLeave={stopScroll} 
+                onDrop={(e) => { 
+                  e.preventDefault(); 
+                  stopScroll(); 
+                  setDragOverTaskId(null); 
+                  const draggedTaskId = e.dataTransfer.getData('taskId'); 
+                  if (draggedTaskId) onDropTask(draggedTaskId, status.id, null); 
+                }}
+              >
+                <div className={`px-4 py-3 border-b flex items-center justify-between shrink-0 bg-white shadow-sm z-10`}>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-3 h-3 rounded-full ${status.barColor}`}></div>
+                    <h3 className={`font-bold text-gray-800`}>{status.label}</h3>
+                  </div>
+                  <span className="bg-gray-100 text-xs px-2.5 py-1 rounded-full font-bold text-gray-600">{columnTasks.length}</span>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                  {columnTasks.map(task => {
+                    const priorityObj = PRIORITIES.find(p => p.id === task.priority) || PRIORITIES[1];
+                    const dueInfo = getDueDateInfo(task.dueDate, task.status);
+                    const member = members.find(m => m.email === task.assigneeEmail);
+                    const isDragOver = dragOverTaskId === task.id;
+                    const catObj = categories.find(c => c.name === task.category);
+                    const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+
+                    return (
+                      <div 
+                        key={task.id} draggable 
+                        onDragStart={(e) => { e.dataTransfer.setData('taskId', task.id); e.dataTransfer.effectAllowed = 'move'; }} 
+                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(task.id); }} 
+                        onDragLeave={() => setDragOverTaskId(null)} 
+                        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(null); const draggedTaskId = e.dataTransfer.getData('taskId'); if (draggedTaskId && draggedTaskId !== task.id) onDropTask(draggedTaskId, status.id, task.id); }} 
+                        onClick={() => onTaskClick(task)} 
+                        style={{ boxShadow: isDragOver ? '0 -4px 0 0 #3b82f6' : '' }} 
+                        className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-blue-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between mb-2 gap-1">
+                          <span className="text-[11px] text-gray-400 font-mono tracking-tighter">{task.id}</span>
+                          <div className="flex gap-1.5 ml-auto">
+                            {catColor && <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${catColor.bg} ${catColor.border} ${catColor.text} flex items-center gap-0.5`}><Tag size={10}/> {task.category}</span>}
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${priorityObj.bgColor} ${priorityObj.borderColor} ${priorityObj.textColor}`}>{priorityObj.label}</span>
+                          </div>
+                        </div>
+                        <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-blue-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
+                        {task.parentId && <div className="text-[10px] text-gray-500 mb-2 flex items-center gap-1 bg-gray-50 p-1.5 rounded border border-gray-100"><LinkIcon size={10} /> 親: {task.parentId}</div>}
+                        <div className="flex items-center justify-between text-xs mt-auto pt-2 border-t border-gray-100">
+                          <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>
+                          <div className="flex items-center gap-3 text-gray-500">
+                            {task.attachments?.length > 0 && <div className="flex items-center gap-1" title="添付ファイル"><Paperclip size={12} />{task.attachments.length}</div>}
+                            {task.comments?.length > 0 && <div className="flex items-center gap-1" title="コメント数"><MessageSquare size={12} />{task.comments.length}</div>}
+                            <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 px-1.5 py-0.5 rounded-md shadow-sm" title="担当者"><span className="text-[10px]">{member ? member.avatar : '👤'}</span><span className="truncate max-w-[60px] font-medium">{task.assigneeName || '未設定'}</span></div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {columnTasks.length === 0 && <div className="border-2 border-dashed border-gray-300 rounded-xl h-24 flex items-center justify-center text-gray-400 text-sm pointer-events-none">タスクをドロップ</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }

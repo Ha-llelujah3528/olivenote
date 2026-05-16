@@ -1,0 +1,30 @@
+# Olive Note - ルートディレクトリ用 .htaccess
+
+# ---- HTTPS 強制リダイレクト ----
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+
+# ---- 基本セキュリティヘッダー ----
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# ---- ディレクトリ一覧の禁止 ----
+Options -Indexes
+
+# ---- 機密ファイルへの直接アクセス禁止 ----
+<FilesMatch "(^\.|composer\.(json|lock)|README\.md|CHANGELOG\.md|SETUP\.md)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

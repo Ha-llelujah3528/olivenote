@@ -1,0 +1,1179 @@
+// ==========================================
+// ★ 読み込み中のOS別 ライフハック（Tips）集
+// ==========================================
+const OS_TIPS = {
+  windows: [
+    "【Win】+【V】で、過去にコピーしたテキストの履歴を一覧表示して貼り付けできます！",
+    "【Win】+【Shift】+【S】で、画面の一部だけをサクッと切り取ってスクリーンショットできます📸",
+    "【Win】+【D】を押すと、一瞬ですべてのウィンドウを最小化してデスクトップを表示します。",
+    "【Ctrl】+【Shift】+【Esc】で、タスクマネージャーを一発で起動できます🚀",
+    "【Win】+【←】または【→】で、ウィンドウを画面の半分にピタッと分割配置できます！",
+    "【Win】+【. (ピリオド)】を押すと、絵文字や顔文字の入力パネルが一瞬で開きます💡",
+    "ファイルを選択して【F2】を押すと、右クリックせずに一発で名前を変更できます。",
+    "ブラウザで間違えてタブを消しちゃった…！そんな時は【Ctrl】+【Shift】+【T】で復活できます🧟‍♂️",
+    "【Alt】+【Tab】を押したままにすると、開いているアプリを爆速で切り替えられます。",
+    "離席する時は【Win】+【L】！一瞬で画面をロックしてセキュリティを守りましょう🔒"
+  ],
+  mac: [
+    "【Cmd】+【Space】でSpotlight検索！アプリの起動も計算もファイル探しもここから一発です🔍",
+    "【Cmd】+【Shift】+【4】で、画面の一部だけを選択してスクリーンショットを撮影できます📸",
+    "アプリがフリーズした…！そんな時は【Option】+【Cmd】+【Esc】で強制終了ウィンドウを開けます。",
+    "【Cmd】+【Tab】を押したままにすると、起動中のアプリをキーボードだけでサクサク切り替えられます！",
+    "ブラウザで間違えてタブを消しちゃった…！【Cmd】+【Shift】+【T】で奇跡の復活を果たせます🧟‍♂️",
+    "【Control】+【Cmd】+【Space】で、絵文字入力パネルを一瞬で呼び出せます💡",
+    "ファイルを複製したい時は、【Option】を押しながらドラッグ＆ドロップするだけで一瞬です！",
+    "長いWebページを見ている時、【Cmd】+【↑】で一気に一番上まで戻れます🚀",
+    "離席する時は【Cmd】+【Ctrl】+【Q】！一瞬でMacをロックしてセキュリティを守りましょう🔒",
+    "ファイルを選択して【Enter】を押すと、名前の変更モードに入ります（開くのはCmd+Oです！）"
+  ],
+  ios: [
+    "キーボードの「空白（スペース）」を長押しすると、カーソルをトラックパッドのように自由に動かせます👆",
+    "間違えて文字を消しちゃった！iPhoneを「ブルブルッと振る（シェイク）」と取り消しできます📳",
+    "計算機アプリで数字を間違えた時は、数字の部分を左右どちらかにスワイプすると1桁だけ消せます！",
+    "Safariでタブが溜まりすぎた…！右下の四角いアイコンを「長押し」すると全タブ一括で閉じられます🗑️",
+    "画面の一番上（時計あたり）をタップすると、長いページのトップへ一瞬でスクロールして戻ります🚀",
+    "文字入力中、スペースキーを「タンタンッ」と2回押すと、自動で「. (句点)」が入力されます！",
+    "メールやメモなどで、3本指で画面を「ピンチイン（つまむ）」とコピー、「ピンチアウト」でペーストできます✨",
+    "写真やファイルを選ぶ時、2本指で上から下へなぞるようにスワイプすると、一気に複数選択できます！"
+  ],
+  android: [
+    "キーボードの「スペースキー」を左右にスワイプすると、カーソルをスルスル〜っと移動できます👆",
+    "急いで写真を撮りたい！スマホがロック状態でも「電源ボタンを2回連続押し」でカメラが即起動します📸",
+    "Chromeブラウザでタブを切り替える時、上のアドレスバー（URL部分）を左右にスワイプすると爆速です！",
+    "Wi-FiやBluetoothの設定を変えたい時、画面上部から「2本指でスワイプ」するとクイック設定が一発で全開になります⚡️",
+    "ホーム画面でアプリアイコンを「長押し」すると、よく使う機能へのショートカットが直接表示されることがあります！",
+    "画面分割機能を使えば、YouTubeを見ながらOlive Noteでメモを取る…なんてこともできちゃいます📱半分こ！",
+    "不要な通知が来た時、その通知を「少しだけ横にスワイプ」して歯車アイコンを押すと、即座に通知オフ設定ができます🤫"
+  ],
+  other: [
+    "Olive Noteはマークダウンに対応！「- 」（ハイフン＋スペース）と入力すると、自動で箇条書きが始まります📝",
+    "ガントチャートのバーは、マウスで掴んで左右にドラッグすると期間をサクッと変更できます！",
+    "タスクのステータスを変えたい時は、ボード画面でカードを隣の列へドラッグ＆ドロップするのが一番早いです✨",
+    "「自分」ボタンをポチッと押せば、自分が担当（またはサブ担当）しているタスクだけを一瞬で絞り込めます👀",
+    "ドキュメント機能で、議事録や設計書もタスクと一緒に一元管理！タグをつければ検索もラクラクです🔍"
+  ]
+};
+
+// ==========================================
+// ★ AIコンシェルジュ (使い方・仕様ガイド)
+// ==========================================
+function OliveConcierge() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState([
+    { role: 'model', text: 'こんにちは！Olive Note専属コンシェルジュです。\nツールの使い方や仕様について、何でも聞いてくださいね！' }
+  ]);
+  const [inputText, setInputText] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  // メッセージが増えたら自動で一番下までスクロール
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isOpen, isTyping]);
+
+  const handleSend = async () => {
+    if (!inputText.trim() || isTyping) return;
+
+    const newMsg = { role: 'user', text: inputText };
+    const updatedHistory = [...messages, newMsg];
+    
+    setMessages(updatedHistory);
+    setInputText('');
+    setIsTyping(true);
+
+    try {
+      // ★ ここが修正ポイント：index.htmlで定義したapiオブジェクトを使用する
+      const res = await api.chatWithOliveAI('concierge', updatedHistory, null);
+      
+      if (res.success) {
+        setMessages(prev => [...prev, { role: 'model', text: res.reply }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'model', text: `エラーが発生しました: ${res.error}` }]);
+      }
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'model', text: `通信エラー: ${err.message}` }]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    // MacはCmd+Enter, WindowsはCtrl+Enterで送信
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      handleSend();
+    }
+  };
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[60] flex flex-col items-end pointer-events-none">
+      
+      {/* チャットウィンドウ */}
+      {isOpen && (
+        <div className="bg-white w-[350px] sm:w-[400px] h-[500px] max-h-[70vh] rounded-2xl shadow-2xl border border-gray-200 mb-4 flex flex-col pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
+          
+          {/* ヘッダー */}
+          <div className="bg-[#1e2a35] text-white px-4 py-3 flex justify-between items-center shrink-0">
+            <div className="flex items-center gap-2">
+              <Bot size={20} className="text-blue-400" />
+              <span className="font-bold text-sm tracking-wide">Olive コンシェルジュ</span>
+            </div>
+            <button onClick={() => setIsOpen(false)} className="text-gray-300 hover:text-white transition-colors">
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* メッセージエリア */}
+          <div className="flex-1 overflow-y-auto p-4 bg-[#f8fafc] flex flex-col gap-4">
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.role === 'model' && (
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-2 shrink-0">
+                    <Bot size={16} className="text-blue-600" />
+                  </div>
+                )}
+                
+                {/* ユーザーのメッセージはそのまま表示 */}
+                {msg.role === 'user' ? (
+                  <div className="px-4 py-2.5 rounded-2xl max-w-[80%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm bg-blue-600 text-white rounded-tr-none">
+                    {msg.text}
+                  </div>
+                ) : (
+                  <div 
+                    className="px-4 py-2.5 rounded-2xl max-w-[85%] text-sm leading-relaxed shadow-sm bg-white text-gray-800 border border-gray-100 rounded-tl-none markdown-body [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+                    dangerouslySetInnerHTML={{ __html: marked.parse(msg.text) }}
+                  />
+                )}
+              </div>
+            ))}
+            
+            {/* タイピング中のアニメーション */}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-2 shrink-0">
+                  <Bot size={16} className="text-blue-600" />
+                </div>
+                <div className="bg-white border border-gray-100 px-4 py-3 rounded-2xl rounded-tl-none flex items-center gap-1 shadow-sm">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* 入力エリア */}
+          <div className="p-3 bg-white border-t border-gray-100 shrink-0">
+            <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400 transition-all">
+              <textarea 
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="質問を入力... (Ctrl+Enterで送信)"
+                className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 max-h-32 min-h-[40px] outline-none"
+                rows={1}
+              />
+              <button 
+                onClick={handleSend}
+                disabled={!inputText.trim() || isTyping}
+                className="p-2 mb-0.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                <Send size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* フローティングボタン */}
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-14 h-14 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.23)] hover:-translate-y-1 transition-all duration-300 flex items-center justify-center text-white pointer-events-auto relative group"
+      >
+        {isOpen ? <X size={28} /> : <MessageCircle size={28} />}
+        
+        {/* ホバー時のツールチップ */}
+        {!isOpen && (
+          <span className="absolute right-full mr-4 bg-gray-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+            AIコンシェルジュに相談
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function App() {
+  // ★ 起動時にOSを判定し、ランダムなTipsを1つ選ぶ
+  const [loadingTip] = useState(() => {
+    const ua = navigator.userAgent.toLowerCase();
+    let os = 'other';
+    if (ua.includes('windows')) os = 'windows';
+    else if (ua.includes('mac os x') || ua.includes('macintosh')) os = 'mac';
+    else if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ipod')) os = 'ios';
+    else if (ua.includes('android')) os = 'android';
+    
+    const tips = OS_TIPS[os] || OS_TIPS['other'];
+    return tips[Math.floor(Math.random() * tips.length)];
+  });
+
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [taskTypes, setTaskTypes] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [docs, setDocs] = useState([]);
+  const [docFolderRootId, setDocFolderRootId] = useState(null);
+  const [taskTemplates, setTaskTemplates] = useState({});
+
+  const [docTags, setDocTags] = useState([]); 
+  const [docFileTags, setDocFileTags] = useState({});
+  // ★ 追加：AI様式テンプレート用のState
+  const [docTemplates, setDocTemplates] = useState([]);
+  const [releaseDocUrl, setReleaseDocUrl] = useState('');
+
+  const [activeTab, setActiveTab] = useState('board');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isFilterExpanded, setIsFilterExpanded] = useState(true);
+  
+  const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
+  const [isAssigneeMenuOpen, setIsAssigneeMenuOpen] = useState(false);
+  const defaultStatuses = ['todo', 'in-progress', 'waiting', 'review']; 
+  
+  // ★ 変更：filters に hasImplementationDate（実施日あり）を追加
+  const [filters, setFilters] = useState({ 
+    assigneeEmail: [], category: '', type: '', priority: '', 
+    dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
+    hasImplementationDate: false
+  });
+  
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const isFirstRender = useRef(true);
+
+  const [notifications, setNotifications] = useState([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+
+  const [toast, setToast] = useState(null);
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const [holidays, setHolidays] = useState([]);
+
+  useEffect(() => {
+    fetch('https://holidays-jp.github.io/api/v1/date.json')
+      .then(res => res.json())
+      .then(data => setHolidays(Object.keys(data)))
+      .catch(err => {
+        console.error('祝日データの取得に失敗しました', err);
+        if (typeof JAPAN_HOLIDAYS !== 'undefined') setHolidays(JAPAN_HOLIDAYS);
+      });
+  }, []);
+
+  const validNotifications = useMemo(() => {
+    if (!currentUser) return [];
+    const mentionStr = `@${currentUser.name}`;
+    
+    return notifications.filter(notif => {
+      const targetTask = tasks.find(t => t.id === notif.taskId);
+      if (!targetTask) return false; 
+      
+      if (notif.message.includes('メンション')) {
+        const inDesc = targetTask.description && targetTask.description.includes(mentionStr);
+        const inComments = targetTask.comments && targetTask.comments.some(c => c.text && c.text.includes(mentionStr));
+        if (!inDesc && !inComments) return false; 
+      }
+      
+      return true; 
+    });
+  }, [notifications, tasks, currentUser]);
+
+  useEffect(() => {
+    if (currentUser && currentUser.email) {
+      api.getMyNotifications(currentUser.email)
+         .then(res => setNotifications(res || []))
+         .catch(() => setNotifications([]));
+    }
+  }, [currentUser]);
+
+  const handleNotificationClick = async (notif) => {
+    if (!notif.isRead) {
+      await api.markNotificationAsRead(notif.id);
+      setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
+    }
+    
+    const targetTask = tasks.find(t => t.id === notif.taskId);
+    if (targetTask) {
+      setEditingTask(targetTask);
+      setIsModalOpen(true);
+    }
+    setIsNotifOpen(false); 
+  };
+
+  useEffect(() => {
+    api.getInitialData().then(data => {
+      setCurrentUser(data.currentUser); setMembers(data.members); setTaskTypes(data.taskTypes); setDocs(data.docs || []);
+      setDocFolderRootId(data.docFolderRootId || null);
+      setTaskTemplates(data.taskTemplates || {});
+      
+      setDocTags(data.docTags || []); 
+      setDocFileTags(data.docFileTags || {}); 
+      // ★ 追加：保存されているテンプレートを読み込む
+      setDocTemplates(data.docTemplates || []);
+
+      setReleaseDocUrl(data.releaseDocUrl || '');
+      let loadedCats = data.categories || [];
+      if (loadedCats.length > 0 && typeof loadedCats[0] === 'string') {
+        loadedCats = loadedCats.map((c, idx) => ({ name: c, colorIndex: idx % CATEGORY_COLORS.length }));
+      }
+      setCategories(loadedCats);
+
+      let loadedTasks = data.tasks || [];
+      loadedTasks.forEach((t, i) => { if (typeof t.order === 'undefined') t.order = i * 1000; });
+      loadedTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
+      setTasks(loadedTasks);
+
+      setIsInitializing(false);
+    }).catch(err => {
+      console.error(err); setIsInitializing(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (isInitializing) return;
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    api.saveSettings({ members, categories, taskTypes, taskTemplates, docTags, docFileTags, docTemplates, releaseDocUrl })
+      .then(() => showToast('設定を保存しました'))
+      .catch(() => showToast('設定の保存に失敗しました', 'error'));
+  }, [members, categories, taskTypes, taskTemplates, docTags, docFileTags, docTemplates, releaseDocUrl, isInitializing]);
+
+  const filteredTasks = useMemo(() => {
+    let result = tasks;
+    if (searchQuery) result = result.filter(t => t.title.includes(searchQuery) || t.assigneeName?.includes(searchQuery) || (t.id && t.id.includes(searchQuery)));
+    
+    if (filters.assigneeEmail && filters.assigneeEmail.length > 0) {
+      result = result.filter(t => 
+        filters.assigneeEmail.includes(t.assigneeEmail) || 
+        (t.subAssignees && t.subAssignees.some(sub => filters.assigneeEmail.includes(sub)))
+      );
+    }
+    
+    if (filters.category) result = result.filter(t => t.category === filters.category);
+    if (filters.type) result = result.filter(t => t.type === filters.type);
+    if (filters.priority) result = result.filter(t => t.priority === filters.priority);
+    if (filters.dueDateFrom) result = result.filter(t => t.dueDate >= filters.dueDateFrom);
+    if (filters.dueDateTo) result = result.filter(t => t.dueDate <= filters.dueDateTo);
+    if (filters.statuses && filters.statuses.length > 0) result = result.filter(t => filters.statuses.includes(t.status));
+    
+    // ★ 追加：実施日ありフィルター
+    if (filters.hasImplementationDate) {
+      result = result.filter(t => !!t.implementationDate);
+    }
+
+    return result;
+  }, [tasks, searchQuery, filters]);
+
+  const handleSaveTask = async (taskData, closeModal = true) => {
+    const isNew = !taskData.id || taskData.id.startsWith('TASK-TEMP-');
+    const tempId = isNew ? (taskData.id || 'TASK-TEMP-' + Date.now()) : taskData.id;
+    
+    let taskToSave = { ...taskData, id: isNew ? tempId : taskData.id };
+
+    if (isNew && typeof taskToSave.order === 'undefined') {
+      const maxOrder = tasks.length > 0 ? Math.max(...tasks.map(t => t.order || 0)) : 0;
+      taskToSave.order = maxOrder + 1000;
+    }
+
+    setTasks(prev => {
+      const exists = prev.find(t => t.id === tempId);
+      const newTasks = exists ? prev.map(t => t.id === tempId ? taskToSave : t) : [...prev, taskToSave];
+      return newTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
+    });
+    
+    if (closeModal) {
+      setIsModalOpen(false); 
+    }
+
+    try {
+      const dataForSave = { ...taskToSave };
+      if (isNew) delete dataForSave.id; 
+      delete dataForSave.updatedAt;
+
+      const savedTask = await api.saveTask(dataForSave);
+      
+      setTasks(prev => {
+        return prev.map(t => t.id === tempId ? savedTask : t).sort((a, b) => (a.order || 0) - (b.order || 0));
+      });
+      
+      if (!closeModal) {
+          setEditingTask(savedTask);
+      }
+    } catch (e) {
+      alert("保存に失敗しました: " + e.message);
+    }
+  };
+
+  const handleDeleteTask = async (taskId) => {
+    await api.deleteTask(taskId);
+    setTasks(prev => prev.filter(t => t.id !== taskId).map(t => t.parentId === taskId ? { ...t, parentId: '' } : t));
+    setIsModalOpen(false);
+    showToast('タスクをゴミ箱に移動しました');
+  };
+
+  const handleDrop = async (draggedId, newStatusId, targetId = null) => {
+    const previousTasks = [...tasks];
+    let updatedTasks = [...tasks];
+    const draggedTaskIndex = updatedTasks.findIndex(t => t.id === draggedId);
+    if (draggedTaskIndex === -1) return;
+    
+    const draggedTask = updatedTasks[draggedTaskIndex];
+    updatedTasks.splice(draggedTaskIndex, 1);
+    const updatedTask = { ...draggedTask, status: newStatusId };
+    
+    if (targetId) {
+      const targetIndex = updatedTasks.findIndex(t => t.id === targetId);
+      if (targetIndex !== -1) updatedTasks.splice(targetIndex, 0, updatedTask);
+      else updatedTasks.push(updatedTask);
+    } else {
+      const statusTasks = updatedTasks.filter(t => t.status === newStatusId);
+      if (statusTasks.length > 0) {
+        const lastIndex = updatedTasks.findIndex(t => t.id === statusTasks[statusTasks.length - 1].id);
+        updatedTasks.splice(lastIndex + 1, 0, updatedTask);
+      } else {
+        updatedTasks.push(updatedTask);
+      }
+    }
+
+    const statusTasksList = updatedTasks.filter(t => t.status === newStatusId);
+    const statusIndex = statusTasksList.findIndex(t => t.id === draggedId);
+    const prevTask = statusTasksList[statusIndex - 1];
+    const nextTask = statusTasksList[statusIndex + 1];
+    
+    if (prevTask && nextTask) updatedTask.order = (prevTask.order + nextTask.order) / 2;
+    else if (prevTask) updatedTask.order = prevTask.order + 1000;
+    else if (nextTask) updatedTask.order = nextTask.order - 1000;
+    else updatedTask.order = 1000;
+
+    const newIndex = updatedTasks.findIndex(t => t.id === draggedId);
+    updatedTasks[newIndex] = updatedTask;
+    updatedTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
+    setTasks(updatedTasks); 
+
+    try {
+      const taskToSave = { ...updatedTask };
+      delete taskToSave.updatedAt;
+      
+      const saved = await api.saveTask(taskToSave);
+      setTasks(prev => prev.map(t => t.id === saved.id ? saved : t).sort((a, b) => (a.order || 0) - (b.order || 0))); 
+    } catch (e) {
+      alert("エラー: " + (e.message || "更新に失敗しました"));
+      setTasks(previousTasks); 
+    }
+  };
+
+  const handleReorderTask = async (draggedId, targetId) => {
+    if (draggedId === targetId) return;
+    const currentTasks = [...tasks];
+    const draggedTaskIndex = currentTasks.findIndex(t => t.id === draggedId);
+    const targetTaskIndex = currentTasks.findIndex(t => t.id === targetId);
+    if (draggedTaskIndex === -1 || targetTaskIndex === -1) return;
+
+    const draggedTask = currentTasks[draggedTaskIndex];
+    currentTasks.splice(draggedTaskIndex, 1);
+    
+    const newTargetIndex = currentTasks.findIndex(t => t.id === targetId);
+    currentTasks.splice(newTargetIndex, 0, draggedTask);
+
+    currentTasks.forEach((t, i) => t.order = i * 1000);
+    setTasks(currentTasks);
+
+    try {
+      const taskToSave = { ...draggedTask, order: currentTasks.find(t=>t.id===draggedId).order };
+      delete taskToSave.updatedAt;
+      await api.saveTask(taskToSave);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  
+  const handleOpenTask = (task) => {
+    setEditingTask(task);
+    setIsModalOpen(true);
+  };
+
+  const clearFilters = () => setFilters({
+    assigneeEmail: [], category: '', type: '', priority: '',
+    dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
+    hasImplementationDate: false
+  });
+
+  // ============================================================
+  // ガントチャートを A3 横向きで印刷（現在のフィルタ済みタスクが対象）
+  // ============================================================
+  const handlePrintGantt = () => {
+    const printableTasks = filteredTasks;
+    if (!printableTasks || printableTasks.length === 0) {
+      alert("印刷対象の課題がありません。フィルタを見直してください。");
+      return;
+    }
+
+    // 親→子の順に並べる
+    const roots = printableTasks.filter(t => !t.parentId || !printableTasks.find(pt => pt.id === t.parentId));
+    const ordered = [];
+    roots.forEach(root => {
+      ordered.push(root);
+      printableTasks.filter(t => t.parentId === root.id).forEach(child => ordered.push(child));
+    });
+
+    // 表示日付範囲（GanttViewと同ロジック）
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const startDate = new Date(today); startDate.setDate(today.getDate() - 14);
+    let maxDate = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+    printableTasks.forEach(t => {
+      if (t.dueDate) {
+        const d = new Date(t.dueDate);
+        if (d > maxDate) maxDate = new Date(d);
+      }
+    });
+    maxDate.setDate(maxDate.getDate() + 7);
+
+    const diffDays = Math.ceil((maxDate - startDate) / (1000 * 60 * 60 * 24));
+    const days = [];
+    const months = [];
+    for (let i = 0; i <= diffDays; i++) {
+      const d = new Date(startDate);
+      d.setDate(startDate.getDate() + i);
+      days.push(d);
+      const mLabel = `${d.getFullYear()}年${d.getMonth() + 1}月`;
+      if (months.length === 0 || months[months.length - 1].label !== mLabel) {
+        months.push({ label: mLabel, count: 1 });
+      } else {
+        months[months.length - 1].count++;
+      }
+    }
+
+    // 列幅 (pt) — A3横 ≈ 1188pt × 840pt、マージン10mm(=28pt)で約1132pt × 784pt
+    // 4列の固定幅: 課題215 / 担当者75 / 開始日55 / 期限55 = 400pt
+    // ガント領域: 1132 - 400 = 732pt
+    const titleW    = 215;
+    const assigneeW = 75;
+    const dateW     = 55;
+    const ganttW    = 1132 - titleW - assigneeW - dateW * 2;
+    const dayWidth  = Math.max(7, Math.min(22, ganttW / days.length));
+    const totalGanttW = dayWidth * days.length;
+    const totalW    = titleW + assigneeW + dateW * 2 + totalGanttW;
+
+    // 今日の位置
+    const todayIdx = Math.floor((today - startDate) / (1000 * 60 * 60 * 24));
+    const todayLeft = (todayIdx + 0.5) * dayWidth;
+    const todayLineHtml = (todayIdx >= 0 && todayIdx < days.length)
+      ? `<div class="today-line" style="left:${todayLeft.toFixed(2)}pt"></div>`
+      : '';
+
+    // ステータス → バー色
+    const statusBarColors = {
+      'todo':        '#9ca3af',
+      'in-progress': '#3b82f6',
+      'waiting':     '#c084fc',
+      'review':      '#facc15',
+      'done':        '#6b7280',
+    };
+
+    const esc = s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const formatDate = (s) => {
+      if (!s) return '-';
+      const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? `${m[2]}/${m[3]}` : s;
+    };
+    const dow = ['日','月','火','水','木','金','土'];
+
+    // 月行
+    const monthCellsHtml = months.map(m =>
+      `<div class="month-cell" style="width:${(m.count * dayWidth).toFixed(2)}pt">${esc(m.label)}</div>`
+    ).join('');
+
+    // 日付セル(ヘッダー)
+    const dayHeaderHtml = days.map(d => {
+      const dStr = d.toLocaleDateString('sv-SE');
+      const wd   = d.getDay();
+      const isHoliday = holidays && holidays.includes(dStr);
+      let cls = '';
+      if (wd === 0 || isHoliday) cls = ' day-sun';
+      else if (wd === 6) cls = ' day-sat';
+      return `<div class="day-cell${cls}" style="width:${dayWidth.toFixed(2)}pt"><div class="day-num">${d.getDate()}</div><div class="day-dow">${dow[wd]}</div></div>`;
+    }).join('');
+
+    // 日付セル(背景) — 各行で再利用するため文字列を1つ作っておく
+    const dayBgRowHtml = days.map(d => {
+      const dStr = d.toLocaleDateString('sv-SE');
+      const wd   = d.getDay();
+      const isHoliday = holidays && holidays.includes(dStr);
+      let bg = '#fff';
+      if (wd === 0 || isHoliday) bg = '#fef2f2';
+      else if (wd === 6) bg = '#eff6ff';
+      return `<div class="day-bg" style="width:${dayWidth.toFixed(2)}pt;background:${bg}"></div>`;
+    }).join('');
+
+    // タスク行
+    const taskRowsHtml = ordered.map(task => {
+      const startD = task.startDate ? new Date(task.startDate) : null;
+      const dueD   = task.dueDate   ? new Date(task.dueDate)   : null;
+
+      let barHtml = '';
+      if (startD && dueD && !isNaN(startD) && !isNaN(dueD)) {
+        const sIdx = Math.floor((startD - startDate) / (1000 * 60 * 60 * 24));
+        const eIdx = Math.floor((dueD - startDate) / (1000 * 60 * 60 * 24));
+        if (eIdx >= 0 && sIdx < days.length) {
+          const left  = Math.max(0, sIdx) * dayWidth;
+          const right = Math.min(days.length, eIdx + 1) * dayWidth;
+          const w     = Math.max(2, right - left);
+          const color = statusBarColors[task.status] || '#9ca3af';
+          barHtml = `<div class="bar" style="left:${left.toFixed(2)}pt;width:${w.toFixed(2)}pt;background:${color}"></div>`;
+        }
+      }
+
+      // 実施日の★マーカー
+      let starHtml = '';
+      if (task.implementationDate) {
+        const dImpl = new Date(task.implementationDate);
+        if (!isNaN(dImpl)) {
+          const iIdx = Math.round((dImpl - startDate) / (1000 * 60 * 60 * 24));
+          if (iIdx >= 0 && iIdx < days.length) {
+            const starLeft = iIdx * dayWidth;
+            const daysCount = task.implementationDays || 1;
+            const badge = daysCount >= 2
+              ? `<span class="impl-badge">${daysCount}</span>`
+              : '';
+            starHtml = `<div class="impl-star" style="left:${starLeft.toFixed(2)}pt;width:${dayWidth.toFixed(2)}pt" title="実施日: ${esc(task.implementationDate)} (${daysCount}日間)">★${badge}</div>`;
+          }
+        }
+      }
+
+      const mainAssignee = members.find(m => m.email === task.assigneeEmail);
+      const assigneeName = mainAssignee?.name || task.assigneeName || '-';
+      const isChild = task.parentId && ordered.find(t => t.id === task.parentId);
+
+      return `
+        <div class="task-row">
+          <div class="cell title-col">${isChild ? '<span class="indent">└ </span>' : ''}<span class="task-id">${esc(task.id || '')}</span> ${esc(task.title || '')}</div>
+          <div class="cell assignee-col">${esc(assigneeName)}</div>
+          <div class="cell date-col">${esc(formatDate(task.startDate))}</div>
+          <div class="cell date-col">${esc(formatDate(task.dueDate))}</div>
+          <div class="gantt-area" style="width:${totalGanttW.toFixed(2)}pt">
+            <div class="day-bg-row">${dayBgRowHtml}</div>
+            ${todayLineHtml}
+            ${barHtml}
+            ${starHtml}
+          </div>
+        </div>`;
+    }).join('');
+
+    // 凡例
+    const legendHtml = Object.entries({
+      '未対応': statusBarColors['todo'],
+      '処理中': statusBarColors['in-progress'],
+      '先方連絡待ち': statusBarColors['waiting'],
+      'レビュー': statusBarColors['review'],
+      '完了': statusBarColors['done'],
+    }).map(([label, color]) =>
+      `<span class="legend-item"><span class="legend-swatch" style="background:${color}"></span>${esc(label)}</span>`
+    ).join('');
+
+    const printedAt = new Date().toLocaleString('ja-JP', { hour12: false });
+
+    const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ガントチャート印刷 - ${esc(printedAt)}</title>
+<style>
+  @page { size: A3 landscape; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', 'Meiryo', sans-serif; color: #1f2937; margin: 0; font-size: 9pt; line-height: 1.3; }
+  .page-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6pt; border-bottom: 1.2pt solid #0d9488; padding-bottom: 4pt; }
+  .page-title { font-size: 14pt; font-weight: bold; color: #0f766e; }
+  .page-meta  { font-size: 8pt; color: #6b7280; }
+  .legend { font-size: 8pt; color: #4b5563; margin-bottom: 6pt; display: flex; gap: 12pt; flex-wrap: wrap; }
+  .legend-item { display: inline-flex; align-items: center; gap: 4pt; }
+  .legend-swatch { display: inline-block; width: 10pt; height: 8pt; border-radius: 1pt; }
+
+  .gantt-table { width: ${totalW.toFixed(2)}pt; border: 0.5pt solid #9ca3af; }
+  .header-row { display: flex; background: #f9fafb; border-bottom: 0.7pt solid #6b7280; font-weight: bold; }
+  .cell { flex: none; box-sizing: border-box; padding: 3pt 4pt; border-right: 0.3pt solid #d1d5db; font-size: 9pt; line-height: 1.3; overflow: hidden; word-break: break-all; }
+  .title-col    { width: ${titleW}pt; }
+  .assignee-col { width: ${assigneeW}pt; text-align: left; }
+  .date-col     { width: ${dateW}pt;  text-align: center; }
+  .header-row .cell { padding-top: 6pt; padding-bottom: 6pt; font-size: 9.5pt; }
+
+  .gantt-header { display: flex; flex-direction: column; width: ${totalGanttW.toFixed(2)}pt; }
+  .month-row, .day-row { display: flex; }
+  .month-cell { box-sizing: border-box; text-align: center; padding: 2pt 0; font-size: 8.5pt; border-right: 0.5pt solid #9ca3af; border-bottom: 0.3pt solid #d1d5db; background: #f3f4f6; }
+  .day-cell   { box-sizing: border-box; text-align: center; padding: 1pt 0; font-size: 7pt; border-right: 0.3pt solid #e5e7eb; background: #fff; }
+  .day-cell.day-sat { background: #eff6ff; }
+  .day-cell.day-sun { background: #fef2f2; }
+  .day-num { font-size: 7.5pt; font-weight: bold; line-height: 1; }
+  .day-dow { font-size: 6pt; color: #6b7280; line-height: 1.1; }
+
+  .task-row { display: flex; border-bottom: 0.3pt solid #e5e7eb; page-break-inside: avoid; }
+  .task-row:nth-child(odd) { background: #fafafa; }
+  .task-id { display: inline-block; color: #6b7280; font-size: 8pt; font-family: 'Consolas', 'Courier New', monospace; margin-right: 4pt; }
+  .indent { color: #9ca3af; }
+
+  .gantt-area { position: relative; height: 22pt; flex: none; }
+  .day-bg-row { display: flex; height: 100%; position: absolute; top: 0; left: 0; }
+  .day-bg { height: 100%; border-right: 0.2pt solid #f3f4f6; }
+  .today-line { position: absolute; top: 0; bottom: 0; border-left: 0.7pt dashed #ef4444; z-index: 2; }
+  .bar { position: absolute; top: 5pt; height: 12pt; border-radius: 2pt; z-index: 3; box-shadow: 0 0.3pt 0.7pt rgba(0,0,0,0.15); }
+  .impl-star { position: absolute; top: 4pt; height: 14pt; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 13pt; font-weight: bold; line-height: 1; text-shadow: 0 0.5pt 1pt rgba(0,0,0,0.25); z-index: 4; pointer-events: none; }
+  .impl-badge { position: absolute; top: -2pt; right: -3pt; background: #fff; color: #b45309; border: 0.5pt solid #fbbf24; border-radius: 50%; font-size: 6pt; font-weight: 900; padding: 0 2pt; line-height: 1.4; min-width: 8pt; text-align: center; }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <div class="page-title">🌿 Olive Note ガントチャート</div>
+    <div class="page-meta">印刷日時: ${esc(printedAt)}　／　対象: ${ordered.length}件</div>
+  </div>
+  <div class="legend">${legendHtml}<span class="legend-item"><span class="legend-swatch" style="background:#fee2e2"></span>日曜・祝日</span><span class="legend-item"><span class="legend-swatch" style="background:#dbeafe"></span>土曜</span><span class="legend-item"><span style="display:inline-block;width:1pt;height:8pt;border-left:0.7pt dashed #ef4444"></span>本日</span><span class="legend-item"><span style="color:#f59e0b;font-weight:bold;font-size:11pt;line-height:1">★</span>実施日（右上数字は日数）</span></div>
+
+  <div class="gantt-table">
+    <div class="header-row">
+      <div class="cell title-col">課題</div>
+      <div class="cell assignee-col">担当者</div>
+      <div class="cell date-col">開始日</div>
+      <div class="cell date-col">期限</div>
+      <div class="gantt-header">
+        <div class="month-row">${monthCellsHtml}</div>
+        <div class="day-row">${dayHeaderHtml}</div>
+      </div>
+    </div>
+    ${taskRowsHtml}
+  </div>
+
+  <script>
+    window.onload = function(){ setTimeout(function(){ window.print(); }, 200); };
+    window.onafterprint = function(){ window.close(); };
+  <\/script>
+</body>
+</html>`;
+
+    const w = window.open('', '_blank', 'width=1400,height=900');
+    if (!w) {
+      alert('ポップアップがブロックされました。ブラウザの設定で本サイトのポップアップを許可してください。');
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+  
+  const activeFilterCount = Object.keys(filters).filter(k => {
+    if (k === 'statuses') {
+      const current = filters.statuses || [];
+      if (current.length !== defaultStatuses.length) return true;
+      return !defaultStatuses.every(s => current.includes(s));
+    }
+    if (k === 'assigneeEmail') {
+      return filters.assigneeEmail && filters.assigneeEmail.length > 0;
+    }
+    return Boolean(filters[k]);
+  }).length;
+
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#f0f2f5] flex flex-col items-center justify-center font-sans px-4 text-center">
+        <Loader2 className="animate-spin text-blue-500 mb-6" size={52} />
+        <h2 className="text-2xl font-bold text-gray-700 mb-8 tracking-wider">Olive Note を読み込み中...</h2>
+        
+        <div className="max-w-md w-full bg-white p-5 rounded-2xl shadow-sm border border-gray-200 animate-in fade-in zoom-in duration-500">
+          <div className="flex items-center justify-center gap-2 mb-3 text-yellow-600 font-bold bg-yellow-50 py-1.5 px-4 rounded-full w-max mx-auto text-sm border border-yellow-100">
+            💡 今日のライフハック
+          </div>
+          <p className="text-gray-600 text-sm leading-relaxed font-medium">
+            {loadingTip}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen bg-[#f0f2f5] flex flex-col font-sans text-gray-800 relative">
+      <div className="fixed bottom-2 right-2 md:bottom-4 md:right-4 z-50 bg-blue-600/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md pointer-events-none backdrop-blur-sm">
+        Olive Note v2
+      </div>
+
+      <header className="bg-[#1e2a35] text-white px-3 md:px-6 py-2.5 md:py-3 flex flex-col md:flex-row items-center justify-between shadow-md relative z-40 shrink-0 gap-2 md:gap-0">
+        <div className="flex items-center justify-between w-full md:w-auto">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            title="クリックで画面を再読み込み"
+            className="flex items-center gap-2 min-w-0 hover:bg-white/10 active:bg-white/20 px-1.5 -mx-1.5 py-1 -my-1 rounded-md transition-colors"
+          >
+            <CheckSquare className="text-green-400 shrink-0" />
+            <h1 className="text-lg md:text-xl font-bold tracking-wider truncate">Olive Note</h1>
+          </button>
+
+          <div className="flex md:hidden items-center gap-2">
+            <span className="text-xl">{currentUser?.avatar}</span>
+            {activeTab !== 'docs' && (
+              <button onClick={() => handleOpenTask(null)} className="bg-green-500 hover:bg-green-600 text-white p-1.5 rounded-full shadow-sm">
+                <Plus size={20} />
+              </button>
+            )}
+            {/* モバイル時：通知ベルもロゴと同じ行に表示 */}
+            <div className="relative">
+              <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-1.5 rounded-full transition-colors relative ${isNotifOpen ? 'bg-blue-500/30 text-blue-200' : 'text-gray-300 hover:bg-white/10'}`}>
+                <Bell size={20} />
+                {validNotifications.filter(n => !n.isRead).length > 0 && (
+                  <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-[#1e2a35] shadow-sm">
+                    {notifications.filter(n => !n.isRead).length}
+                  </span>
+                )}
+              </button>
+              {isNotifOpen && (
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh] text-gray-800">
+                  <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                    <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-blue-600"/> 通知</h3>
+                    <span className="text-xs text-gray-500">{validNotifications.filter(n => !n.isRead).length} 件の未読</span>
+                  </div>
+                  <div className="overflow-y-auto flex-1 p-2 space-y-1">
+                    {validNotifications.length === 0 ? (
+                      <p className="text-center text-sm text-gray-500 p-6">通知はありません</p>
+                    ) : (
+                      validNotifications.map(notif => (
+                        <button
+                          key={notif.id}
+                          onClick={() => handleNotificationClick(notif)}
+                          className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-blue-500 bg-blue-50/30'}`}
+                        >
+                          <div className="flex justify-between items-start gap-2">
+                            <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{notif.taskId}</span>
+                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{notif.createdAt}</span>
+                          </div>
+                          <p className="text-sm font-bold text-gray-800 line-clamp-1">{notif.taskTitle}</p>
+                          <p className="text-xs text-gray-600 mt-1"><span className="font-bold">{notif.senderName}</span> さんからメンションされました</p>
+                          <p className="text-xs text-gray-500 line-clamp-2 mt-1 bg-white p-1.5 rounded border border-gray-100 italic">「{notif.message}」</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* モバイル時：ログアウトボタン */}
+            <button
+              onClick={async () => {
+                if (!window.confirm('ログアウトしますか？')) return;
+                try { await api.logout(); } catch (e) {}
+                window.location.reload();
+              }}
+              className="text-gray-300 hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors"
+              title="ログアウト"
+            >
+              <LogOut size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex bg-[#2c3e50] rounded-md overflow-x-auto [&::-webkit-scrollbar]:hidden w-full md:w-auto md:ml-6 md:mr-auto snap-x">
+          <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><Columns size={16} /> ボード</button>
+          <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><CalendarDays size={16} /> ガント</button>
+          <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><CalendarIcon size={16} /> カレンダー</button>
+          <button onClick={() => setActiveTab('docs')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'docs' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><FileText size={16} /> ドキュメント</button>
+          <button onClick={() => setActiveTab('settings')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'settings' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><Settings size={16} /> 設定</button>
+        </div>
+
+        {/* PC時のみ表示する通知ベル */}
+        <div className="relative hidden md:block">
+          <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-2 rounded-full transition-colors relative ${isNotifOpen ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}>
+            <Bell size={20} />
+            {validNotifications.filter(n => !n.isRead).length > 0 && (
+              <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-white shadow-sm">
+                {notifications.filter(n => !n.isRead).length}
+              </span>
+            )}
+          </button>
+
+          {isNotifOpen && (
+            <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh]">
+              <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-blue-600"/> 通知</h3>
+                <span className="text-xs text-gray-500">{validNotifications.filter(n => !n.isRead).length} 件の未読</span>
+              </div>
+              <div className="overflow-y-auto flex-1 p-2 space-y-1">
+                {validNotifications.length === 0 ? (
+                  <p className="text-center text-sm text-gray-500 p-6">通知はありません</p>
+                ) : (
+                  validNotifications.map(notif => (
+                    <button 
+                      key={notif.id} 
+                      onClick={() => handleNotificationClick(notif)}
+                      className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-blue-500 bg-blue-50/30'}`}
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{notif.taskId}</span>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{notif.createdAt}</span>
+                      </div>
+                      <p className="text-sm font-bold text-gray-800 line-clamp-1">{notif.taskTitle}</p>
+                      <p className="text-xs text-gray-600 mt-1"><span className="font-bold">{notif.senderName}</span> さんからメンションされました</p>
+                      <p className="text-xs text-gray-500 line-clamp-2 mt-1 bg-white p-1.5 rounded border border-gray-100 italic">「{notif.message}」</p>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="hidden md:flex items-center gap-4 shrink-0">
+          <div className="flex items-center gap-2 mr-2 text-sm font-bold py-1">
+            <span className="text-xl">{currentUser?.avatar}</span>
+            <span className="truncate max-w-[120px]">{currentUser?.name}</span>
+          </div>
+          <button
+            onClick={async () => {
+              if (!window.confirm('ログアウトしますか？')) return;
+              try { await api.logout(); } catch (e) {}
+              window.location.reload();
+            }}
+            className="text-gray-500 hover:text-gray-800 p-1.5 rounded-full hover:bg-gray-100 transition-colors"
+            title="ログアウト"
+          >
+            <LogOut size={18} />
+          </button>
+          {activeTab !== 'docs' && (
+            <button onClick={() => handleOpenTask(null)} className="bg-green-500 hover:bg-green-600 text-white px-4 py-1.5 rounded-full text-sm font-bold flex items-center gap-1 transition-colors shadow-sm ml-2"><Plus size={16} /> 課題の追加</button>
+          )}
+        </div>
+      </header>
+
+      {(activeTab === 'board' || activeTab === 'gantt' || activeTab === 'calendar') && (
+        <div className="bg-white border-b border-gray-200 relative shadow-[0_2px_4px_rgba(0,0,0,0.05)] z-30 shrink-0">
+          {isFilterExpanded && (
+            <div className="px-4 md:px-6 py-4 flex flex-wrap gap-3 md:gap-4 items-end">
+              
+              {/* キーワード */}
+              <div className="w-full md:w-64">
+                <label className="block text-xs font-bold text-gray-500 mb-1">キーワード</label>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2 text-gray-400" size={16} />
+                  <input type="text" placeholder="キーワード検索..." className="border border-gray-300 rounded p-1.5 pl-9 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                </div>
+              </div>
+
+              {/* ステータス */}
+              <div className="w-[calc(50%-0.375rem)] md:w-40 relative">
+                <label className="block text-xs font-bold text-gray-500 mb-1">ステータス</label>
+                <button
+                  onClick={() => setIsStatusMenuOpen(!isStatusMenuOpen)}
+                  className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                >
+                  <span className="truncate">
+                    {filters.statuses?.length === STATUSES.length ? 'すべて' :
+                     filters.statuses?.length === 0 ? '選択なし' :
+                     `${filters.statuses?.length}項目を選択中`}
+                  </span>
+                  <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                </button>
+
+                {isStatusMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsStatusMenuOpen(false)}></div>
+                    <div className="absolute left-0 top-full mt-1 w-full md:w-[180px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1">
+                      {STATUSES.map(s => (
+                        <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={filters.statuses?.includes(s.id)}
+                            onChange={(e) => {
+                              const newStatuses = e.target.checked
+                                ? [...(filters.statuses || []), s.id]
+                                : (filters.statuses || []).filter(id => id !== s.id);
+                              setFilters({ ...filters, statuses: newStatuses });
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                          />
+                          <span className={`font-medium ${s.textColor}`}>{s.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* 担当者 (マルチセレクト対応) */}
+              <div className="w-[calc(50%-0.375rem)] md:w-56 relative z-10">
+                <label className="block text-xs font-bold text-gray-500 mb-1">担当者</label>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setIsAssigneeMenuOpen(!isAssigneeMenuOpen)}
+                    className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                  >
+                    <span className="truncate">
+                      {filters.assigneeEmail?.length === 0 ? 'すべて' : `${filters.assigneeEmail?.length}人を選択中`}
+                    </span>
+                    <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                  </button>
+
+                  {isAssigneeMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsAssigneeMenuOpen(false)}></div>
+                      <div className="absolute left-0 top-full mt-1 w-full md:w-[220px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1 max-h-60 overflow-y-auto">
+                        {members.map(m => (
+                          <label key={m.email} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={filters.assigneeEmail?.includes(m.email)}
+                              onChange={(e) => {
+                                const newAssignees = e.target.checked
+                                  ? [...(filters.assigneeEmail || []), m.email]
+                                  : (filters.assigneeEmail || []).filter(email => email !== m.email);
+                                setFilters({ ...filters, assigneeEmail: newAssignees });
+                              }}
+                              className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                            />
+                            <span className="font-medium truncate">{m.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  <button 
+                    onClick={() => {
+                      const isOnlyMe = filters.assigneeEmail?.length === 1 && filters.assigneeEmail[0] === currentUser?.email;
+                      setFilters({...filters, assigneeEmail: isOnlyMe ? [] : [currentUser?.email || '']})
+                    }} 
+                    className={`shrink-0 border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm ${(filters.assigneeEmail?.length === 1 && filters.assigneeEmail[0] === currentUser?.email) ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 hover:bg-blue-100 text-blue-600 border-blue-200'}`} 
+                    title="自分の担当課題を絞り込み"
+                  >
+                    自分
+                  </button>
+                </div>
+              </div>
+
+              {/* 種別 */}
+              <div className="w-[calc(50%-0.375rem)] md:w-36">
+                <label className="block text-xs font-bold text-gray-500 mb-1">種別</label>
+                <select value={filters.type} onChange={e => setFilters({...filters, type: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                  <option value="">すべて</option>
+                  {taskTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+
+              {/* カテゴリ */}
+              <div className="w-[calc(50%-0.375rem)] md:w-36">
+                <label className="block text-xs font-bold text-gray-500 mb-1">カテゴリ</label>
+                <select value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                  <option value="">すべて</option>
+                  {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+
+              {/* 優先度 */}
+              <div className="w-[calc(50%-0.375rem)] md:w-28">
+                <label className="block text-xs font-bold text-gray-500 mb-1">優先度</label>
+                <select value={filters.priority} onChange={e => setFilters({...filters, priority: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                  <option value="">すべて</option>
+                  {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </div>
+
+              {/* 期限日 */}
+              <div className="w-full md:w-64">
+                <label className="block text-xs font-bold text-gray-500 mb-1">期限日</label>
+                <div className="flex items-center gap-1">
+                  <input type="date" value={filters.dueDateFrom} onChange={e => setFilters({...filters, dueDateFrom: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                  <span className="text-gray-400">~</span>
+                  <input type="date" value={filters.dueDateTo} onChange={e => setFilters({...filters, dueDateTo: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                </div>
+              </div>
+
+              {/* ★ 追加：ガントチャート時のみ表示される「実施日」フィルター */}
+              {activeTab === 'gantt' && (
+                <div className="w-[calc(50%-0.375rem)] md:w-32 flex items-end pb-1">
+                  <button 
+                    onClick={() => setFilters({...filters, hasImplementationDate: !filters.hasImplementationDate})}
+                    className={`w-full border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1 ${filters.hasImplementationDate ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-white hover:bg-yellow-50 text-yellow-600 border-yellow-300'}`}
+                    title="実施日が設定されている課題のみを表示"
+                  >
+                    <Star size={14} className={filters.hasImplementationDate ? "fill-white" : "fill-yellow-600"} />
+                    実施日あり
+                  </button>
+                </div>
+              )}
+
+              {/* クリアボタン */}
+              {(activeFilterCount > 0 || searchQuery) && (
+                 <div className="w-full md:w-auto pb-1 text-right md:text-left">
+                   <button onClick={() => { clearFilters(); setSearchQuery(''); }} className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors px-2 underline">条件をクリア</button>
+                 </div>
+              )}
+
+              {/* ガント印刷ボタン（ガントタブ表示時のみ） */}
+              {activeTab === 'gantt' && (
+                <div className="w-full md:w-auto pb-1 text-right md:text-left">
+                  <button
+                    onClick={handlePrintGantt}
+                    title="現在のフィルタ済みタスクをA3横でPDF/印刷"
+                    className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors inline-flex items-center gap-1"
+                  >
+                    <Printer size={14}/>ガントを印刷
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          
+          <div 
+            onClick={() => setIsFilterExpanded(!isFilterExpanded)}
+            className="h-4 bg-white hover:bg-gray-100 border-t border-gray-200 cursor-pointer flex items-center justify-center transition-colors group shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
+            title={isFilterExpanded ? "フィルターを閉じる" : "フィルターを開く"}
+          >
+            {isFilterExpanded ? <ChevronUp size={16} className="text-gray-400 group-hover:text-gray-600" /> : <ChevronDown size={16} className="text-gray-400 group-hover:text-gray-600" />}
+          </div>
+        </div>
+      )}
+
+      <main className="flex-1 overflow-hidden flex flex-col p-2 md:p-4 relative z-0 h-full">
+        {activeTab === 'board' && <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} />}
+        {activeTab === 'gantt' && <GanttView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onSaveTask={handleSaveTask} onReorderTask={handleReorderTask} holidays={holidays} />}
+        {activeTab === 'calendar' && <CalendarView tasks={filteredTasks} onOpenTask={handleOpenTask} holidays={holidays} taskTypes={taskTypes} members={members} />}
+        {activeTab === 'docs' && <DocsView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}
+        {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} />}
+      </main>
+
+      {isModalOpen && (
+        <TaskModal
+          task={editingTask} tasks={tasks} setTasks={setTasks} categories={categories} taskTypes={taskTypes}
+          members={members} currentUser={currentUser} onClose={() => setIsModalOpen(false)}
+          onSave={handleSaveTask} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
+          taskTemplates={taskTemplates}
+          docTemplates={docTemplates}
+          showToast={showToast}
+        />
+      )}
+      <OliveConcierge />
+
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-2 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-bold pointer-events-none ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
+          {toast.type === 'error' ? <XCircle size={18} /> : <CheckCircle size={18} />}
+          {toast.message}
+        </div>
+      )}
+    </div>
+  );
+}

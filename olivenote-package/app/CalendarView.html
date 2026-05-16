@@ -1,0 +1,463 @@
+function CalendarView({ tasks, onOpenTask, holidays, taskTypes, members }) {
+  // 月切り替え用のState
+  const [currentDate, setCurrentDate] = useState(new Date());
+  // 1日詳細モーダル用のState
+  const [selectedDay, setSelectedDay] = useState(null);
+
+  // ★ スマホ判定
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // ★ モバイル時の表示モード（'month' = ドット月カレンダー / 'week' = 1週ビュー）
+  const [mobileViewMode, setMobileViewMode] = useState('month');
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0(日) 〜 6(土)
+
+  // 月曜始まりのオフセット計算（カレンダーの左端の空白マス数）
+  const offset = (firstDayOfWeek + 6) % 7;
+  const totalCells = Math.ceil((offset + daysInMonth) / 7) * 7;
+
+  // 月の切り替え関数
+  const handlePrevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+  const handleNextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+  const handleToday = () => setCurrentDate(new Date());
+
+  // 週の月曜を取得
+  const getMondayOfWeek = (d) => {
+    const date = new Date(d);
+    date.setHours(0, 0, 0, 0);
+    const day = date.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    date.setDate(date.getDate() + diff);
+    return date;
+  };
+
+  // 表示中の週の7日間
+  const weekDays = useMemo(() => {
+    const start = getMondayOfWeek(currentDate);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      return d;
+    });
+  }, [currentDate]);
+
+  const handlePrevWeek = () => {
+    const nd = new Date(currentDate);
+    nd.setDate(nd.getDate() - 7);
+    setCurrentDate(nd);
+  };
+  const handleNextWeek = () => {
+    const nd = new Date(currentDate);
+    nd.setDate(nd.getDate() + 7);
+    setCurrentDate(nd);
+  };
+
+  // 種別（Type）ごとに色を割り当てる関数（Tailwindクラス）
+  const getTypeColor = (type) => {
+    if (!type) return 'bg-gray-100 text-gray-600 border-gray-200';
+    const colors = [
+      'bg-blue-100 text-blue-700 border-blue-200',
+      'bg-green-100 text-green-700 border-green-200',
+      'bg-purple-100 text-purple-700 border-purple-200',
+      'bg-orange-100 text-orange-700 border-orange-200',
+      'bg-pink-100 text-pink-700 border-pink-200',
+      'bg-teal-100 text-teal-700 border-teal-200'
+    ];
+    const idx = taskTypes.indexOf(type);
+    return idx !== -1 ? colors[idx % colors.length] : colors[0];
+  };
+
+  // 種別ごとのドット色（より濃いめ。ドット表示用）
+  const getTypeDotColor = (type) => {
+    if (!type) return 'bg-gray-400';
+    const colors = [
+      'bg-blue-500',
+      'bg-green-500',
+      'bg-purple-500',
+      'bg-orange-500',
+      'bg-pink-500',
+      'bg-teal-500'
+    ];
+    const idx = taskTypes.indexOf(type);
+    return idx !== -1 ? colors[idx % colors.length] : colors[0];
+  };
+
+  // 指定日に被るタスクを取得
+  const getTasksForDate = (dateStr) => {
+    return tasks.filter(t => {
+      if (!t.startDate || !t.dueDate) return false;
+      return dateStr >= t.startDate && dateStr <= t.dueDate;
+    });
+  };
+
+  // ============================================================
+  // PC版の月カレンダーセルを生成
+  // ============================================================
+  const renderCells = () => {
+    const cells = [];
+    for (let i = 0; i < totalCells; i++) {
+      const day = i - offset + 1;
+      const isCurrentMonth = day > 0 && day <= daysInMonth;
+      const dateObj = new Date(year, month, day);
+      const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+
+      const isToday = dateStr === new Date().toLocaleDateString('sv-SE');
+      const isHoliday = holidays && holidays.includes(dateStr);
+      const dayOfWeek = dateObj.getDay();
+
+      // 曜日や祝日による色分け
+      let dayColorClass = 'text-gray-700';
+      let bgClass = 'bg-white';
+      if (isHoliday || dayOfWeek === 0) {
+        dayColorClass = 'text-red-600 font-bold';
+        bgClass = 'bg-red-50/20';
+      } else if (dayOfWeek === 6) {
+        dayColorClass = 'text-blue-600 font-bold';
+        bgClass = 'bg-blue-50/20';
+      }
+      if (!isCurrentMonth) {
+        dayColorClass = 'text-gray-300';
+        bgClass = 'bg-gray-50/50';
+      }
+
+      const dayTasks = isCurrentMonth ? getTasksForDate(dateStr) : [];
+
+      cells.push(
+        <div
+          key={i}
+          className={`min-h-[120px] border-r border-b border-gray-200 p-1 flex flex-col ${bgClass} cursor-pointer hover:bg-yellow-50/50 transition-colors relative`}
+          onClick={() => { if (isCurrentMonth) setSelectedDay({ dateStr, tasks: dayTasks }) }}
+        >
+          <div className="flex items-center justify-between p-1 mb-1">
+            <span className={`text-xs ${isToday ? 'bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center font-bold shadow-sm' : dayColorClass}`}>
+              {dateObj.getDate()}
+            </span>
+            {isHoliday && isCurrentMonth && <span className="text-[9px] text-red-500 font-bold truncate max-w-[60px]">祝日</span>}
+          </div>
+
+          <div className="flex flex-col gap-1 overflow-hidden flex-1">
+            {dayTasks.slice(0, 3).map(t => (
+              <div
+                key={t.id}
+                className={`text-[10px] px-1.5 py-0.5 rounded truncate border shadow-sm ${getTypeColor(t.type)}`}
+                title={t.title}
+              >
+                {t.title}
+              </div>
+            ))}
+            {dayTasks.length > 3 && (
+              <div className="text-[10px] text-gray-500 font-bold px-1 hover:text-blue-600">
+                + 他 {dayTasks.length - 3} 件
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+    return cells;
+  };
+
+  // ============================================================
+  // ★ スマホ用：ドット表示型 月カレンダーのセル
+  // ============================================================
+  const renderMobileMonthCells = () => {
+    const cells = [];
+    for (let i = 0; i < totalCells; i++) {
+      const day = i - offset + 1;
+      const isCurrentMonth = day > 0 && day <= daysInMonth;
+      const dateObj = new Date(year, month, day);
+      const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+
+      const isToday = dateStr === new Date().toLocaleDateString('sv-SE');
+      const isHoliday = holidays && holidays.includes(dateStr);
+      const dayOfWeek = dateObj.getDay();
+
+      let dayColorClass = 'text-gray-700';
+      let bgClass = 'bg-white';
+      if (isHoliday || dayOfWeek === 0) {
+        dayColorClass = 'text-red-600 font-bold';
+        bgClass = 'bg-red-50/30';
+      } else if (dayOfWeek === 6) {
+        dayColorClass = 'text-blue-600 font-bold';
+        bgClass = 'bg-blue-50/30';
+      }
+      if (!isCurrentMonth) {
+        dayColorClass = 'text-gray-300';
+        bgClass = 'bg-gray-50/60';
+      }
+
+      const dayTasks = isCurrentMonth ? getTasksForDate(dateStr) : [];
+
+      cells.push(
+        <div
+          key={i}
+          className={`min-h-[52px] border-r border-b border-gray-200 px-1 py-1 flex flex-col items-center ${bgClass} cursor-pointer active:bg-yellow-100/60 transition-colors`}
+          onClick={() => { if (isCurrentMonth) setSelectedDay({ dateStr, tasks: dayTasks }) }}
+        >
+          {/* 日付（中央寄せ） */}
+          <span className={`text-[11px] mb-0.5 ${
+            isToday
+              ? 'bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center font-bold shadow-sm'
+              : dayColorClass
+          }`}>
+            {dateObj.getDate()}
+          </span>
+
+          {/* ドット（最大4個、超過は + 表示） */}
+          {dayTasks.length > 0 && (
+            <div className="flex flex-wrap gap-0.5 justify-center items-center mt-auto">
+              {dayTasks.slice(0, 4).map(t => (
+                <span
+                  key={t.id}
+                  className={`w-1.5 h-1.5 rounded-full ${getTypeDotColor(t.type)}`}
+                  title={t.title}
+                ></span>
+              ))}
+              {dayTasks.length > 4 && (
+                <span className="text-[7px] text-gray-500 font-bold leading-none ml-0.5">
+                  +{dayTasks.length - 4}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+    return cells;
+  };
+
+  // ============================================================
+  // ★ スマホ用：1週ビュー（7日縦並びカード）
+  // ============================================================
+  const renderMobileWeekView = () => {
+    const todayStr = new Date().toLocaleDateString('sv-SE');
+    return (
+      <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        {weekDays.map((d, idx) => {
+          const dateStr = d.toLocaleDateString('sv-SE');
+          const isToday = dateStr === todayStr;
+          const isHoliday = holidays && holidays.includes(dateStr);
+          const dayOfWeek = d.getDay();
+          const dayTasks = getTasksForDate(dateStr);
+
+          let dayLabel = 'text-gray-700';
+          let bgHeader = 'bg-gray-50';
+          if (isHoliday || dayOfWeek === 0) { dayLabel = 'text-red-600'; bgHeader = 'bg-red-50/50'; }
+          else if (dayOfWeek === 6) { dayLabel = 'text-blue-600'; bgHeader = 'bg-blue-50/50'; }
+
+          const dowLabel = ['日','月','火','水','木','金','土'][dayOfWeek];
+
+          return (
+            <div
+              key={idx}
+              className={`rounded-lg border ${isToday ? 'border-blue-400 ring-1 ring-blue-300' : 'border-gray-200'} overflow-hidden shadow-sm`}
+            >
+              {/* 日付ヘッダー */}
+              <div className={`flex items-center justify-between px-3 py-2 ${bgHeader} border-b border-gray-200`}>
+                <div className="flex items-center gap-2">
+                  <span className={`text-base font-bold ${isToday ? 'bg-blue-600 text-white rounded-full w-7 h-7 flex items-center justify-center' : dayLabel}`}>
+                    {d.getDate()}
+                  </span>
+                  <span className={`text-xs font-bold ${dayLabel}`}>
+                    {d.getMonth() + 1}月 ({dowLabel})
+                  </span>
+                  {isHoliday && <span className="text-[9px] text-red-500 font-bold bg-white px-1.5 py-0.5 rounded">祝日</span>}
+                </div>
+                <span className="text-[10px] text-gray-500 bg-white px-2 py-0.5 rounded-full font-bold border border-gray-200">
+                  {dayTasks.length}件
+                </span>
+              </div>
+
+              {/* タスク一覧 */}
+              {dayTasks.length > 0 ? (
+                <div className="p-2 space-y-1.5 bg-white">
+                  {dayTasks.map(t => (
+                    <div
+                      key={t.id}
+                      onClick={() => onOpenTask(t)}
+                      className={`p-2 rounded border cursor-pointer active:scale-[0.99] transition-transform ${getTypeColor(t.type)}`}
+                    >
+                      <div className="flex items-center justify-between text-[10px] font-bold opacity-70 mb-0.5">
+                        <span>{t.type || '種別未設定'}</span>
+                        <span className="font-mono">{t.id}</span>
+                      </div>
+                      <div className="text-sm font-bold leading-tight">{t.title}</div>
+                      <div className="text-[10px] opacity-70 mt-1 flex items-center gap-1">
+                        <CalendarDays size={10}/> {t.startDate?.substring(5)} 〜 {t.dueDate?.substring(5)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 text-center text-xs text-gray-400 bg-white">予定なし</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // ============================================================
+  // レンダリング本体
+  // ============================================================
+  return (
+    <div className="flex flex-col flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden min-h-0">
+
+      {/* カレンダーヘッダー */}
+      <div className="flex items-center justify-between px-3 md:px-4 py-2 md:py-4 border-b border-gray-200 bg-gray-50 shrink-0 gap-2 flex-wrap">
+        <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+          <button onClick={handleToday} className="px-3 md:px-4 py-1.5 text-xs md:text-sm font-bold bg-white border border-gray-300 rounded-lg hover:bg-gray-100 shadow-sm transition-colors text-gray-700">今日</button>
+
+          {isMobile && mobileViewMode === 'week' ? (
+            /* 週切替 */
+            <div className="flex items-center bg-white border border-gray-300 rounded-lg shadow-sm overflow-hidden">
+              <button onClick={handlePrevWeek} className="px-3 py-1.5 hover:bg-gray-100 text-gray-600 transition-colors">＜</button>
+              <span className="text-xs font-bold border-l border-r border-gray-200 px-2 py-1.5 text-gray-800 whitespace-nowrap">
+                {weekDays[0].getMonth() + 1}/{weekDays[0].getDate()} 〜 {weekDays[6].getMonth() + 1}/{weekDays[6].getDate()}
+              </span>
+              <button onClick={handleNextWeek} className="px-3 py-1.5 hover:bg-gray-100 text-gray-600 transition-colors">＞</button>
+            </div>
+          ) : (
+            /* 月切替 */
+            <div className="flex items-center bg-white border border-gray-300 rounded-lg shadow-sm overflow-hidden">
+              <button onClick={handlePrevMonth} className="px-3 py-1.5 hover:bg-gray-100 text-gray-600 transition-colors">＜</button>
+              <input
+                type="month"
+                value={`${year}-${String(month + 1).padStart(2, '0')}`}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    const [y, m] = e.target.value.split('-');
+                    setCurrentDate(new Date(parseInt(y), parseInt(m) - 1, 1));
+                  }
+                }}
+                className="text-xs md:text-sm font-bold border-l border-r border-gray-200 px-2 py-1 focus:outline-none focus:ring-0 text-center w-[110px] md:w-[120px] text-gray-800"
+              />
+              <button onClick={handleNextMonth} className="px-3 py-1.5 hover:bg-gray-100 text-gray-600 transition-colors">＞</button>
+            </div>
+          )}
+        </div>
+
+        {/* スマホ時：ビュー切替トグル */}
+        {isMobile && (
+          <div className="flex bg-gray-100 rounded-lg p-0.5 border border-gray-200 shrink-0">
+            <button
+              onClick={() => setMobileViewMode('month')}
+              className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all ${
+                mobileViewMode === 'month' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              月
+            </button>
+            <button
+              onClick={() => setMobileViewMode('week')}
+              className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all ${
+                mobileViewMode === 'week' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              週
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* カレンダー本体 */}
+      {!isMobile && (
+        /* PC: 従来通り */
+        <div className="flex-1 overflow-y-auto">
+          <div className="grid grid-cols-7 border-t border-l border-gray-200 min-h-full">
+            {['月', '火', '水', '木', '金', '土', '日'].map((d, i) => (
+              <div key={d} className={`p-2 text-center text-xs font-bold border-r border-b border-gray-200 bg-gray-100 ${i === 5 ? 'text-blue-600' : i === 6 ? 'text-red-600' : 'text-gray-600'}`}>
+                {d}
+              </div>
+            ))}
+            {renderCells()}
+          </div>
+        </div>
+      )}
+
+      {isMobile && mobileViewMode === 'month' && (
+        /* スマホ：ドット表示型 月カレンダー */
+        <div className="flex-1 overflow-y-auto flex flex-col">
+          <div className="grid grid-cols-7 border-t border-l border-gray-200">
+            {['月', '火', '水', '木', '金', '土', '日'].map((d, i) => (
+              <div key={d} className={`p-1 text-center text-[10px] font-bold border-r border-b border-gray-200 bg-gray-100 ${i === 5 ? 'text-blue-600' : i === 6 ? 'text-red-600' : 'text-gray-600'}`}>
+                {d}
+              </div>
+            ))}
+            {renderMobileMonthCells()}
+          </div>
+          {/* 凡例 */}
+          {taskTypes && taskTypes.length > 0 && (
+            <div className="px-2 py-2 mt-1 border-t border-gray-100 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-600 shrink-0 bg-gray-50/40">
+              {taskTypes.map(t => (
+                <span key={t} className="inline-flex items-center gap-1">
+                  <span className={`w-1.5 h-1.5 rounded-full ${getTypeDotColor(t)}`}></span>
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isMobile && mobileViewMode === 'week' && renderMobileWeekView()}
+
+      {/* 1日詳細モーダル（PC・スマホ月モード共通） */}
+      {selectedDay && (
+        <div className="fixed inset-0 bg-gray-900/40 flex items-center justify-center z-[60] p-3 md:p-4 backdrop-blur-sm" onClick={() => setSelectedDay(null)}>
+          <div className="bg-white rounded-xl shadow-2xl p-4 md:p-6 w-full max-w-lg max-h-[85vh] md:max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-3 md:mb-4 pb-3 border-b">
+              <h3 className="text-base md:text-xl font-bold text-gray-800 flex items-center gap-2">
+                <CalendarIcon size={20} className="text-blue-600 shrink-0"/>
+                <span className="truncate">{selectedDay.dateStr} の予定</span>
+              </h3>
+              <button onClick={() => setSelectedDay(null)} className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 transition-colors shrink-0"><X size={20}/></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-1 md:pr-2 space-y-2 md:space-y-3">
+              {selectedDay.tasks.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                  この日に被っている予定はありません
+                </div>
+              ) : (
+                selectedDay.tasks.map(t => (
+                  <div
+                    key={t.id}
+                    onClick={() => { setSelectedDay(null); onOpenTask(t); }}
+                    className={`p-3 rounded-lg border cursor-pointer hover:shadow-md hover:scale-[1.01] transition-all relative group ${getTypeColor(t.type)}`}
+                  >
+                    <div className="text-[10px] font-bold opacity-70 mb-1 flex justify-between">
+                      <span className="bg-white/50 px-2 py-0.5 rounded text-gray-800">{t.type || '種別未設定'}</span>
+                      <span>{t.id}</span>
+                    </div>
+                    <div className="font-bold text-sm md:text-base mb-1">{t.title}</div>
+                    <div className="text-xs font-medium opacity-80 flex items-center gap-1">
+                      <CalendarDays size={12}/> {t.startDate} 〜 {t.dueDate}
+                    </div>
+                    <div className="absolute bottom-2 right-2 flex -space-x-1">
+                       <span className="w-5 h-5 rounded-full bg-white border border-gray-200 flex items-center justify-center text-[10px] shadow-sm" title={t.assigneeName}>
+                          {members?.find(m => m.email === t.assigneeEmail)?.avatar || '👤'}
+                       </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

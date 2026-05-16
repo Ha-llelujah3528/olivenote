@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'   # v1.0.0 のようなタグが push されたら起動
+
+permissions:
+  contents: write    # Release作成 & manifest.json コミットに必要
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: ver
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update VERSION file
+        run: echo "${{ steps.ver.outputs.version }}" > olivenote-package/app/VERSION
+
+      - name: Build release
+        run: |
+          chmod +x scripts/build-release.sh
+          bash scripts/build-release.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Rewrite download_url to actual repo
+        # build-release.sh は Ha-llelujah3528/olivenote を埋め込む。
+        # リポジトリ名が変わった場合に備えて、ここで実リポジトリで上書き。
+        run: |
+          REPO_URL="https://github.com/${{ github.repository }}"
+          sed -i "s#https://github.com/Ha-llelujah3528/olivenote#${REPO_URL}#g" build/manifest.json
+          cat build/manifest.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Olive Note v${{ steps.ver.outputs.version }}
+          files: |
+            build/olivenote-${{ steps.ver.outputs.version }}.zip
+            build/CHECKSUMS.txt
+
+      # manifest.json を main にコミット（顧客サーバーから取得される）
+      - name: Commit manifest.json to main
+        if: github.ref_type == 'tag'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git stash --include-untracked || true
+          git fetch origin main
+          git checkout main
+          git stash pop || true
+          cp build/manifest.json manifest.json
+          git add manifest.json
+          if git diff --cached --quiet; then
+            echo "No changes to manifest.json"
+          else
+            git commit -m "chore: update manifest.json for v${{ steps.ver.outputs.version }}"
+            git push origin main
+          fi

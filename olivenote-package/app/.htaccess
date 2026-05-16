@@ -1,0 +1,19 @@
+# app/ ディレクトリのセキュリティ
+# .html ファイルは PHP の readfile() で取り込まれるだけなので直接アクセスさせない
+
+<FilesMatch "\.(html|sql)$|^VERSION$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# 隠しファイル禁止
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+</FilesMatch>

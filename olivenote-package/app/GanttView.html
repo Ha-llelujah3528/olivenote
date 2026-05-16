@@ -1,0 +1,415 @@
+function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReorderTask, holidays }) {
+  const [isCompact, setIsCompact] = useState(false);
+  const [dragOverTaskId, setDragOverTaskId] = useState(null);
+
+  // ★ スマホ判定（768px未満ならガントの代わりにリスト表示）
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const { days, months } = useMemo(() => {
+    const dArray = [], mArray = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const startDate = new Date(today);
+    startDate.setDate(today.getDate() - 14);
+
+    let maxDate = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+    tasks.forEach(t => {
+      if (t.dueDate) {
+        const d = new Date(t.dueDate);
+        if (d > maxDate) maxDate = new Date(d);
+      }
+    });
+    maxDate.setDate(maxDate.getDate() + 7);
+
+    const diffDays = Math.ceil((maxDate - startDate) / (1000 * 60 * 60 * 24));
+    for (let i = 0; i <= diffDays; i++) {
+      const d = new Date(startDate);
+      d.setDate(startDate.getDate() + i);
+      dArray.push(d);
+
+      const mLabel = `${d.getFullYear()}年${d.getMonth() + 1}月`;
+      if (mArray.length === 0 || mArray[mArray.length - 1].label !== mLabel) {
+        mArray.push({ label: mLabel, count: 1 });
+      } else {
+        mArray[mArray.length - 1].count++;
+      }
+    }
+    return { days: dArray, months: mArray };
+  }, [tasks]);
+
+  const structuredTasks = useMemo(() => {
+    const roots = tasks.filter(t => !t.parentId || !tasks.find(pt => pt.id === t.parentId));
+    const result = [];
+    roots.forEach(root => {
+      result.push(root);
+      const children = tasks.filter(t => t.parentId === root.id);
+      result.push(...children);
+    });
+    return result;
+  }, [tasks]);
+
+  const todayStr = getTodayStr();
+  const [dragState, setDragState] = useState(null);
+
+  // ============================================================
+  // ★ モバイル時はガントの代わりに「期間付きリスト表示」にフォールバック
+  // ============================================================
+  if (isMobile) {
+    const formatDate = (s) => {
+      if (!s) return '';
+      const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? `${m[2]}/${m[3]}` : s;
+    };
+    return (
+      <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden flex flex-col">
+        <div className="px-3 py-2 border-b border-gray-200 bg-amber-50 text-amber-800 text-xs flex items-center gap-1.5">
+          <AlertTriangle size={14} className="shrink-0" />
+          スマホではガントチャートの代わりにリスト表示で表示しています
+        </div>
+        <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+          {structuredTasks.length === 0 && (
+            <div className="p-8 text-center text-sm text-gray-400">該当する課題はありません</div>
+          )}
+          {structuredTasks.map(task => {
+            const statusConfig = STATUSES.find(s => s.id === task.status);
+            const isChild = !!task.parentId && tasks.some(t => t.id === task.parentId);
+            const member = members.find(m => m.email === task.assigneeEmail);
+            const catObj = categories.find(c => c.name === task.category);
+            const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+            const isOverdue = task.dueDate && task.dueDate < todayStr && task.status !== 'done';
+
+            return (
+              <button
+                key={task.id}
+                onClick={() => onTaskClick(task)}
+                className={`w-full text-left p-3 hover:bg-blue-50/40 transition-colors active:bg-blue-100/50 ${isChild ? 'pl-8 bg-gray-50/50' : ''}`}
+              >
+                <div className="flex items-start gap-2">
+                  {isChild && <CornerDownRight size={14} className="text-gray-300 mt-0.5 -ml-5 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                      <span className="text-[10px] text-gray-400 font-mono">{task.id?.replace('TASK-','')}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${statusConfig?.bgColor} ${statusConfig?.textColor}`}>
+                        {statusConfig?.label}
+                      </span>
+                      {catColor && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${catColor.bg} ${catColor.border} ${catColor.text}`}>
+                          {task.category}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-bold text-gray-800 leading-snug break-words">{task.title}</p>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-600 flex-wrap">
+                      <span className="flex items-center gap-1">
+                        {member?.avatar} <span>{task.assigneeName || '未割当'}</span>
+                      </span>
+                      {(task.startDate || task.dueDate) && (
+                        <span className={`flex items-center gap-1 ${isOverdue ? 'text-red-600 font-bold' : ''}`}>
+                          <CalendarIcon size={12} />
+                          {formatDate(task.startDate) || '?'} 〜 {formatDate(task.dueDate) || '?'}
+                        </span>
+                      )}
+                      {task.implementationDate && (
+                        <span className="flex items-center gap-0.5 text-yellow-700 font-bold">
+                          <span className="text-yellow-400">★</span>
+                          {formatDate(task.implementationDate)}
+                          {task.implementationDays && task.implementationDays >= 2 ? `(${task.implementationDays}日)` : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+          <div className="h-12"></div>
+        </div>
+      </div>
+    );
+  }
+
+  const handlePointerDown = (e, task, edge) => {
+    e.stopPropagation();
+    e.target.setPointerCapture(e.pointerId);
+    setDragState({
+      taskId: task.id,
+      edge: edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialStartDate: task.startDate,
+      initialDueDate: task.dueDate,
+      currentStartDate: task.startDate,
+      currentDueDate: task.dueDate
+    });
+  };
+
+  const handlePointerMove = (e) => {
+    if (!dragState) return;
+    const deltaX = e.clientX - dragState.startX;
+    const deltaDays = Math.round(deltaX / 32);
+
+    if (dragState.edge === 'move') {
+      const newStart = new Date(dragState.initialStartDate);
+      newStart.setDate(newStart.getDate() + deltaDays);
+      const newDue = new Date(dragState.initialDueDate);
+      newDue.setDate(newDue.getDate() + deltaDays);
+
+      const newStartStr = newStart.toLocaleDateString('sv-SE');
+      const newDueStr = newDue.toLocaleDateString('sv-SE');
+
+      if (dragState.currentStartDate !== newStartStr || dragState.currentDueDate !== newDueStr) {
+        setDragState(prev => ({ ...prev, currentStartDate: newStartStr, currentDueDate: newDueStr }));
+      }
+    } else {
+      const newDateObj = new Date(dragState.edge === 'start' ? dragState.initialStartDate : dragState.initialDueDate);
+      newDateObj.setDate(newDateObj.getDate() + deltaDays);
+      const newDateStr = newDateObj.toLocaleDateString('sv-SE');
+
+      if (dragState.edge === 'start' && dragState.currentStartDate !== newDateStr) {
+        setDragState(prev => ({ ...prev, currentStartDate: newDateStr }));
+      } else if (dragState.edge === 'end' && dragState.currentDueDate !== newDateStr) {
+        setDragState(prev => ({ ...prev, currentDueDate: newDateStr }));
+      }
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    if (!dragState) return;
+    e.target.releasePointerCapture(e.pointerId);
+
+    const distance = Math.abs(e.clientX - dragState.startX) + Math.abs(e.clientY - dragState.startY);
+    const task = tasks.find(t => t.id === dragState.taskId);
+
+    if (distance < 3 && task && dragState.edge === 'move') {
+      setDragState(null);
+      onTaskClick(task);
+      return;
+    }
+
+    if (!task) {
+      setDragState(null);
+      return;
+    }
+
+    let newStartDate = dragState.currentStartDate;
+    let newDueDate = dragState.currentDueDate;
+
+    if (dragState.edge === 'start' && newStartDate > newDueDate) newStartDate = newDueDate;
+    if (dragState.edge === 'end' && newDueDate < newStartDate) newDueDate = newStartDate;
+
+    if (newStartDate !== task.startDate || newDueDate !== task.dueDate) {
+      const updatedTask = { ...task, startDate: newStartDate, dueDate: newDueDate };
+      const changes = [];
+      if (task.startDate !== newStartDate) changes.push(`・開始日を「${task.startDate || '未設定'}」から「${newStartDate || '未設定'}」に変更`);
+      if (task.dueDate !== newDueDate) changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${newDueDate || '未設定'}」に変更`);
+      
+      if (changes.length > 0) {
+        const historyComment = {
+          id: Date.now().toString() + '_history',
+          taskId: updatedTask.id,
+          authorEmail: 'system',
+          authorName: 'システム自動記録',
+          text: "📝 **【ガントチャート上で変更】**\n" + changes.join("\n"),
+          createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          likes: []
+        };
+        updatedTask.comments = [...(updatedTask.comments || []), historyComment];
+        if (typeof api !== 'undefined' && api.saveComment) {
+          api.saveComment(historyComment).catch(console.error);
+        }
+      }
+      onSaveTask(updatedTask);
+    }
+    setDragState(null);
+  };
+
+  return (
+    <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col overflow-hidden relative">
+      <button
+        onClick={() => setIsCompact(!isCompact)}
+        className="absolute top-2 left-2 z-[90] bg-white border border-gray-300 text-xs font-bold text-gray-600 px-2 py-1 rounded shadow-sm hover:bg-gray-50 flex items-center gap-1"
+      >
+        {isCompact ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+        {isCompact ? "詳細を表示" : "コンパクト"}
+      </button>
+
+      {/* 状態の凡例（右上にフローティング表示） */}
+      <div className="absolute top-2 right-2 z-[90] flex items-center gap-2 bg-white/95 backdrop-blur-sm border border-gray-300 rounded-lg px-2.5 py-1 shadow-sm">
+        <span className="text-[10px] font-bold text-gray-500 hidden md:inline">状態</span>
+        {STATUSES.map(s => (
+          <span key={s.id} className="flex items-center gap-1 text-[10px] font-bold text-gray-700 whitespace-nowrap">
+            <span className={`inline-block w-3 h-3 rounded-sm ${s.barColor} border border-gray-300`}></span>
+            {s.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-auto relative">
+        <div className="inline-flex flex-col w-max min-w-full">
+          <div className="flex sticky top-0 z-[80] bg-gray-50 border-b border-gray-200 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+            <div className="w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-gray-50 border-r border-gray-200 flex flex-col justify-end p-2 pb-1 text-xs font-bold text-gray-600 shadow-[2px_0_4px_rgba(0,0,0,0.02)] pl-24">
+              課題名 / 担当者
+            </div>
+            
+            <div className="flex flex-col">
+              <div className="flex border-b border-gray-200">
+                {months.map((m, idx) => (
+                  <div key={idx} style={{ width: m.count * 32 }} className="text-xs font-bold p-1 text-center text-gray-600 border-r border-gray-200 truncate">
+                    {m.label}
+                  </div>
+                ))}
+              </div>
+              <div className="flex">
+                {days.map((d, idx) => {
+                  const dateStr = d.toLocaleDateString('sv-SE');
+                  const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                  const isHoliday = holidays && holidays.includes(dateStr); 
+                  const isOffDay = isWeekend || isHoliday;
+                  
+                  return (
+                    <div key={idx} className={`w-8 text-[10px] text-center border-r border-gray-200 py-1 flex flex-col items-center justify-center shrink-0 ${dateStr === todayStr ? 'bg-blue-100 font-bold text-blue-800' : isOffDay ? 'bg-gray-200/70 text-gray-400' : 'text-gray-700'}`}>
+                      <span className="font-bold">{d.getDate()}</span>
+                      <span className="text-[8px] scale-90">{DAYS_OF_WEEK[d.getDay()]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {structuredTasks.map(task => {
+            const statusConfig = STATUSES.find(s => s.id === task.status);
+            const isChild = !!task.parentId && tasks.some(t => t.id === task.parentId);
+            const member = members.find(m => m.email === task.assigneeEmail);
+            const catObj = categories.find(c => c.name === task.category);
+            const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+
+            return (
+              <div key={task.id} className="flex border-b border-gray-100 hover:bg-blue-50/40 group transition-colors">
+                <div 
+                  draggable 
+                  onDragStart={(e) => { e.dataTransfer.setData('taskId', task.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={(e) => { e.preventDefault(); setDragOverTaskId(task.id); }}
+                  onDragLeave={() => setDragOverTaskId(null)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverTaskId(null);
+                    const draggedTaskId = e.dataTransfer.getData('taskId');
+                    if (draggedTaskId && draggedTaskId !== task.id) onReorderTask(draggedTaskId, task.id);
+                  }}
+                  className={`w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-white group-hover:bg-blue-50/40 border-r border-gray-200 flex flex-col justify-center cursor-pointer transition-colors relative shadow-[2px_0_4px_rgba(0,0,0,0.02)] shrink-0 ${isChild ? 'pl-8 py-2 pr-2' : 'p-2'} ${dragOverTaskId === task.id ? 'border-t-2 border-t-blue-500' : ''}`} 
+                  onClick={() => onTaskClick(task)}
+                >
+                  {isChild && <CornerDownRight size={14} className="absolute left-3 top-3 text-gray-300" />}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-gray-400 font-mono w-11 flex-shrink-0">{task.id.replace('TASK-','')}</span>
+                    <span className="text-sm font-medium truncate text-gray-800 group-hover:text-blue-600">{task.title}</span>
+                  </div>
+                  {!isCompact && (
+                    <div className="flex items-center gap-1.5 mt-1 pl-13">
+                      <span className="text-xs text-gray-500 flex items-center gap-1">{member?.avatar} <span className="truncate max-w-[60px]">{task.assigneeName}</span></span>
+                      <span className={`text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-600 shrink-0`}>{statusConfig?.label}</span>
+                      {catColor && <span className={`text-[9px] px-1 py-0.5 rounded font-bold border ${catColor.bg} ${catColor.border} ${catColor.text} truncate max-w-[60px]`}>{task.category}</span>}
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex relative w-max overflow-hidden">
+                  {days.map((d, idx) => {
+                    const dateStr = d.toLocaleDateString('sv-SE');
+                    const isOffDay = d.getDay() === 0 || d.getDay() === 6 || (holidays && holidays.includes(dateStr));
+                    return <div key={idx} className={`w-8 ${isCompact ? 'h-8' : 'h-12'} border-r border-gray-100 shrink-0 ${isOffDay ? 'bg-gray-100/50' : ''}`}></div>;
+                  })}
+                  
+                  {days.map((d, idx) => d.toLocaleDateString('sv-SE') === todayStr ? <div key={`today-${idx}`} className="absolute top-0 bottom-0 border-l-2 border-red-300 z-0 pointer-events-none" style={{ left: idx * 32 + 15 }}></div> : null)}
+                  
+                  {/* ★ 通常の期間バー */}
+                  {(() => {
+                    const displayStart = (dragState && dragState.taskId === task.id) ? dragState.currentStartDate : task.startDate;
+                    const displayEnd = (dragState && dragState.taskId === task.id) ? dragState.currentDueDate : task.dueDate;
+                    if (!displayStart || !displayEnd) return null;
+                    
+                    const dStart = new Date(displayStart);
+                    const dEnd = new Date(displayEnd);
+                    const gridStart = days[0];
+                    const diffStart = Math.round((dStart - gridStart) / (1000 * 60 * 60 * 24));
+                    const diffEnd = Math.round((dEnd - gridStart) / (1000 * 60 * 60 * 24));
+                    
+                    const left = diffStart * 32;
+                    const width = (diffEnd - diffStart + 1) * 32;
+                    if (width <= 0) return null;
+                    
+                    return (
+                      <div 
+                        className={`absolute ${isCompact ? 'top-1' : 'top-3'} h-6 rounded shadow-[0_1px_2px_rgba(0,0,0,0.3)] flex items-center group/bar ${statusConfig?.barColor || 'bg-gray-400'} ${dragState?.taskId === task.id ? 'opacity-80 z-50 shadow-md transition-none' : 'transition-all duration-200'}`} 
+                        style={{ left: left, width: width, zIndex: 50 }}
+                      >
+                        <div 
+                          className="absolute inset-x-2 inset-y-0 cursor-grab active:cursor-grabbing hover:bg-white/20 transition-colors" 
+                          onPointerDown={(e) => handlePointerDown(e, task, 'move')} 
+                          onPointerMove={handlePointerMove} 
+                          onPointerUp={handlePointerUp}
+                        ></div>
+                        <div 
+                          className="absolute left-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-l flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity" 
+                          onPointerDown={(e) => handlePointerDown(e, task, 'start')} 
+                          onPointerMove={handlePointerMove} 
+                          onPointerUp={handlePointerUp}
+                        ></div>
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-r flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity" 
+                          onPointerDown={(e) => handlePointerDown(e, task, 'end')} 
+                          onPointerMove={handlePointerMove} 
+                          onPointerUp={handlePointerUp}
+                        ></div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ★ 実施日のマーク（バーよりも前面の z-[60] で描画） */}
+                  {(() => {
+                    if (!task.implementationDate) return null;
+                    const dImpl = new Date(task.implementationDate);
+                    const gridStart = days[0];
+                    const diffImpl = Math.round((dImpl - gridStart) / (1000 * 60 * 60 * 24));
+                    
+                    if (diffImpl < 0 || diffImpl >= days.length) return null;
+                    
+                    const left = diffImpl * 32; 
+                    const daysCount = task.implementationDays || 1;
+                    
+                    return (
+                      <div 
+                        className={`absolute ${isCompact ? 'top-1' : 'top-3'} z-[60] w-8 h-6 flex items-center justify-center pointer-events-none`}
+                        style={{ left: left }}
+                        title={`実施日: ${task.implementationDate} (${daysCount}日間)`}
+                      >
+                        <div className="relative flex items-start drop-shadow-[0_2px_2px_rgba(0,0,0,0.4)]">
+                          <span className="text-yellow-400 font-bold text-lg leading-none">★</span>
+                          {daysCount >= 2 && (
+                            <span className="absolute -top-1 -right-2 text-[9px] font-black text-yellow-700 bg-white border border-yellow-300 rounded-full px-1 shadow-sm leading-none">
+                              {daysCount}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            );
+          })}
+          <div className="h-20"></div>
+        </div>
+      </div>
+    </div>
+  );
+}

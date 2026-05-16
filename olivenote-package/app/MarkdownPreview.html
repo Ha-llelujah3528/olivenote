@@ -1,0 +1,46 @@
+function MarkdownPreview({ text, onCheckboxChange }) {
+  const containerRef = useRef(null);
+
+  const html = useMemo(() => {
+    if (!text) return { __html: '' };
+    
+    let processedHtml = "";
+    
+    if (typeof marked !== 'undefined') {
+      // ★ 修正箇所：breaks: true を追加！これで普通の改行が反映されます
+      marked.use({ gfm: true, breaks: true });
+      let rawHtml = marked.parse(text);
+      rawHtml = rawHtml.replace(/<input([^>]*?)disabled([^>]*?)>/gi, '<input$1$2 class="cursor-pointer">');
+      processedHtml = rawHtml;
+    } else {
+      processedHtml = text.replace(/\n/g, '<br />');
+    }
+
+    processedHtml = processedHtml.replace(/@([^\s<　]+)/g, '<span class="text-blue-700 font-bold bg-blue-100 px-1.5 py-0.5 rounded border border-blue-200 shadow-sm">@$1</span>');
+
+    return { __html: processedHtml };
+  }, [text]);
+
+  const handleClick = (e) => {
+    if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
+      if (!onCheckboxChange) return;
+      
+      const checkboxes = containerRef.current.querySelectorAll('input[type="checkbox"]');
+      const index = Array.from(checkboxes).indexOf(e.target);
+      
+      if (index !== -1) {
+        e.preventDefault(); 
+        onCheckboxChange(index, e.target.checked);
+      }
+    }
+  };
+
+  return (
+    <div 
+      ref={containerRef}
+      onClick={handleClick}
+      className="markdown-body text-sm text-gray-800 leading-relaxed" 
+      dangerouslySetInnerHTML={html} 
+    />
+  );
+}
