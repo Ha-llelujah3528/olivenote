@@ -1,7 +1,6 @@
 <?php
 ini_set('display_errors', 0);
 require_once __DIR__ . '/lib/bootstrap.php';
-
 // セッション開始（HTTPS環境前提でセキュアCookieを使用）
 session_set_cookie_params([
     'lifetime' => 0,
@@ -1596,9 +1595,10 @@ PROMPT;
         // ============================================================
         case 'chatWithOliveAI':
             try {
-                $mode        = $payload['mode'] ?? '';
-                $chatHistory = $payload['history'] ?? [];
-                $taskContext = $payload['taskContext'] ?? null;
+                $mode         = $payload['mode'] ?? '';
+                $chatHistory  = $payload['history'] ?? [];
+                $taskContext  = $payload['taskContext']  ?? null;
+                $tasksContext = $payload['tasksContext'] ?? null;
 
                 $systemInstruction = '';
                 $targetModel       = '';
@@ -1618,6 +1618,33 @@ PROMPT;
                         . $systemSpec;
                     $targetModel = 'gemini-2.5-flash';
                     $maxTokens   = 2048;
+
+                } elseif ($mode === 'concierge-tasks') {
+                    // 表示中の課題（フィルター適用後）に関する分析・質問応答
+                    $filtersSummary = isset($tasksContext['filtersSummary']) ? (string)$tasksContext['filtersSummary'] : '（フィルター指定なし）';
+                    $tasks          = is_array($tasksContext['tasks'] ?? null) ? $tasksContext['tasks'] : [];
+                    $totalCount     = count($tasks);
+
+                    // ペイロード爆発の予防: 300件で頭打ち
+                    $cappedTasks = $totalCount > 300 ? array_slice($tasks, 0, 300) : $tasks;
+                    $cappedNote  = $totalCount > 300 ? "（実際の表示件数 {$totalCount} 件のうち先頭 300 件を分析対象としています）\n" : '';
+
+                    $tasksJson = json_encode($cappedTasks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    if ($tasksJson === false) $tasksJson = '[]';
+
+                    $systemInstruction = "あなたはタスク管理ツール「Olive Note」の専属アナリストです。\n"
+                        . "ユーザーが現在画面上で見ている『フィルター適用済の課題リスト』を分析し、質問に答えてください。\n"
+                        . "回答は必要に応じてMarkdown（見出し・表・箇条書き）を使って読みやすく整形し、根拠となるタスクIDがあれば `TASK-XXXX` の形で引用してください。\n"
+                        . "リストに存在しないタスクや、与えられていない情報については推測せず『データに無いため不明』と明示してください。\n"
+                        . "件数の集計・期限超過の検出・担当者ごとの負荷比較・カテゴリ別の傾向など、定量的な質問にも具体的な数字で答えてください。\n\n"
+                        . "【現在のフィルター条件】\n"
+                        . $filtersSummary . "\n"
+                        . "【表示中の課題件数】" . $totalCount . " 件\n"
+                        . $cappedNote
+                        . "\n【課題データ (JSON)】\n"
+                        . $tasksJson;
+                    $targetModel = 'gemini-2.5-pro';
+                    $maxTokens   = 16384;
 
                 } elseif ($mode === 'advisor') {
                     $title  = $taskContext['title']       ?? '未設定';

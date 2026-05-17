@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/lib/bootstrap.php';
-
 // Google Identity Services (FedCM) を許可するため Permissions-Policy を明示
 header('Permissions-Policy: identity-credentials-get=(self "https://accounts.google.com")');
 
@@ -263,7 +262,7 @@ if (!$isLoggedIn) {
 
       // ---- AI ----
       gatherAiInformation:         (payload)                    => callApi('gatherAiInformation', payload),
-      chatWithOliveAI:             (mode, history, taskContext) => callApi('chatWithOliveAI', { mode, history, taskContext }),
+      chatWithOliveAI:             (mode, history, taskContext, tasksContext = null) => callApi('chatWithOliveAI', { mode, history, taskContext, tasksContext }),
       generateDocumentFromComment: (payload)                    => callApi('generateDocumentFromComment', payload),
       generateAndAppendReleaseNote:(payload)                    => callApi('generateAndAppendReleaseNote', payload),
     };

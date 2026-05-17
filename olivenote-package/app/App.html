@@ -55,12 +55,18 @@ const OS_TIPS = {
 };
 
 // ==========================================
-// ★ AIコンシェルジュ (使い方・仕様ガイド)
+// ★ AIコンシェルジュ (使い方ガイド + 表示中課題の分析)
 // ==========================================
-function OliveConcierge() {
+const CONCIERGE_GREETING = {
+  'concierge': 'こんにちは！Olive Note専属コンシェルジュです。\nツールの使い方や仕様について、何でも聞いてくださいね！',
+  'concierge-tasks': 'こんにちは！現在フィルターで表示中の課題について分析します。\n「期限超過は何件？」「担当者ごとの件数は？」「優先度が高い未着手を教えて」など、お気軽にどうぞ📊'
+};
+
+function OliveConcierge({ filteredTasks = [], members = [], categories = [], taskTypes = [], filters = {}, searchQuery = '' }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [mode, setMode] = useState('concierge');
   const [messages, setMessages] = useState([
-    { role: 'model', text: 'こんにちは！Olive Note専属コンシェルジュです。\nツールの使い方や仕様について、何でも聞いてくださいね！' }
+    { role: 'model', text: CONCIERGE_GREETING['concierge'] }
   ]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -73,20 +79,76 @@ function OliveConcierge() {
     }
   }, [messages, isOpen, isTyping]);
 
+  const switchMode = (newMode) => {
+    if (newMode === mode || isTyping) return;
+    setMode(newMode);
+    setMessages([{ role: 'model', text: CONCIERGE_GREETING[newMode] }]);
+  };
+
+  // フィルター条件を人間が読める要約に
+  const buildFiltersSummary = () => {
+    const parts = [];
+    if (searchQuery) parts.push(`検索キーワード: "${searchQuery}"`);
+    if (filters.assigneeEmail && filters.assigneeEmail.length > 0) {
+      const names = filters.assigneeEmail
+        .map(em => (members.find(m => m.email === em)?.name) || em)
+        .join(', ');
+      parts.push(`担当者: ${names}`);
+    }
+    if (filters.category) parts.push(`カテゴリ: ${filters.category}`);
+    if (filters.type) parts.push(`種別: ${filters.type}`);
+    if (filters.priority) parts.push(`優先度: ${filters.priority}`);
+    if (filters.statuses && filters.statuses.length > 0) parts.push(`ステータス: ${filters.statuses.join(', ')}`);
+    if (filters.dueDateFrom || filters.dueDateTo) {
+      parts.push(`期限: ${filters.dueDateFrom || '指定なし'} 〜 ${filters.dueDateTo || '指定なし'}`);
+    }
+    if (filters.hasImplementationDate) parts.push('実施日: あり');
+    return parts.length > 0 ? parts.join(' / ') : '（フィルター指定なし・全件表示）';
+  };
+
+  // タスクをAI送信用に最小限フィールドへ整形
+  const compactTasksForAi = () => {
+    return filteredTasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      type: t.type,
+      category: t.category,
+      priority: t.priority,
+      assigneeName: t.assigneeName || null,
+      assigneeEmail: t.assigneeEmail || null,
+      subAssignees: t.subAssignees || [],
+      dueDate: t.dueDate || null,
+      implementationDate: t.implementationDate || null,
+      progress: typeof t.progress === 'number' ? t.progress : null,
+      description: (t.description || '').slice(0, 300),
+      createdAt: t.createdAt || null,
+      updatedAt: t.updatedAt || null,
+    }));
+  };
+
   const handleSend = async () => {
     if (!inputText.trim() || isTyping) return;
 
     const newMsg = { role: 'user', text: inputText };
     const updatedHistory = [...messages, newMsg];
-    
+
     setMessages(updatedHistory);
     setInputText('');
     setIsTyping(true);
 
     try {
-      // ★ ここが修正ポイント：index.htmlで定義したapiオブジェクトを使用する
-      const res = await api.chatWithOliveAI('concierge', updatedHistory, null);
-      
+      let res;
+      if (mode === 'concierge-tasks') {
+        const tasksContext = {
+          filtersSummary: buildFiltersSummary(),
+          tasks: compactTasksForAi(),
+        };
+        res = await api.chatWithOliveAI('concierge-tasks', updatedHistory, null, tasksContext);
+      } else {
+        res = await api.chatWithOliveAI('concierge', updatedHistory, null);
+      }
+
       if (res.success) {
         setMessages(prev => [...prev, { role: 'model', text: res.reply }]);
       } else {
@@ -121,6 +183,39 @@ function OliveConcierge() {
             </div>
             <button onClick={() => setIsOpen(false)} className="text-gray-300 hover:text-white transition-colors">
               <X size={20} />
+            </button>
+          </div>
+
+          {/* モード切替トグル */}
+          <div className="bg-[#26323f] px-3 py-2 flex items-center gap-1 shrink-0 border-b border-black/20">
+            <button
+              onClick={() => switchMode('concierge')}
+              disabled={isTyping}
+              className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-colors disabled:opacity-50 ${
+                mode === 'concierge'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-gray-300 hover:bg-white/10'
+              }`}
+              title="使い方・仕様について（gemini-2.5-flash）"
+            >
+              💬 使い方
+            </button>
+            <button
+              onClick={() => switchMode('concierge-tasks')}
+              disabled={isTyping}
+              className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 ${
+                mode === 'concierge-tasks'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-gray-300 hover:bg-white/10'
+              }`}
+              title="表示中の課題について（gemini-2.5-pro）"
+            >
+              <span>📊 表示中の課題</span>
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                mode === 'concierge-tasks' ? 'bg-white/25 text-white' : 'bg-gray-600 text-gray-200'
+              }`}>
+                {filteredTasks.length}件
+              </span>
             </button>
           </div>
 
@@ -167,11 +262,13 @@ function OliveConcierge() {
           {/* 入力エリア */}
           <div className="p-3 bg-white border-t border-gray-100 shrink-0">
             <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400 transition-all">
-              <textarea 
+              <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="質問を入力... (Ctrl+Enterで送信)"
+                placeholder={mode === 'concierge-tasks'
+                  ? `表示中の${filteredTasks.length}件について質問... (Ctrl+Enterで送信)`
+                  : '使い方を質問... (Ctrl+Enterで送信)'}
                 className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 max-h-32 min-h-[40px] outline-none"
                 rows={1}
               />
@@ -1166,7 +1263,14 @@ function App() {
           showToast={showToast}
         />
       )}
-      <OliveConcierge />
+      <OliveConcierge
+        filteredTasks={filteredTasks}
+        members={members}
+        categories={categories}
+        taskTypes={taskTypes}
+        filters={filters}
+        searchQuery={searchQuery}
+      />
 
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-2 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-bold pointer-events-none ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>

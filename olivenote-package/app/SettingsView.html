@@ -184,9 +184,6 @@ function SettingsView({
                <button onClick={() => setActiveMenu('trash')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors flex items-center gap-1.5 md:mt-2 ${activeMenu === 'trash' ? 'bg-red-50 text-red-700 border border-red-100 shadow-sm' : 'text-red-600 hover:bg-red-50'}`}>
                  <Trash2 size={14}/> ゴミ箱
                </button>
-               <a href="app/admin/updater_ui.php" target="_blank" rel="noreferrer" className="shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors flex items-center gap-1.5 md:mt-2 text-gray-600 hover:bg-gray-50 hover:text-gray-800 border border-transparent">
-                 <RefreshCw size={14}/> システムアップデート
-               </a>
              </>
           )}
         </div>
