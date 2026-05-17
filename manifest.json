@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.1",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.1/olivenote-1.0.1.zip",
-  "sha256": "929eeb382134c5dde8fd11ea13121200aebb8eac5194f1c5513c39d4b493ea55",
-  "size_bytes": 2671931,
+  "latest": "1.0.2",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.2/olivenote-1.0.2.zip",
+  "sha256": "c563e9e3422d3062744fd9acc84be72035db211e53307b50d8db11fea565ce47",
+  "size_bytes": 2689100,
   "min_php_version": "8.0",
-  "changelog": "\n### 機能追加\n- **Olive コンシェルジュに「表示中の課題」分析モード追加**\n  - チャットウィンドウ上部のトグルで「💬 使い方」と「📊 表示中の課題」を切り替え可能\n  - 「表示中の課題」モードはフィルター適用後の課題リスト全体を `gemini-2.5-pro` で分析\n  - 件数集計・期限超過の検出・担当者ごとの負荷比較などの定量的な質問に対応\n  - 「使い方」モードは従来通り `gemini-2.5-flash`（速度優先）\n  - フィルター条件と現在の表示件数バッジを UI 上で可視化\n\n",
-  "published_at": "2026-05-17T23:47:10Z"
+  "changelog": "\n### バグ修正\n- **インストーラの「OAuthセットアップ手順書」「Drive準備手順書」リンクが404になっていた問題を修正**\n  - 配布ZIPに `docs/` フォルダが同梱されていなかったのが原因\n  - ビルドスクリプト (`scripts/build-release.sh` / `.ps1`) で `dist/docs/` を ZIP に同梱するように変更\n  - markdown ファイルを綺麗にレンダリングする `docs/view.php` ビューアを追加（marked.js 使用）\n  - インストーラのリンクを `view.php?doc=OAUTH_SETUP.md` 経由に変更\n- アップデート時 (`app/admin/updater_ui.php`) も最新版の `docs/` を反映するよう updater を拡張\n\n### 内部改善\n- `scripts/build-release.ps1` の CHANGELOG パス解決バグを修正（`$RootDir/CHANGELOG.md` を参照するように）\n\n",
+  "published_at": "2026-05-17T23:58:40Z"
 }
