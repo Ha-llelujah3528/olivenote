@@ -150,8 +150,8 @@ function render_step3(): void {
     ?>
     <h1>③ Google 連携設定</h1>
     <p>Google OAuth と Drive サービスアカウントの情報を登録します。<br>
-       <strong>初めての場合は</strong> <a href="../docs/OAUTH_SETUP.md" target="_blank">OAuthセットアップ手順書</a> と
-       <a href="../docs/DRIVE_SETUP.md" target="_blank">Drive準備手順書</a> を先にご確認ください。</p>
+       <strong>初めての場合は</strong> <a href="../docs/view.php?doc=OAUTH_SETUP.md" target="_blank">OAuthセットアップ手順書</a> と
+       <a href="../docs/view.php?doc=DRIVE_SETUP.md" target="_blank">Drive準備手順書</a> を先にご確認ください。</p>
 
     <form method="post">
         <input type="hidden" name="_token" value="<?= h($_SESSION['_token']) ?>">

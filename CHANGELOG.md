@@ -2,6 +2,19 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.2] - 2026-05-18
+
+### バグ修正
+- **インストーラの「OAuthセットアップ手順書」「Drive準備手順書」リンクが404になっていた問題を修正**
+  - 配布ZIPに `docs/` フォルダが同梱されていなかったのが原因
+  - ビルドスクリプト (`scripts/build-release.sh` / `.ps1`) で `dist/docs/` を ZIP に同梱するように変更
+  - markdown ファイルを綺麗にレンダリングする `docs/view.php` ビューアを追加（marked.js 使用）
+  - インストーラのリンクを `view.php?doc=OAUTH_SETUP.md` 経由に変更
+- アップデート時 (`app/admin/updater_ui.php`) も最新版の `docs/` を反映するよう updater を拡張
+
+### 内部改善
+- `scripts/build-release.ps1` の CHANGELOG パス解決バグを修正（`$RootDir/CHANGELOG.md` を参照するように）
+
 ## [1.0.1] - 2026-05-18
 
 ### 機能追加

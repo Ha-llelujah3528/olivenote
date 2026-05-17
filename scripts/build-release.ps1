@@ -62,6 +62,16 @@ foreach ($d in @('backups','cache','tmp')) {
 $cfgPath = Join-Path $Staging 'config\config.php'
 if (Test-Path $cfgPath) { Remove-Item -Force $cfgPath }
 
+# docs/ を同梱（インストーラのリンク先 ../docs/view.php が動くようにするため）
+$DocsSrc = Join-Path $RootDir 'docs'
+$DocsDst = Join-Path $Staging 'docs'
+if (Test-Path $DocsSrc) {
+    New-Item -ItemType Directory -Force -Path $DocsDst | Out-Null
+    robocopy $DocsSrc $DocsDst /E /XF '.DS_Store' 'Thumbs.db' | Out-Null
+} else {
+    Write-Host "⚠ docs/ ソースが見つかりません: $DocsSrc （ドキュメントなしでビルド継続）" -ForegroundColor Yellow
+}
+
 # ZIP化
 Push-Location (Join-Path $BuildDir 'staging')
 Compress-Archive -Path 'olivenote' -DestinationPath $ZipPath -Force
@@ -75,7 +85,7 @@ $Size = (Get-Item $ZipPath).Length
 "$Sha  $ZipName" | Set-Content -Path (Join-Path $BuildDir 'CHECKSUMS.txt')
 
 # CHANGELOG から該当バージョンを抜粋
-$Changelog = Join-Path $RootDir '..\CHANGELOG.md'
+$Changelog = Join-Path $RootDir 'CHANGELOG.md'
 $Notes = ''
 if (Test-Path $Changelog) {
     $lines = Get-Content $Changelog

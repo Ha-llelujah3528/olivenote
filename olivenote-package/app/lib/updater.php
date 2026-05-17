@@ -132,6 +132,16 @@ class OliveNoteUpdater {
             $this->copydir($newAppDir, $this->appDir);
             $log("🔄 app/ を新バージョンに置き換え");
 
+            // 7.5 docs/ も更新（パッケージに含まれていれば）
+            // インストーラのリンク先や、運用者が後から参照するため最新版を維持する
+            $newDocsDir = dirname($newAppDir) . '/docs';
+            if (is_dir($newDocsDir)) {
+                $docsDir = $this->root . '/docs';
+                $this->rmrf($docsDir);
+                $this->copydir($newDocsDir, $docsDir);
+                $log("📚 docs/ を更新");
+            }
+
             // 8. config.sample.php も更新（パッケージに含まれていれば）
             $newSample = dirname($newAppDir) . '/config/config.sample.php';
             if (is_file($newSample)) {

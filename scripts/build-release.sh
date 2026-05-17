@@ -52,6 +52,16 @@ rsync -av \
 # .gitkeep は維持（フォルダ自体は必要）
 find "$BUILD_DIR/staging/olivenote/data" -type d -exec touch {}/.gitkeep \;
 
+# docs/ を同梱（インストーラのリンク先 ../docs/view.php が動くようにするため）
+DOCS_SRC="$ROOT_DIR/docs"
+DOCS_DST="$BUILD_DIR/staging/olivenote/docs"
+if [[ -d "$DOCS_SRC" ]]; then
+    mkdir -p "$DOCS_DST"
+    rsync -av --exclude='.DS_Store' --exclude='Thumbs.db' "$DOCS_SRC/" "$DOCS_DST/"
+else
+    echo "⚠ docs/ ソースが見つかりません: $DOCS_SRC （ドキュメントなしでビルド継続）"
+fi
+
 # ZIPに固める
 cd "$BUILD_DIR/staging"
 if command -v zip >/dev/null 2>&1; then
