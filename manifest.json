@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.0",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.0/olivenote-1.0.0.zip",
-  "sha256": "5b6ced3901e0f4e7dad6d71dde04ac080601f830cf7b458153d4ad19f97db9eb",
-  "size_bytes": 2670157,
+  "latest": "1.0.1",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.1/olivenote-1.0.1.zip",
+  "sha256": "929eeb382134c5dde8fd11ea13121200aebb8eac5194f1c5513c39d4b493ea55",
+  "size_bytes": 2671931,
   "min_php_version": "8.0",
-  "changelog": "\n### 初回リリース\n- パッケージ化対応版\n- 既存のGAS版から PHP + MySQL 環境への移行が完了\n- ファイル構造を `app/` `config/` `data/` `installer/` に分離\n- インストーラ (`installer/install.php`) で対話的セットアップ\n- アップデーター（管理者画面のボタンから自動更新）\n- マイグレーション機構を導入し DB スキーマを自動適用\n- スマホレスポンシブ対応（全7ビュー）\n\n### 機能一覧\n- ボード / ガントチャート / カレンダー / ドキュメント / 設定 の5ビュー\n- Markdown でリッチな課題詳細\n- 親子課題（2階層）\n- 添付ファイル (Google Drive 連携)\n- AI コンシェルジュ / AI タスクアドバイザー (Vertex AI)\n- AI でドキュメント自動生成\n- 通知 / コメント / メンション\n- リリースノート自動生成（AI）\n",
-  "published_at": "2026-05-16T02:13:40Z"
+  "changelog": "\n### 機能追加\n- **Olive コンシェルジュに「表示中の課題」分析モード追加**\n  - チャットウィンドウ上部のトグルで「💬 使い方」と「📊 表示中の課題」を切り替え可能\n  - 「表示中の課題」モードはフィルター適用後の課題リスト全体を `gemini-2.5-pro` で分析\n  - 件数集計・期限超過の検出・担当者ごとの負荷比較などの定量的な質問に対応\n  - 「使い方」モードは従来通り `gemini-2.5-flash`（速度優先）\n  - フィルター条件と現在の表示件数バッジを UI 上で可視化\n\n",
+  "published_at": "2026-05-17T23:47:10Z"
 }
