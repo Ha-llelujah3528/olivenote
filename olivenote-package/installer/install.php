@@ -17,7 +17,11 @@ $rootDir   = dirname(__DIR__);
 $configDir = $rootDir . '/config';
 $configFile = $configDir . '/config.php';
 
-if (file_exists($configFile) && empty($_GET['force'])) {
+// セットアップ完了直後の ?step=done は config.php が既に存在する状態で訪れるため、
+// ここで「セットアップ済み」と判定して弾いてしまうと render_done() に到達できない。
+// done だけ通過させ、その他のステップは従来通り 409 で弾く。
+$incomingStep = $_GET['step'] ?? '';
+if (file_exists($configFile) && empty($_GET['force']) && $incomingStep !== 'done') {
     http_response_code(409);
     echo render_layout('セットアップ済み', '
         <h1>すでにセットアップ済みです</h1>
@@ -292,12 +296,29 @@ function render_done(): void {
         <p>Olive Note のインストールが正常に完了しました。下のボタンからアプリを開いてログインしてください。</p>
         <pre class="log">' . h(implode("\n", $log)) . '</pre>
         <div class="alert info">
-            <strong>🔒 セキュリティ：</strong> installer/ ディレクトリは installer.locked/ にリネームされました。再セットアップが必要な場合は手動で <code>config/config.php</code> を削除してから installer.locked → installer に戻してください。
+            <strong>🔒 セキュリティ：</strong> 再アクセス防止のため、このページを表示した時点で installer/ ディレクトリは installer.locked/ にリネームされます。再セットアップが必要な場合は手動で <code>config/config.php</code> を削除してから installer.locked → installer に戻してください。
         </div>
         <div class="actions">
             <a class="btn-primary" href="../">アプリを開く →</a>
         </div>
     ');
+
+    // HTML を出力し終えたあとに installer/ をリネームする。
+    // ここでリネームしておけば、ブラウザは既にレスポンスを受信済みなので、
+    // ユーザーがこのページから「アプリを開く」を踏んだ時点で installer は無効化されている。
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request(); // クライアントへのレスポンスを先に確定
+    } else {
+        // 通常の mod_php 等ではここまでで output が flush される
+        while (ob_get_level() > 0) { @ob_end_flush(); }
+        @flush();
+    }
+
+    $thisDir   = __DIR__;
+    $lockedDir = $thisDir . '.locked';
+    if (is_dir($thisDir) && !is_dir($lockedDir)) {
+        @rename($thisDir, $lockedDir);
+    }
 }
 
 // ============================================================
@@ -404,13 +425,11 @@ function handle_step5_finalize(): void {
         ->execute([$admin['email'], $admin['name'], $admin['avatar']]);
     $log[] = '✅ 初期管理者 ' . $admin['email'] . ' を登録';
 
-    // ---- 4. インストーラを自分自身ロック ----
-    $thisDir = __DIR__;
-    $lockedDir = $thisDir . '.locked';
-    if (is_dir($thisDir) && !is_dir($lockedDir)) {
-        @rename($thisDir, $lockedDir);
-        $log[] = '✅ installer/ を installer.locked/ にリネーム';
-    }
+    // ---- 4. インストーラのロックは done ページ表示後に遅延実行する ----
+    // この時点で installer/ をリネームしてしまうと、直後の redirect→step=done が
+    // 「installer/install.php」を解決できず 404 になる。
+    // → render_done() が HTML を出力し終わってから rename することで解決。
+    $log[] = 'ℹ️ installer/ ロックはこのページ表示後に実施します';
 
     $_SESSION['install']['log'] = $log;
 }

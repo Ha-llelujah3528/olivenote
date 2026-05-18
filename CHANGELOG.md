@@ -2,6 +2,17 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.5] - 2026-05-18
+
+### バグ修正（重要）
+- **インストーラ完了直後の `install.php?step=done` が 404 になる問題を修正**
+  - 原因①: `handle_step5_finalize()` が `installer/` → `installer.locked/` にリネームしてから redirect していたため、リダイレクト先 `installer/install.php?step=done` が存在せず 404
+  - 原因②: 仮にリネームしなかったとしても、`config/config.php` 存在チェックの「セットアップ済み」ガード（409）が `?step=done` を弾いて render_done に到達できなかった
+  - 修正:
+    1. installer のリネームを `handle_step5_finalize()` から外し、`render_done()` で HTML 出力後に `fastcgi_finish_request()` でレスポンスを確定してからリネームするように変更
+    2. 「セットアップ済み」ガードに `?step=done` の例外を追加して、セットアップ完了直後の表示を許可
+  - 影響範囲: v1.0.4 で migration まで完走できるようになった全環境（最終ステップが見えなかった）
+
 ## [1.0.4] - 2026-05-18
 
 ### バグ修正（重要）
