@@ -126,6 +126,8 @@ if (!$isLoggedIn) {
     let INJECTED_DATA = null;
   </script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
       /* Tailwind環境でMarkdownの見た目を綺麗にするための追加スタイル */
       .markdown-body h1 { font-size: 1.5em; font-weight: bold; border-bottom: 1px solid #eaecef; margin-top: 24px; padding-bottom: 8px; }
@@ -167,13 +169,14 @@ if (!$isLoggedIn) {
   <script type="text/babel" data-type="module">
     import React, { useState, useMemo, useEffect, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { 
+    import {
       Columns, CalendarDays, Plus, X, MessageSquare, AlignLeft, Calendar as CalendarIcon,
       Search, CheckSquare, Flame, ThumbsUp, Settings, ChevronUp, ChevronDown, Trash2, Edit,
       Eye, Link as LinkIcon, Filter, CornerDownRight, AlertTriangle, Paperclip, Download, Loader2,
       FileText, ExternalLink, FilePlus, SaveAll, Tag, Copy,
-      List, ListOrdered, Grid, Image, Bell, Star, Sparkles, Wand2, Save, MessageCircle, Send, Bot,
-      CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer
+      List, ListOrdered, Grid, Image as ImageIcon, Bell, Star, Sparkles, Wand2, Save, MessageCircle, Send, Bot,
+      CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
+      UploadCloud, Check, Edit3, Table
     } from 'lucide-react';
 
     const STATUSES = [
@@ -263,6 +266,7 @@ if (!$isLoggedIn) {
       // ---- AI ----
       gatherAiInformation:         (payload)                    => callApi('gatherAiInformation', payload),
       chatWithOliveAI:             (mode, history, taskContext, tasksContext = null) => callApi('chatWithOliveAI', { mode, history, taskContext, tasksContext }),
+      generateTasksFromContext:    (payload)                    => callApi('generateTasksFromContext', payload),
       generateDocumentFromComment: (payload)                    => callApi('generateDocumentFromComment', payload),
       generateAndAppendReleaseNote:(payload)                    => callApi('generateAndAppendReleaseNote', payload),
     };
@@ -276,6 +280,7 @@ if (!$isLoggedIn) {
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>
     <?php readfile(__DIR__ . '/TaskModal.html'); ?>
+    <?php readfile(__DIR__ . '/TaskAutoGenerateModal.html'); ?>
     <?php readfile(__DIR__ . '/GanttView.html'); ?>
     <?php readfile(__DIR__ . '/CalendarView.html'); ?>
     <?php readfile(__DIR__ . '/DocsView.html'); ?>

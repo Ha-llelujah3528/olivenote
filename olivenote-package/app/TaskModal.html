@@ -1171,7 +1171,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <button type="button" onClick={() => insertMarkdown('1. ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ListOrdered size={14}/> 番号付き</button>
                       <button type="button" onClick={() => insertMarkdown('- [ ] ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><CheckSquare size={14}/> チェック</button>
                       <button type="button" onClick={() => insertMarkdown('\n| タイトル1 | タイトル2 |\n|---|---|\n| 内容 | 内容 |\n')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><Grid size={14}/> 表</button>
-                      <button type="button" onClick={() => insertMarkdown('![コメント](', 'URL)')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><Image size={14}/> 画像リンク</button>
+                      <button type="button" onClick={() => insertMarkdown('![コメント](', 'URL)')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ImageIcon size={14}/> 画像リンク</button>
 
                       <button type="button" onClick={insertCurrentTemplate} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded text-xs flex items-center gap-1 ml-auto font-bold transition-colors">
                         <FilePlus size={14}/> テンプレート挿入

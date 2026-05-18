@@ -1698,6 +1698,282 @@ PROMPT;
             break;
 
         // ============================================================
+        // generateTasksFromContext — 複数の資料(画像/PDF/CSV/テキスト)から課題を一括生成
+        //   入力 payload:
+        //     sources:      [{kind: 'text'|'image'|'pdf'|'sheet', name: string,
+        //                     mimeType?: string, text?: string, dataBase64?: string}]
+        //     instructions: ユーザーからの追加指示 (任意)
+        //     context: { categories: [...], taskTypes: [...], members: [{email,name}],
+        //                existingTasks: [{id,title}], today: 'YYYY-MM-DD' }
+        // ============================================================
+        case 'generateTasksFromContext':
+            try {
+                $sources      = is_array($payload['sources'] ?? null) ? $payload['sources'] : [];
+                $instructions = trim((string)($payload['instructions'] ?? ''));
+                $ctx          = is_array($payload['context'] ?? null)  ? $payload['context']  : [];
+
+                $categories    = is_array($ctx['categories']    ?? null) ? $ctx['categories']    : [];
+                $taskTypes     = is_array($ctx['taskTypes']     ?? null) ? $ctx['taskTypes']     : [];
+                $members       = is_array($ctx['members']       ?? null) ? $ctx['members']       : [];
+                $existingTasks = is_array($ctx['existingTasks'] ?? null) ? $ctx['existingTasks'] : [];
+                $today         = (string)($ctx['today'] ?? date('Y-m-d'));
+
+                if (count($sources) === 0 && $instructions === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '生成元となる資料または指示が指定されていません。']]);
+                    break;
+                }
+
+                // 名前→categoryColorIndex などは無視。AI には名前リストだけ渡す
+                $categoryNames = array_values(array_map(fn($c) => is_array($c) ? ($c['name'] ?? '') : (string)$c, $categories));
+                $categoryNames = array_values(array_filter($categoryNames, fn($x) => $x !== ''));
+                $typeNames     = array_values(array_filter(array_map(fn($t) => (string)$t, $taskTypes), fn($x) => $x !== ''));
+
+                // メンバーは email/name のペアで提示。AI が name でマッチして email を返す
+                $memberList = [];
+                foreach ($members as $m) {
+                    if (!is_array($m)) continue;
+                    $email = (string)($m['email'] ?? '');
+                    $name  = (string)($m['name']  ?? '');
+                    if ($email === '') continue;
+                    $memberList[] = ['email' => $email, 'name' => $name];
+                }
+
+                // 既存タスクは「親候補」と「重複検出」両方に使う
+                // title + description(短縮) + category/type/dueDate を AI に提示
+                $existingForCtx = [];
+                foreach ($existingTasks as $t) {
+                    if (!is_array($t)) continue;
+                    $id    = (string)($t['id'] ?? '');
+                    $title = (string)($t['title'] ?? '');
+                    if ($id === '' || $title === '') continue;
+                    $existingForCtx[] = [
+                        'id'          => $id,
+                        'title'       => $title,
+                        'description' => mb_substr((string)($t['description'] ?? ''), 0, 200),
+                        'category'    => (string)($t['category'] ?? ''),
+                        'type'        => (string)($t['type'] ?? ''),
+                        'dueDate'     => (string)($t['dueDate'] ?? ''),
+                    ];
+                }
+                // 多すぎる場合は先頭 200 件まで（client 側で recency 順に絞られている前提）
+                if (count($existingForCtx) > 200) $existingForCtx = array_slice($existingForCtx, 0, 200);
+
+                // -----------------------------------------------------------
+                // システム指示
+                // -----------------------------------------------------------
+                $systemInstruction =
+                    "あなたはタスク管理ツール「Olive Note」の課題生成アシスタントです。\n" .
+                    "ユーザーから渡される複数の資料（テキスト・画像・PDF・表データ）を分析し、" .
+                    "Olive Note に登録できる『課題』を 1 件以上の JSON 配列として返してください。\n\n" .
+
+                    "【最重要：コンテキスト厳守ルール（ハルシネーション禁止）】\n" .
+                    "あなたが生成してよいのは、ユーザーから提供された下記いずれかに **直接根拠が記述されている内容のみ** です。\n" .
+                    "  (a) 添付資料（テキスト・画像・PDF・表データ）の本文\n" .
+                    "  (b) ユーザーからの追加指示\n" .
+                    "それ以外（あなたの一般知識・ベストプラクティス・業界常識・前提知識）からの **補完・推測・追加は一切禁止** です。具体的には:\n" .
+                    "- 資料に書かれていないタスクを「あった方が良い」と判断して生成しない（例: 資料に『見積もり作成』だけがあるとき、勝手に『見積もりレビュー』『顧客承認取得』を追加しない）\n" .
+                    "- description 本文に資料から派生しない一般論・コツ・注意事項を盛り込まない（例: 資料に『契約書を送付』とだけある場合、『電子署名の場合は…』のような知識ベースの補足を書かない）\n" .
+                    "- 担当者・期限・優先度・カテゴリ・種別は **資料中に明示的な根拠がある場合のみ** 設定する。読み取れない項目は null か空文字。『常識的に妥当』『プロジェクトの性質から推定して』のような推測は禁止\n" .
+                    "- 固有名詞・数値・日付・URL・人名は資料から **そのまま転記** する。表記揺れの正規化や省略形の展開を含めて改変しない\n" .
+                    "- 資料が極端に少ない／曖昧で課題化できない場合は、JSON 配列を空 `[]` で返してよい。無理に水増ししない\n" .
+                    "- 各タスクの sourceHint には、どの資料のどの記述から生成したかを必ず記入する。記入できない場合はそのタスクを生成してはいけない\n" .
+                    "ユーザーの追加指示で具体的な書式・粒度・担当者の固定が指示された場合は、それは『コンテキストの一部』として遵守してよい。\n\n" .
+
+                    "【出力フォーマット】\n" .
+                    "次のスキーマで JSON 配列のみを返す。前後の説明文・コードフェンス・markdown は禁止:\n" .
+                    "[\n" .
+                    "  {\n" .
+                    "    \"tempId\":         \"T1\",                 // 同じレスポンス内で一意な仮ID。親子参照に使う\n" .
+                    "    \"title\":          \"...\",                // 80文字以内、簡潔に\n" .
+                    "    \"description\":    \"<Markdown>\",          // ★必ず Markdown 形式で記述。仕様は下記『description のMarkdownガイド』参照\n" .
+                    "    \"priority\":       \"high\"|\"medium\"|\"low\",  // 既定: medium。必ずこの3つの英字IDから選ぶ（日本語ラベルは不可）\n" .
+                    "    \"type\":           \"...\",                // 種別一覧から選択。該当無しなら空文字\n" .
+                    "    \"category\":       \"...\",                // カテゴリ一覧から選択。該当無しなら空文字\n" .
+                    "    \"assigneeEmail\":  \"user@example.com\",   // メンバー一覧から該当者の email。判別不能なら空文字\n" .
+                    "    \"assigneeName\":   \"...\",                // assigneeEmail とセットで返す名前\n" .
+                    "    \"subAssigneeEmails\": [\"...\"],           // サブ担当者の email 配列。任意。無ければ []\n" .
+                    "    \"dueDate\":        \"YYYY-MM-DD\"|null,    // 期限。資料から読み取れない場合は null\n" .
+                    "    \"startDate\":      \"YYYY-MM-DD\"|null,    // 開始日。読み取れない場合 null\n" .
+                    "    \"parentTempId\":   \"T0\"|null,            // 親が同じレスポンス内にある場合に参照\n" .
+                    "    \"parentExistingId\": \"TASK-xxxx\"|null,    // 親が既存タスクの場合に参照\n" .
+                    "    \"duplicateOfTaskId\": \"TASK-xxxx\"|null,    // 既存タスクと同じ内容を表していると判断した場合、その TASK-ID を返す。確信が無ければ null\n" .
+                    "    \"duplicateReason\":   \"...\"|null,          // duplicateOfTaskId が non-null の時、判断根拠を 60字以内で\n" .
+                    "    \"sourceHint\":     \"...\"                 // この課題を導いた元資料の短いメモ。ユーザー確認用\n" .
+                    "  }\n" .
+                    "]\n" .
+                    "注: status はこの機能では新規作成扱い (\"todo\") に固定するため AI 側は出力しなくてよい。\n\n" .
+
+                    "【生成ルール】\n" .
+                    "- 資料から自然に分割できる単位で課題化する。冗長に細分化しすぎない\n" .
+                    "- 親子関係（プロジェクト > サブタスク 等）が読み取れる場合は parentTempId で表現\n" .
+                    "- 親候補に該当する既存タスクがあれば parentExistingId を設定\n" .
+                    "- カテゴリと種別は **必ず下記の一覧から選ぶ**。新規創出は禁止。該当無しは空文字\n" .
+                    "- 担当者はメンバーの name で資料中の表記とゆるくマッチし、メンバー一覧の email を返す\n" .
+                    "- 日付は資料中の表現（『来週金曜』『5/30 まで』『相対：3日後』など）を today を基準に解釈\n" .
+                    "- 推測できない値は null か空文字。捏造しない\n" .
+                    "- title は名詞句で短く\n" .
+                    "- 追加指示があればそれを最優先で反映\n\n" .
+
+                    "【description の Markdown ガイド】\n" .
+                    "description は **必ず Markdown 形式** で記述する。Olive Note のタスク詳細画面は marked.js でレンダリングされ、見出し・箇条書き・チェックリスト・表・コードブロックを綺麗に表示する。\n" .
+                    "推奨構成（資料の情報量に応じて取捨選択）:\n" .
+                    "  ### 概要\n" .
+                    "  この課題で達成したいこと・背景を 1〜3 行で。\n\n" .
+                    "  ### 進め方 / 手順\n" .
+                    "  - [ ] ステップ 1\n" .
+                    "  - [ ] ステップ 2\n\n" .
+                    "  ### 完了条件\n" .
+                    "  - 〇〇 ができている\n" .
+                    "  - △△ が確認されている\n\n" .
+                    "  ### 参考 / 注意点\n" .
+                    "  （資料から拾える補足。なければ省略）\n\n" .
+                    "ルール:\n" .
+                    "- 改行は実際の `\\n`（JSON 文字列内エスケープ）で入れる。1行ベタ書き禁止\n" .
+                    "- 見出しは `### ` 以下を推奨（タスク内の階層上 H1/H2 は使わない）\n" .
+                    "- 実行可能なアクションは `- [ ] ` でチェックリスト化\n" .
+                    "- 強調が必要なら `**太字**`、コード/コマンドは `` `バッククォート` `` で囲む\n" .
+                    "- 内容が薄いタスクは『### 概要』だけでも可。逆に過剰なテンプレ埋めは避ける\n" .
+                    "- 元資料の固有名詞・数値・期日は そのまま残す。捏造しない\n\n" .
+
+                    "【重複検出（重要）】\n" .
+                    "下記『既存タスク一覧』と意味的に同じ内容のタスクを生成した場合、必ず duplicateOfTaskId に該当する TASK-ID を入れ、duplicateReason に理由を簡潔に書くこと。判断基準:\n" .
+                    "- 件名がほぼ同じ、または言い換えのレベル\n" .
+                    "- description の主要な目的・成果物が一致\n" .
+                    "- 担当者・カテゴリ・期限が同一付近で対象が重なる\n" .
+                    "完全一致でなくても『これは既にある課題と同じ作業を指している可能性が高い』と判断したら必ず flag する。確信が無ければ null のまま。\n" .
+                    "ユーザーが後で判断するため、duplicate flag を付けても出力からは除外しない（必ず JSON 配列の要素として返す）。\n\n" .
+
+                    "【現在の日付】 {$today}\n" .
+                    "【カテゴリ一覧】 " . json_encode($categoryNames, JSON_UNESCAPED_UNICODE) . "\n" .
+                    "【種別一覧】 "   . json_encode($typeNames,     JSON_UNESCAPED_UNICODE) . "\n" .
+                    "【メンバー一覧】 " . json_encode($memberList,    JSON_UNESCAPED_UNICODE) . "\n" .
+                    "【既存タスク一覧（親候補 & 重複検出用、抜粋）】 " . json_encode($existingForCtx, JSON_UNESCAPED_UNICODE) . "\n";
+
+                if ($instructions !== '') {
+                    $systemInstruction .= "\n【ユーザーからの追加指示】\n" . $instructions . "\n";
+                }
+
+                // -----------------------------------------------------------
+                // user message を parts 配列に組み立て
+                // -----------------------------------------------------------
+                $parts = [];
+                $parts[] = ['text' => '以下の資料を元に課題 JSON を生成してください。'];
+
+                foreach ($sources as $src) {
+                    if (!is_array($src)) continue;
+                    $kind = (string)($src['kind'] ?? '');
+                    $name = (string)($src['name'] ?? '');
+
+                    if ($kind === 'text' || $kind === 'sheet') {
+                        $text = (string)($src['text'] ?? '');
+                        if ($text === '') continue;
+                        $label = $kind === 'sheet' ? "[表データ: {$name}]" : "[テキスト資料: {$name}]";
+                        // 1ソース 50000 文字超えはトリム（UTF-8 安全に切る）
+                        if (mb_strlen($text) > 50000) $text = mb_substr($text, 0, 50000) . "\n…(以下省略)";
+                        $parts[] = ['text' => $label . "\n" . $text];
+                    } elseif ($kind === 'image' || $kind === 'pdf') {
+                        $mime = (string)($src['mimeType'] ?? ($kind === 'pdf' ? 'application/pdf' : 'image/jpeg'));
+                        $b64  = (string)($src['dataBase64'] ?? '');
+                        if ($b64 === '') continue;
+                        $parts[] = ['text' => "[添付: {$name}]"];
+                        $parts[] = ['inline_data' => ['mime_type' => $mime, 'data' => $b64]];
+                    }
+                }
+
+                // -----------------------------------------------------------
+                // Vertex AI 呼び出し
+                // -----------------------------------------------------------
+                $apiPayload = [
+                    'system_instruction' => ['parts' => [['text' => $systemInstruction]]],
+                    'contents'           => [['role' => 'user', 'parts' => $parts]],
+                    'generationConfig'   => [
+                        // ハルシネーション抑制のため低温（資料からの忠実な抽出に振る）
+                        'temperature'      => 0.1,
+                        'topP'             => 0.8,
+                        'maxOutputTokens'  => 32768,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ];
+
+                $rawOutput = callVertexAi('gemini-2.5-pro', $apiPayload);
+
+                // JSON 抜き出し（マークダウンフェンスが混じる場合の保険）
+                $jsonText = trim($rawOutput);
+                if (preg_match('/```(?:json)?\s*(.+?)\s*```/s', $jsonText, $m)) $jsonText = $m[1];
+
+                $tasks = json_decode($jsonText, true);
+                if (!is_array($tasks)) {
+                    echo json_encode(['success' => true, 'data' => [
+                        'success' => false,
+                        'error'   => 'AI 応答を JSON としてパースできませんでした',
+                        'raw'     => mb_substr($rawOutput, 0, 2000)
+                    ]]);
+                    break;
+                }
+
+                // サニタイズ（最低限の型チェック）
+                $clean = [];
+                $allowedCategories = array_flip($categoryNames);
+                $allowedTypes      = array_flip($typeNames);
+                $allowedEmails     = array_flip(array_column($memberList, 'email'));
+                // 既存タスクの ID を flip して、duplicateOfTaskId / parentExistingId の検証に使う
+                // 同一 ID が混入した場合に集合が縮まないよう、array_unique で重複排除してから flip
+                $allowedExistingIds = array_flip(array_unique(array_column($existingForCtx, 'id')));
+                // 既存タスクの title を id 引きでサーバ側でも保険のハードルール重複チェックに使う
+                $existingTitleToId = [];
+                foreach ($existingForCtx as $et) {
+                    $tt = mb_strtolower(trim((string)$et['title']));
+                    if ($tt !== '' && !isset($existingTitleToId[$tt])) $existingTitleToId[$tt] = $et['id'];
+                }
+
+                foreach ($tasks as $i => $t) {
+                    if (!is_array($t)) continue;
+
+                    // AI が返した duplicate flag を検証（実在 ID のみ採用）
+                    $dupId = isset($t['duplicateOfTaskId']) && is_string($t['duplicateOfTaskId']) && isset($allowedExistingIds[$t['duplicateOfTaskId']])
+                        ? $t['duplicateOfTaskId']
+                        : null;
+
+                    // ハードルール: 件名が既存タスクと **完全に一致** する場合は強制的に重複 flag を立てる（AI が見落とした保険）。
+                    // ただし「対応」「確認」のような短い汎用件名は誤検知が多いため 4 文字以上の場合に限定する。
+                    if ($dupId === null) {
+                        $titleKey = mb_strtolower(trim((string)($t['title'] ?? '')));
+                        if (mb_strlen($titleKey) >= 4 && isset($existingTitleToId[$titleKey])) {
+                            $dupId = $existingTitleToId[$titleKey];
+                            $t['duplicateReason'] = '件名が既存タスクと完全一致';
+                        }
+                    }
+
+                    $clean[] = [
+                        'tempId'           => (string)($t['tempId'] ?? ('T' . ($i + 1))),
+                        'title'            => mb_substr((string)($t['title'] ?? ''), 0, 200),
+                        'description'      => (string)($t['description'] ?? ''),
+                        'priority'         => in_array(($t['priority'] ?? ''), ['high','medium','low'], true) ? $t['priority'] : 'medium',
+                        'type'             => isset($allowedTypes[$t['type'] ?? '']) ? $t['type'] : '',
+                        'category'         => isset($allowedCategories[$t['category'] ?? '']) ? $t['category'] : '',
+                        'assigneeEmail'    => isset($allowedEmails[$t['assigneeEmail'] ?? '']) ? $t['assigneeEmail'] : '',
+                        'assigneeName'     => (string)($t['assigneeName'] ?? ''),
+                        'subAssigneeEmails'=> is_array($t['subAssigneeEmails'] ?? null) ? array_values(array_filter($t['subAssigneeEmails'], fn($e) => isset($allowedEmails[$e]))) : [],
+                        'dueDate'          => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($t['dueDate'] ?? ''))   ? $t['dueDate']   : null,
+                        'startDate'        => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($t['startDate'] ?? '')) ? $t['startDate'] : null,
+                        'parentTempId'     => isset($t['parentTempId']) && $t['parentTempId'] !== null && $t['parentTempId'] !== '' ? (string)$t['parentTempId'] : null,
+                        'parentExistingId' => isset($t['parentExistingId']) && is_string($t['parentExistingId']) && isset($allowedExistingIds[$t['parentExistingId']]) ? $t['parentExistingId'] : null,
+                        'duplicateOfTaskId'=> $dupId,
+                        'duplicateReason'  => $dupId !== null ? mb_substr((string)($t['duplicateReason'] ?? ''), 0, 200) : null,
+                        'sourceHint'       => mb_substr((string)($t['sourceHint'] ?? ''), 0, 300),
+                    ];
+                }
+
+                echo json_encode(['success' => true, 'data' => [
+                    'success' => true,
+                    'tasks'   => $clean,
+                ]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => $e->getMessage()]]);
+            }
+            break;
+
+        // ============================================================
         // getSystemSpecForAI — AI仕様書本文をDBから取得（SettingsView表示用）
         // ============================================================
         case 'getSystemSpecForAI':
