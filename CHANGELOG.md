@@ -2,6 +2,14 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.3] - 2026-05-18
+
+### バグ修正（重要）
+- **インストーラ最終ステップで `TypeError: olivenote_db() must return PDO, null returned` が発生して完了できない問題を修正**
+  - 原因: `install.php` の `handle_step5_finalize()` という**関数の内側**で `bootstrap.php` を `require_once` していたため、bootstrap.php 内で作られる `$pdo` 変数が関数のローカルスコープに閉じ込められ、グローバル参照する `olivenote_db()` から見えなかった
+  - 修正: `bootstrap.php` で PDO 作成後に `$GLOBALS['pdo'] = $pdo;` を明示し、どのスコープから require されてもグローバル参照が必ず成立するようにした
+  - 影響範囲: 新規インストールの最終ステップを実行した全ユーザー。既にセットアップ完了している環境は無関係
+
 ## [1.0.2] - 2026-05-18
 
 ### バグ修正

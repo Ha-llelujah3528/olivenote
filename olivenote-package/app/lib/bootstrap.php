@@ -43,6 +43,10 @@ try {
         sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', DB_HOST, DB_NAME),
         DB_USER, DB_PASS, $options
     );
+    // bootstrap.php は関数スコープ内から require されることもある（installer の finalize 等）。
+    // その場合ローカル変数 $pdo になってしまい、olivenote_db() の global $pdo が null を返すため
+    // 明示的に $GLOBALS にも格納してスコープ非依存にする。
+    $GLOBALS['pdo'] = $pdo;
 } catch (PDOException $e) {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode([
