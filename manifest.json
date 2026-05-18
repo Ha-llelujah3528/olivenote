@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.4",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.4/olivenote-1.0.4.zip",
-  "sha256": "d79cd88737548c2853d8089c329df95b4ace2f0108414c306b9bddbceb50cc23",
-  "size_bytes": 2689667,
+  "latest": "1.0.5",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.5/olivenote-1.0.5.zip",
+  "sha256": "75a4cccc881f3157975399bade656c6fe40fd2547d92ac8002615fae328a3f3a",
+  "size_bytes": 2690288,
   "min_php_version": "8.0",
-  "changelog": "\n### バグ修正（重要）\n- **Migration 実行時に `001_init: There is no active transaction` エラーで止まる問題を修正**\n  - 原因: MySQL は `CREATE TABLE` 等の DDL を実行すると **暗黙コミット** を行うため、`beginTransaction()` で開いたトランザクションが DDL 一発目で消える。その状態で `commit()` を呼ぶと \"There is no active transaction\" になる\n  - 修正: `commit()` を `inTransaction()` ガードで保護し、暗黙コミット済の場合は明示 commit をスキップ。`schema_migrations` への記録は DDL 後に行うように順序入れ替え\n  - 影響範囲: 新規インストール時の最終ステップ（v1.0.3 で `olivenote_db()` の問題を直したことで初めて表面化）\n\n",
-  "published_at": "2026-05-18T01:26:59Z"
+  "changelog": "\n### バグ修正（重要）\n- **インストーラ完了直後の `install.php?step=done` が 404 になる問題を修正**\n  - 原因①: `handle_step5_finalize()` が `installer/` → `installer.locked/` にリネームしてから redirect していたため、リダイレクト先 `installer/install.php?step=done` が存在せず 404\n  - 原因②: 仮にリネームしなかったとしても、`config/config.php` 存在チェックの「セットアップ済み」ガード（409）が `?step=done` を弾いて render_done に到達できなかった\n  - 修正:\n    1. installer のリネームを `handle_step5_finalize()` から外し、`render_done()` で HTML 出力後に `fastcgi_finish_request()` でレスポンスを確定してからリネームするように変更\n    2. 「セットアップ済み」ガードに `?step=done` の例外を追加して、セットアップ完了直後の表示を許可\n  - 影響範囲: v1.0.4 で migration まで完走できるようになった全環境（最終ステップが見えなかった）\n\n",
+  "published_at": "2026-05-18T01:40:08Z"
 }
