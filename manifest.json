@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.3",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.3/olivenote-1.0.3.zip",
-  "sha256": "f258360d81e11284df6b1158638c6fd6c6644fb5a22a9559115988ac750fa1da",
-  "size_bytes": 2689290,
+  "latest": "1.0.4",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.4/olivenote-1.0.4.zip",
+  "sha256": "d79cd88737548c2853d8089c329df95b4ace2f0108414c306b9bddbceb50cc23",
+  "size_bytes": 2689667,
   "min_php_version": "8.0",
-  "changelog": "\n### バグ修正（重要）\n- **インストーラ最終ステップで `TypeError: olivenote_db() must return PDO, null returned` が発生して完了できない問題を修正**\n  - 原因: `install.php` の `handle_step5_finalize()` という**関数の内側**で `bootstrap.php` を `require_once` していたため、bootstrap.php 内で作られる `$pdo` 変数が関数のローカルスコープに閉じ込められ、グローバル参照する `olivenote_db()` から見えなかった\n  - 修正: `bootstrap.php` で PDO 作成後に `$GLOBALS['pdo'] = $pdo;` を明示し、どのスコープから require されてもグローバル参照が必ず成立するようにした\n  - 影響範囲: 新規インストールの最終ステップを実行した全ユーザー。既にセットアップ完了している環境は無関係\n\n",
-  "published_at": "2026-05-18T01:12:00Z"
+  "changelog": "\n### バグ修正（重要）\n- **Migration 実行時に `001_init: There is no active transaction` エラーで止まる問題を修正**\n  - 原因: MySQL は `CREATE TABLE` 等の DDL を実行すると **暗黙コミット** を行うため、`beginTransaction()` で開いたトランザクションが DDL 一発目で消える。その状態で `commit()` を呼ぶと \"There is no active transaction\" になる\n  - 修正: `commit()` を `inTransaction()` ガードで保護し、暗黙コミット済の場合は明示 commit をスキップ。`schema_migrations` への記録は DDL 後に行うように順序入れ替え\n  - 影響範囲: 新規インストール時の最終ステップ（v1.0.3 で `olivenote_db()` の問題を直したことで初めて表面化）\n\n",
+  "published_at": "2026-05-18T01:26:59Z"
 }
