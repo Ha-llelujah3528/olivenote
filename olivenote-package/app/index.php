@@ -1,5 +1,20 @@
 <?php
 require_once __DIR__ . '/lib/bootstrap.php';
+// アプリのバージョン情報
+//   - dist (パッケージ版): bootstrap.php が OLIVENOTE_VERSION 定数を VERSION ファイルから定義済
+//   - stg/prd (生サーバー版): 同階層の VERSION ファイルを直接読む
+//   - どちらも該当しなければ 'dev'
+$appVersion = 'dev';
+if (defined('OLIVENOTE_VERSION') && OLIVENOTE_VERSION) {
+    $appVersion = OLIVENOTE_VERSION;
+} elseif (is_file(__DIR__ . '/VERSION')) {
+    $vRaw = @file_get_contents(__DIR__ . '/VERSION');
+    if ($vRaw !== false) {
+        $vTrim = trim($vRaw);
+        if ($vTrim !== '') $appVersion = $vTrim;
+    }
+}
+
 // Google Identity Services (FedCM) を許可するため Permissions-Policy を明示
 header('Permissions-Policy: identity-credentials-get=(self "https://accounts.google.com")');
 
@@ -122,8 +137,9 @@ if (!$isLoggedIn) {
   
   <script>
     // GAS版との互換性のため残す（使用しない）
-    // GAS版との互換性のため残す（使用しない）
     let INJECTED_DATA = null;
+    // フッタのバージョン表示用。dist/stg どちらでも index.php 冒頭で算出される。
+    window.APP_VERSION = <?= json_encode($appVersion, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
   </script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->

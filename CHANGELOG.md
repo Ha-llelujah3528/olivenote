@@ -2,6 +2,19 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.7] - 2026-05-18
+
+### 機能追加 / UX 改善
+- **画面右下のバージョン表記を動的化**
+  - 以前は固定文言「Olive Note v2」だったが、現在インストール済みのバージョンを `Olive Note vX.Y.Z` 形式で表示
+  - 管理者ログイン時は manifest を自動チェックし、新版がある場合に隣に **橙色の「↻ vX.Y.Z 利用可能」ピル** を表示。クリックでシステムアップデート画面が新しいタブで開く
+- **バッジ位置を左下に変更** — Olive コンシェルジュ（右下）やトースト通知（右下）と視覚的に被らないように
+- **設定画面に「⚙️ システムアップデート」リンクを追加**（管理者のみ）— `app/admin/updater_ui.php` を新しいタブで開く
+
+### 内部改善
+- `index.php` 冒頭でアプリバージョンを算出 (dist は bootstrap.php の `OLIVENOTE_VERSION` 定数、STG は同階層の `VERSION` ファイル、それ以外は `'dev'`) し `window.APP_VERSION` として JS に露出
+- sync スクリプトの EXCLUDE に `VERSION` を登録 (STG 固有のため dist にコピーしない)
+
 ## [1.0.6] - 2026-05-18
 
 ### 機能追加

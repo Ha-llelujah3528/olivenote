@@ -184,6 +184,18 @@ function SettingsView({
                <button onClick={() => setActiveMenu('trash')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors flex items-center gap-1.5 md:mt-2 ${activeMenu === 'trash' ? 'bg-red-50 text-red-700 border border-red-100 shadow-sm' : 'text-red-600 hover:bg-red-50'}`}>
                  <Trash2 size={14}/> ゴミ箱
                </button>
+               {/* システムアップデート画面 (admin/updater_ui.php) への外部リンク。
+                   生サーバー版 (stg/prd) では admin/ が無いので 404 になるが、リンク自体は無害なので表示する。
+                   パッケージ版（顧客サーバー）でのみクリックすると更新画面が新規タブで開く。 */}
+               <a
+                 href="app/admin/updater_ui.php"
+                 target="_blank"
+                 rel="noopener noreferrer"
+                 className="shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors flex items-center gap-1.5 md:mt-2 text-amber-700 hover:bg-amber-50"
+                 title="システムアップデートを行う画面を新しいタブで開きます (管理者のみ)"
+               >
+                 <RefreshCw size={14}/> システムアップデート
+               </a>
              </>
           )}
         </div>

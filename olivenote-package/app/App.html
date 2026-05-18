@@ -336,6 +336,11 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isFilterExpanded, setIsFilterExpanded] = useState(true);
   const [isAutoGenOpen, setIsAutoGenOpen] = useState(false);  // AI課題自動生成モーダル
+
+  // バージョン表示 + 管理者向けアップデート通知
+  // window.APP_VERSION は index.php で埋め込み済 (dist は bootstrap.php / stg は VERSION ファイル経由)
+  const appVersion = (typeof window !== 'undefined' && window.APP_VERSION) ? window.APP_VERSION : 'dev';
+  const [updateInfo, setUpdateInfo] = useState(null); // {current, latest, updateAvailable} | null
   
   const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
   const [isAssigneeMenuOpen, setIsAssigneeMenuOpen] = useState(false);
@@ -410,8 +415,21 @@ function App() {
       setEditingTask(targetTask);
       setIsModalOpen(true);
     }
-    setIsNotifOpen(false); 
+    setIsNotifOpen(false);
   };
+
+  // 管理者向け: パッケージ版 (dist) のアップデート可否をチェック
+  //   - エンドポイント: app/admin/updater_api.php?action=check (パッケージ版のみ存在)
+  //   - STG/PRD 生サーバー版では 404 になるので silently 無視 → updateInfo は null のまま
+  useEffect(() => {
+    if (!currentUser?.isAdmin) return;
+    let cancelled = false;
+    fetch('app/admin/updater_api.php?action=check', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (!cancelled && j?.success && j.data) setUpdateInfo(j.data); })
+      .catch(() => { /* 生サーバー版や rate limit は無視 */ });
+    return () => { cancelled = true; };
+  }, [currentUser?.isAdmin]);
 
   useEffect(() => {
     api.getInitialData().then(data => {
@@ -908,8 +926,23 @@ function App() {
 
   return (
     <div className="h-screen bg-[#f0f2f5] flex flex-col font-sans text-gray-800 relative">
-      <div className="fixed bottom-2 right-2 md:bottom-4 md:right-4 z-50 bg-blue-600/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md pointer-events-none backdrop-blur-sm">
-        Olive Note v2
+      {/* バージョン情報。Oliveコンシェルジュ（右下）/トースト（右下）と被らないよう左下に固定 */}
+      <div className="fixed bottom-2 left-2 md:bottom-4 md:left-4 z-50 flex items-center gap-1.5">
+        <div className="bg-blue-600/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
+          Olive Note v{appVersion}
+        </div>
+        {updateInfo?.updateAvailable && (
+          <a
+            href="app/admin/updater_ui.php"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="bg-amber-500/95 hover:bg-amber-600 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm inline-flex items-center gap-1 transition-colors"
+            title={`v${updateInfo.latest} へのアップデートが利用可能。クリックで更新画面を開きます`}
+          >
+            <RefreshCw size={11} />
+            v{updateInfo.latest} 利用可能
+          </a>
+        )}
       </div>
 
       <header className="bg-[#1e2a35] text-white px-3 md:px-6 py-2.5 md:py-3 flex flex-col md:flex-row items-center justify-between shadow-md relative z-40 shrink-0 gap-2 md:gap-0">
