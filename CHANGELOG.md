@@ -2,6 +2,14 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.4] - 2026-05-18
+
+### バグ修正（重要）
+- **Migration 実行時に `001_init: There is no active transaction` エラーで止まる問題を修正**
+  - 原因: MySQL は `CREATE TABLE` 等の DDL を実行すると **暗黙コミット** を行うため、`beginTransaction()` で開いたトランザクションが DDL 一発目で消える。その状態で `commit()` を呼ぶと "There is no active transaction" になる
+  - 修正: `commit()` を `inTransaction()` ガードで保護し、暗黙コミット済の場合は明示 commit をスキップ。`schema_migrations` への記録は DDL 後に行うように順序入れ替え
+  - 影響範囲: 新規インストール時の最終ステップ（v1.0.3 で `olivenote_db()` の問題を直したことで初めて表面化）
+
 ## [1.0.3] - 2026-05-18
 
 ### バグ修正（重要）

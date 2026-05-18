@@ -78,17 +78,27 @@ function olivenote_run_pending_migrations(?PDO $pdo = null, ?string $migrationsD
 
         $statements = olivenote_split_sql_statements($sql);
 
+        // MySQL は DDL (CREATE TABLE 等) を実行すると暗黙コミットを行うため、
+        // beginTransaction() で開いたトランザクションが途中で消える場合がある。
+        // ここでは「DML 主体の migration なら従来通り transaction で守りつつ、DDL で
+        // 暗黙コミットされた場合は inTransaction() ガードで commit/rollBack を安全に
+        // スキップする」方針を取る。MySQL の DDL はそもそも rollback できないので、
+        // この挙動が現実的に最も無難。
         $pdo->beginTransaction();
         try {
             foreach ($statements as $stmt) {
                 $pdo->exec($stmt);
             }
+            // 暗黙コミット済なら inTransaction() は false。明示 commit はスキップ。
+            if ($pdo->inTransaction()) {
+                $pdo->commit();
+            }
+            // schema_migrations への記録は、ここまでの DDL/DML が成功した後に行う。
+            // 暗黙コミット後の自動コミット状態 or 通常コミット後どちらでも安全に永続化される。
             $pdo->prepare("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
                 ->execute([$version, $name]);
-            $pdo->commit();
             $result['applied'][] = $base;
         } catch (Throwable $e) {
-            // DDL は自動コミットされるため rollBack は意味薄いが念のため
             if ($pdo->inTransaction()) $pdo->rollBack();
             $result['errors'][] = "$base: " . $e->getMessage();
             // 1つ失敗したら以降は止める
