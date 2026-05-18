@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.2",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.2/olivenote-1.0.2.zip",
-  "sha256": "c563e9e3422d3062744fd9acc84be72035db211e53307b50d8db11fea565ce47",
-  "size_bytes": 2689100,
+  "latest": "1.0.3",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.3/olivenote-1.0.3.zip",
+  "sha256": "f258360d81e11284df6b1158638c6fd6c6644fb5a22a9559115988ac750fa1da",
+  "size_bytes": 2689290,
   "min_php_version": "8.0",
-  "changelog": "\n### バグ修正\n- **インストーラの「OAuthセットアップ手順書」「Drive準備手順書」リンクが404になっていた問題を修正**\n  - 配布ZIPに `docs/` フォルダが同梱されていなかったのが原因\n  - ビルドスクリプト (`scripts/build-release.sh` / `.ps1`) で `dist/docs/` を ZIP に同梱するように変更\n  - markdown ファイルを綺麗にレンダリングする `docs/view.php` ビューアを追加（marked.js 使用）\n  - インストーラのリンクを `view.php?doc=OAUTH_SETUP.md` 経由に変更\n- アップデート時 (`app/admin/updater_ui.php`) も最新版の `docs/` を反映するよう updater を拡張\n\n### 内部改善\n- `scripts/build-release.ps1` の CHANGELOG パス解決バグを修正（`$RootDir/CHANGELOG.md` を参照するように）\n\n",
-  "published_at": "2026-05-17T23:58:40Z"
+  "changelog": "\n### バグ修正（重要）\n- **インストーラ最終ステップで `TypeError: olivenote_db() must return PDO, null returned` が発生して完了できない問題を修正**\n  - 原因: `install.php` の `handle_step5_finalize()` という**関数の内側**で `bootstrap.php` を `require_once` していたため、bootstrap.php 内で作られる `$pdo` 変数が関数のローカルスコープに閉じ込められ、グローバル参照する `olivenote_db()` から見えなかった\n  - 修正: `bootstrap.php` で PDO 作成後に `$GLOBALS['pdo'] = $pdo;` を明示し、どのスコープから require されてもグローバル参照が必ず成立するようにした\n  - 影響範囲: 新規インストールの最終ステップを実行した全ユーザー。既にセットアップ完了している環境は無関係\n\n",
+  "published_at": "2026-05-18T01:12:00Z"
 }
