@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.7",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.7/olivenote-1.0.7.zip",
-  "sha256": "f0066c94ea886d9b108328b9446f1ecf4ac2befc254c39886d6a2e0e51ba78c7",
-  "size_bytes": 2706017,
+  "latest": "1.0.8",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.8/olivenote-1.0.8.zip",
+  "sha256": "766806358a98d4b03ecf3b485374e18ed47e4b23930508391d9f1dee1a19abbd",
+  "size_bytes": 2723967,
   "min_php_version": "8.0",
-  "changelog": "\n### 機能追加 / UX 改善\n- **画面右下のバージョン表記を動的化**\n  - 以前は固定文言「Olive Note v2」だったが、現在インストール済みのバージョンを `Olive Note vX.Y.Z` 形式で表示\n  - 管理者ログイン時は manifest を自動チェックし、新版がある場合に隣に **橙色の「↻ vX.Y.Z 利用可能」ピル** を表示。クリックでシステムアップデート画面が新しいタブで開く\n- **バッジ位置を左下に変更** — Olive コンシェルジュ（右下）やトースト通知（右下）と視覚的に被らないように\n- **設定画面に「⚙️ システムアップデート」リンクを追加**（管理者のみ）— `app/admin/updater_ui.php` を新しいタブで開く\n\n### 内部改善\n- `index.php` 冒頭でアプリバージョンを算出 (dist は bootstrap.php の `OLIVENOTE_VERSION` 定数、STG は同階層の `VERSION` ファイル、それ以外は `'dev'`) し `window.APP_VERSION` として JS に露出\n- sync スクリプトの EXCLUDE に `VERSION` を登録 (STG 固有のため dist にコピーしない)\n\n",
-  "published_at": "2026-05-18T04:10:23Z"
+  "changelog": "\n### バグ修正 / UX 改善\n- **インストーラ Step3 の認証エラーをブラウザ画面に表示するよう修正** — JS 無効時や JS バリデーション回避時に「なぜか前画面に戻された」状態になっていた問題を解消。サーバー側のバリデーションエラーが赤いアラートで画面上に表示されるようになった\n- **インストーラ Step3 のエラー時に入力値が保持されるよう修正** — Google にチェックして Client ID を入力した後 Secret を空欄で送信すると、エラーで戻ったときにチェックが外れて入力値も消えていた問題を解消。バリデーション前にセッションへ退避するよう処理順を変更\n- **インストーラ Step3 に Supabase Auth Providers の説明注記を追加** — Google / Microsoft の Client ID・Secret は「Supabase の Auth Providers 設定に入れる値と同一」であることを fieldset 冒頭の注記と各 hint で明示\n- **インストーラ Step3 の Client ID/Secret 欄に `required` 属性をトグル** — チェックボックス連動で `disabled` 切替と同時に `required` も同期。ブラウザネイティブのフォーム検証が機能するように\n- **インストーラ Step3 の文言を修正** — 「以下の3つを設定します」を「以下の項目を設定します」に変更し、④ Vertex AI（任意）を追記\n\n### 内部改善\n- **インストーラ `handle_step2_db()` の dead code を削除** — `compact()` に同一キーの配列を `+` で結合していた冗長なコードをシンプル化\n- **アップデータ画面のバージョン表示 XSS を修正** — `updater_ui.php` でマニフェスト由来の `latest` / `current` / `published_at` を `innerHTML` に未エスケープで挿入していた箇所に `escapeHtml()` を適用\n\n",
+  "published_at": "2026-05-21T07:33:15Z"
 }
