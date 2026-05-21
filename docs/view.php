@@ -11,6 +11,7 @@ $doc = isset($_GET['doc']) ? (string)$_GET['doc'] : '';
 
 // 公開してよいドキュメント一覧（ファイル名のみ。サブディレクトリ不可）
 $allowed = [
+    'SUPABASE_SETUP.md',
     'OAUTH_SETUP.md',
     'DRIVE_SETUP.md',
     'VERTEX_SETUP.md',

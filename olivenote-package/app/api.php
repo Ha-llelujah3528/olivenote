@@ -20,13 +20,55 @@ $payload = $input['payload'] ?? [];
 // =====================================================
 // 認証ガード: ログイン不要のアクション以外はセッション必須
 // =====================================================
-$publicActions = ['verifyGoogleAuth', 'logout'];
+$publicActions = ['verifySupabaseAuth', 'logout'];
 if (!in_array($action, $publicActions, true)) {
     if (empty($_SESSION['user_email'])) {
         http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'Authentication required', 'authRequired' => true]);
         exit;
     }
+}
+
+// ================================================================
+// Supabase JWT 検証ヘルパー
+//
+// Supabase の access_token は HS256 (HMAC-SHA256) で署名されている。
+// シークレットは Supabase プロジェクト設定 (Settings > API > JWT Secret)
+// から取得して config.php の SUPABASE_JWT_SECRET に格納する。
+//
+// 戻り値: 検証成功時は payload (配列)、失敗時は null
+// ================================================================
+function base64url_decode_safe(string $s): ?string {
+    $remainder = strlen($s) % 4;
+    if ($remainder) $s .= str_repeat('=', 4 - $remainder);
+    $decoded = base64_decode(strtr($s, '-_', '+/'), true);
+    return $decoded === false ? null : $decoded;
+}
+
+function verifySupabaseJwt(string $jwt, string $secret): ?array {
+    $parts = explode('.', $jwt);
+    if (count($parts) !== 3) return null;
+    [$h64, $p64, $s64] = $parts;
+
+    $headerRaw = base64url_decode_safe($h64);
+    if ($headerRaw === null) return null;
+    $header = json_decode($headerRaw, true);
+    if (!is_array($header) || ($header['alg'] ?? '') !== 'HS256') return null;
+
+    $expected = hash_hmac('sha256', $h64 . '.' . $p64, $secret, true);
+    $actual   = base64url_decode_safe($s64);
+    if ($actual === null || !hash_equals($expected, $actual)) return null;
+
+    $payloadRaw = base64url_decode_safe($p64);
+    if ($payloadRaw === null) return null;
+    $jwtPayload = json_decode($payloadRaw, true);
+    if (!is_array($jwtPayload)) return null;
+
+    $now = time();
+    if (isset($jwtPayload['exp']) && (int)$jwtPayload['exp'] < $now) return null;
+    if (isset($jwtPayload['nbf']) && (int)$jwtPayload['nbf'] > $now) return null;
+
+    return $jwtPayload;
 }
 
 // ================================================================
@@ -117,6 +159,47 @@ function uploadFileToDrive(string $name, string $mimeType, string $binary, strin
     return $json;
 }
 
+// Markdown テキストを Drive にインポートし Google Docs 形式に自動変換する。
+// Drive API は target mimeType=application/vnd.google-apps.document を指定して
+// text/markdown をアップロードすると、見出し・太字・箇条書き・表をネイティブに変換する。
+function uploadMarkdownAsGoogleDoc(string $name, string $markdown, string $folderId, string $token): array {
+    $meta = json_encode([
+        'name'     => $name,
+        'mimeType' => 'application/vnd.google-apps.document',
+        'parents'  => [$folderId],
+    ], JSON_UNESCAPED_UNICODE);
+    $boundary = 'olivenote_' . bin2hex(random_bytes(8));
+    $body = "--{$boundary}\r\n"
+          . "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+          . $meta . "\r\n"
+          . "--{$boundary}\r\n"
+          . "Content-Type: text/markdown; charset=UTF-8\r\n\r\n"
+          . $markdown . "\r\n"
+          . "--{$boundary}--";
+
+    $ch = curl_init('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 120,
+        CURLOPT_HTTPHEADER     => [
+            "Authorization: Bearer {$token}",
+            "Content-Type: multipart/related; boundary={$boundary}",
+            'Content-Length: ' . strlen($body),
+            'Expect:',
+        ],
+    ]);
+    $res  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $json = json_decode($res, true);
+    if ($code !== 200 || empty($json['id'])) {
+        throw new Exception('Drive API エラー (Markdown→Doc 変換): ' . $res);
+    }
+    return $json;
+}
+
 function createGoogleDoc(string $title, string $folderId, string $token): array {
     $body = json_encode([
         'name'     => $title,
@@ -168,6 +251,51 @@ function createDriveFolder(string $title, string $parentId, string $token): arra
         throw new Exception('Drive APIエラー (createFolder): ' . $res);
     }
     return $json;
+}
+
+// "AI生成" サブフォルダ (DOC_FOLDER_ID 直下) の Drive フォルダ ID を返す。
+// 無ければ作成し、settings.aiGeneratedDocsFolderId にキャッシュする。
+function ensureAiGeneratedDocsFolder(PDO $pdo, string $token): string {
+    $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'aiGeneratedDocsFolderId'");
+    $stmt->execute();
+    $cached = $stmt->fetchColumn();
+    if ($cached) {
+        return (string)$cached;
+    }
+
+    $q = "name = 'AI生成' and '" . DOC_FOLDER_ID . "' in parents"
+       . " and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+    $url = 'https://www.googleapis.com/drive/v3/files?' . http_build_query([
+        'q'                         => $q,
+        'fields'                    => 'files(id,name)',
+        'supportsAllDrives'         => 'true',
+        'includeItemsFromAllDrives' => 'true',
+    ]);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$token}"],
+    ]);
+    $res  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    $folderId = '';
+    if ($code === 200) {
+        $json = json_decode($res, true);
+        if (!empty($json['files'][0]['id'])) {
+            $folderId = (string)$json['files'][0]['id'];
+        }
+    }
+    if ($folderId === '') {
+        $created  = createDriveFolder('AI生成', DOC_FOLDER_ID, $token);
+        $folderId = (string)$created['id'];
+    }
+
+    $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('aiGeneratedDocsFolderId', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)")
+        ->execute([$folderId]);
+
+    return $folderId;
 }
 
 // あるフォルダ配下の生存している子孫IDを再帰的に列挙する（ソフトデリート時のカスケード用）
@@ -285,6 +413,42 @@ function callVertexAi(string $modelId, array $apiPayload): string {
     $text = $json['candidates'][0]['content']['parts'][0]['text'] ?? '';
     if ($text === '') throw new Exception('AIから有効なテキストが返ってきませんでした。');
     return $text;
+}
+
+// Vertex AI Imagen (画像生成) を :predict エンドポイントで呼ぶ。
+// 戻り値は predictions 配列 (各要素は {bytesBase64Encoded, mimeType})。
+function callVertexImagen(string $modelId, array $payload): array {
+    $token = getGoogleAccessToken(
+        'https://www.googleapis.com/auth/cloud-platform',
+        VERTEX_CLIENT_EMAIL,
+        VERTEX_PRIVATE_KEY
+    );
+    $location  = VERTEX_LOCATION;
+    $projectId = VERTEX_PROJECT_ID;
+    $url = "https://{$location}-aiplatform.googleapis.com/v1/projects/{$projectId}/locations/{$location}/publishers/google/models/{$modelId}:predict";
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 180,
+        CURLOPT_HTTPHEADER     => [
+            "Authorization: Bearer {$token}",
+            'Content-Type: application/json; charset=UTF-8',
+            'Expect:',
+        ],
+    ]);
+    $res  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($code !== 200) throw new Exception("Vertex Imagen エラー (HTTP {$code}): " . $res);
+    $json = json_decode($res, true);
+    if (!is_array($json) || empty($json['predictions'])) {
+        throw new Exception('Imagen から有効な応答が返ってきませんでした: ' . $res);
+    }
+    return $json['predictions'];
 }
 
 // ================================================================
@@ -873,16 +1037,9 @@ try {
             $mimeType = $payload['mimeType'] ?? 'application/octet-stream';
             $data     = $payload['data']     ?? '';
 
-            $allowedTypes = [
-                'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-                'application/pdf', 'text/plain', 'text/csv',
-                'application/msword',
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                'application/vnd.ms-excel',
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            ];
-            if (!in_array($mimeType, $allowedTypes)) {
-                echo json_encode(['success' => false, 'error' => 'このファイル形式はアップロードできません']);
+            // MIME タイプは形式 (type/subtype) のみ検証し、Drive が受け入れる拡張子は基本的に許可する
+            if (!preg_match('#^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$#', $mimeType)) {
+                echo json_encode(['success' => false, 'error' => '無効なファイル形式です']);
                 break;
             }
 
@@ -1698,6 +1855,276 @@ PROMPT;
             break;
 
         // ============================================================
+        // generateAdvisorDoc — タスクアドバイザーの会話を Google Doc 化
+        //   入力 payload:
+        //     task:         { id, title, description, status, dueDate, priority, type, category,
+        //                     assigneeName, assigneeEmail, ... } — TaskModal の formData
+        //     history:      [{role: 'user'|'model', text}] アドバイザーチャット履歴
+        //     formatPrompt: string — ユーザー指定のドキュメント形式/観点
+        //   出力 data: { success, docId, docUrl, docName, comment }
+        // ============================================================
+        case 'generateAdvisorDoc':
+            try {
+                $task         = is_array($payload['task'] ?? null)    ? $payload['task']    : [];
+                $chatHistory  = is_array($payload['history'] ?? null) ? $payload['history'] : [];
+                $formatPrompt = trim((string)($payload['formatPrompt'] ?? ''));
+
+                $taskId    = (string)($task['id']            ?? '');
+                $title     = (string)($task['title']         ?? '無題');
+                $desc      = (string)($task['description']   ?? '');
+                $status    = (string)($task['status']        ?? '');
+                $due       = (string)($task['dueDate']       ?? '');
+                $priority  = (string)($task['priority']      ?? '');
+                $typeName  = (string)($task['type']          ?? '');
+                $category  = (string)($task['category']      ?? '');
+                $assigneeN = (string)($task['assigneeName']  ?? '');
+
+                if ($taskId === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '課題IDが指定されていません。']]);
+                    break;
+                }
+                if ($formatPrompt === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => 'ドキュメントの形式（プロンプト）を入力してください。']]);
+                    break;
+                }
+
+                // 壁打ち履歴を整形
+                $historyLines = [];
+                foreach ($chatHistory as $msg) {
+                    $r = (($msg['role'] ?? '') === 'model') ? 'アドバイザー' : 'ユーザー';
+                    $t = trim((string)($msg['text'] ?? ''));
+                    if ($t === '') continue;
+                    $historyLines[] = "## {$r}\n{$t}";
+                }
+                $historyText = count($historyLines) > 0 ? implode("\n\n", $historyLines) : '（壁打ち履歴なし）';
+
+                $taskBlock =
+                    "- ID: {$taskId}\n" .
+                    "- タイトル: {$title}\n" .
+                    "- 詳細: "       . ($desc      !== '' ? $desc      : '（未設定）') . "\n" .
+                    "- ステータス: " . ($status    !== '' ? $status    : '（未設定）') . "\n" .
+                    "- 期限: "       . ($due       !== '' ? $due       : '（未設定）') . "\n" .
+                    "- 優先度: "     . ($priority  !== '' ? $priority  : '（未設定）') . "\n" .
+                    "- 種別: "       . ($typeName  !== '' ? $typeName  : '（未設定）') . "\n" .
+                    "- カテゴリ: "   . ($category  !== '' ? $category  : '（未設定）') . "\n" .
+                    "- 担当者: "     . ($assigneeN !== '' ? $assigneeN : '（未設定）');
+
+                $prompt =
+                    "あなたは Olive Note のドキュメント作成アシスタントです。\n" .
+                    "下記の課題情報とアドバイザーとの壁打ち履歴を踏まえ、ユーザーが指定した形式で Google Docs に取り込むための **Markdown 形式** のドキュメントを生成してください。\n" .
+                    "Drive API が Markdown を Google Docs に自動変換するため、見出し・太字・箇条書き・表などはすべて Markdown 記法を使ってください。\n\n" .
+                    "【出力ルール】\n" .
+                    "- 見出しは `# / ## / ###` を必ず使う。文書冒頭にタイトル相当の `#` を置く。\n" .
+                    "- 強調は `**太字**`、リストは `- ` または `1. `、表は GitHub Flavored Markdown のパイプ表記を使う。\n" .
+                    "- コードや擬似コードを示す場合のみ ``` フェンスで囲う。それ以外で ``` を使わない。\n" .
+                    "- 出力はドキュメント本文のみ。前置きや後書き（『以下に作成します』『ご確認ください』等）は書かない。\n" .
+                    "- 全体を ``` でラップするのは禁止。\n\n" .
+                    "【内容ルール】\n" .
+                    "- 課題情報・会話履歴に書かれていない事実を新たに作らない。推測が必要な箇所は『要確認』と明記する。\n" .
+                    "- 文章は読み手が単独で理解できる粒度で記述する。\n" .
+                    "- ユーザーが指定した形式（議事録／要件定義書／進捗報告 等）を優先する。\n\n" .
+                    "【課題情報】\n" .
+                    $taskBlock . "\n\n" .
+                    "【アドバイザー壁打ち履歴】\n" .
+                    $historyText . "\n\n" .
+                    "【ユーザーからの指示（出力形式・観点）】\n" .
+                    $formatPrompt;
+
+                $generated = callVertexAi('gemini-2.5-pro', [
+                    'contents'         => [['role' => 'user', 'parts' => [['text' => $prompt]]]],
+                    'generationConfig' => ['temperature' => 0.3, 'maxOutputTokens' => 8192],
+                ]);
+                // 文書全体が ``` でラップされていた場合は剥がす
+                $trimmed = ltrim($generated);
+                if (preg_match('/^`{3}[a-zA-Z0-9]*\s*\n/', $trimmed)) {
+                    $generated = preg_replace('/^`{3}[a-zA-Z0-9]*\s*\n/', '', $trimmed);
+                    $generated = preg_replace('/`{3}\s*$/', '', $generated);
+                }
+                $generated = rtrim($generated, "\r\n");
+                if (trim($generated) === '') {
+                    throw new Exception('AI が空のテキストを返しました。');
+                }
+
+                // Drive のみ (Docs API は使わなくなった)
+                $token    = getGoogleAccessToken('https://www.googleapis.com/auth/drive');
+                $folderId = ensureAiGeneratedDocsFolder($pdo, $token);
+
+                // Markdown を Google Docs として直接アップロード（Drive が自動変換）
+                $today    = date('Y-m-d');
+                $docTitle = "【AI生成】{$title}_{$today}";
+                $doc      = uploadMarkdownAsGoogleDoc($docTitle, $generated, $folderId, $token);
+                $docId    = $doc['id'];
+                $docUrl   = $doc['webViewLink'] ?? ('https://docs.google.com/document/d/' . $docId . '/edit');
+
+                // リンクで開けるよう public reader を付与
+                makeFilePublic($docId, $token);
+
+                // 課題のコメント欄に Doc リンクを追加
+                $authorEmail = (string)($_SESSION['user_email'] ?? '');
+                $authorName  = '';
+                if ($authorEmail !== '') {
+                    $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                    $u->execute([$authorEmail]);
+                    $authorName = (string)($u->fetchColumn() ?: '');
+                }
+
+                $shortFormat = mb_substr($formatPrompt, 0, 80) . (mb_strlen($formatPrompt) > 80 ? '…' : '');
+                $safeDocTitle = htmlspecialchars($docTitle, ENT_QUOTES, 'UTF-8');
+                $safeDocUrl   = htmlspecialchars($docUrl,   ENT_QUOTES, 'UTF-8');
+                $safeFormat   = htmlspecialchars($shortFormat, ENT_QUOTES, 'UTF-8');
+                $commentText =
+                    "📝 **【AIによるドキュメント生成】**\n" .
+                    "形式指定: {$safeFormat}\n\n" .
+                    "<a href=\"{$safeDocUrl}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-blue-600 hover:underline font-bold\">📎 {$safeDocTitle}</a>";
+
+                $commentId = 'comment_aidoc_' . bin2hex(random_bytes(8));
+                $pdo->prepare("
+                    INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, created_at)
+                    VALUES (:id, :task_id, :author_email, :author_name, :text, :likes, :read_by, NOW())
+                ")->execute([
+                    ':id'           => $commentId,
+                    ':task_id'      => $taskId,
+                    ':author_email' => $authorEmail,
+                    ':author_name'  => $authorName,
+                    ':text'         => $commentText,
+                    ':likes'        => json_encode([]),
+                    ':read_by'      => json_encode($authorEmail !== '' ? [$authorEmail] : []),
+                ]);
+                $stmt = $pdo->prepare("SELECT * FROM comments WHERE id = ?");
+                $stmt->execute([$commentId]);
+                $savedComment = commentFromRow($stmt->fetch());
+
+                echo json_encode(['success' => true, 'data' => [
+                    'success' => true,
+                    'docId'   => $docId,
+                    'docUrl'  => $docUrl,
+                    'docName' => $docTitle,
+                    'comment' => $savedComment,
+                ]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => $e->getMessage()]]);
+            }
+            break;
+
+        // ============================================================
+        // generateImage — Vertex AI Imagen で画像を生成 → AI生成フォルダ保存 → コメント貼付
+        //   入力 payload:
+        //     task:         { id, title, ... } TaskModal.formData
+        //     prompt:       string ユーザーが指定する画像生成プロンプト
+        //     aspectRatio:  '1:1' | '16:9' | '9:16' | '4:3' | '3:4' (省略時 '1:1')
+        //   出力 data: { success, fileId, fileUrl, fileName, comment }
+        // ============================================================
+        case 'generateImage':
+            try {
+                $task        = is_array($payload['task'] ?? null) ? $payload['task'] : [];
+                $imgPrompt   = trim((string)($payload['prompt'] ?? ''));
+                $aspectRatio = (string)($payload['aspectRatio'] ?? '1:1');
+
+                $taskId   = (string)($task['id']    ?? '');
+                $taskName = (string)($task['title'] ?? '無題');
+
+                if ($taskId === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '課題IDが指定されていません。']]);
+                    break;
+                }
+                if ($imgPrompt === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '画像生成プロンプトを入力してください。']]);
+                    break;
+                }
+                $allowedRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+                if (!in_array($aspectRatio, $allowedRatios, true)) {
+                    $aspectRatio = '1:1';
+                }
+
+                // Imagen 呼び出し（1枚ずつ生成）
+                $predictions = callVertexImagen('imagen-3.0-generate-002', [
+                    'instances'  => [['prompt' => $imgPrompt]],
+                    'parameters' => [
+                        'sampleCount'    => 1,
+                        'aspectRatio'    => $aspectRatio,
+                        'language'       => 'auto',
+                        'addWatermark'   => false,
+                    ],
+                ]);
+
+                $first = $predictions[0] ?? [];
+                $b64   = (string)($first['bytesBase64Encoded'] ?? '');
+                if ($b64 === '') {
+                    throw new Exception('Imagen が画像データを返しませんでした。安全フィルタで弾かれた可能性があります。');
+                }
+                $mime  = (string)($first['mimeType'] ?? 'image/png');
+                $bin   = base64_decode($b64, true);
+                if ($bin === false) {
+                    throw new Exception('画像のデコードに失敗しました。');
+                }
+
+                // Drive にアップロード（AI生成フォルダ配下）
+                $driveToken = getGoogleAccessToken('https://www.googleapis.com/auth/drive');
+                $folderId   = ensureAiGeneratedDocsFolder($pdo, $driveToken);
+
+                $ext = ($mime === 'image/jpeg') ? 'jpg' : 'png';
+                $stamp    = date('Ymd_His');
+                $fileName = "ai_image_{$stamp}_" . bin2hex(random_bytes(3)) . ".{$ext}";
+
+                $driveFile = uploadFileToDrive($fileName, $mime, $bin, $folderId, $driveToken);
+                makeFilePublic($driveFile['id'], $driveToken);
+
+                $fileId    = $driveFile['id'];
+                $directUrl = 'https://lh3.googleusercontent.com/d/' . $fileId;  // インライン表示用
+                $viewUrl   = $driveFile['webViewLink'] ?? ('https://drive.google.com/file/d/' . $fileId . '/view');
+
+                // コメント本文（インライン画像 + 別タブリンク）
+                $authorEmail = (string)($_SESSION['user_email'] ?? '');
+                $authorName  = '';
+                if ($authorEmail !== '') {
+                    $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                    $u->execute([$authorEmail]);
+                    $authorName = (string)($u->fetchColumn() ?: '');
+                }
+
+                $shortPrompt    = mb_substr($imgPrompt, 0, 80) . (mb_strlen($imgPrompt) > 80 ? '…' : '');
+                $safeShortPrompt = htmlspecialchars($shortPrompt, ENT_QUOTES, 'UTF-8');
+                $safeViewUrl    = htmlspecialchars($viewUrl,  ENT_QUOTES, 'UTF-8');
+                $safeDirectUrl  = htmlspecialchars($directUrl, ENT_QUOTES, 'UTF-8');
+                $safeFileName   = htmlspecialchars($fileName, ENT_QUOTES, 'UTF-8');
+                $safeAspect     = htmlspecialchars($aspectRatio, ENT_QUOTES, 'UTF-8');
+                $commentText =
+                    "🎨 **【AIによる画像生成】**\n" .
+                    "プロンプト: {$safeShortPrompt}（{$safeAspect}）\n\n" .
+                    "![{$safeFileName}]({$safeDirectUrl})\n" .
+                    "<a href=\"{$safeViewUrl}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-xs text-blue-600 hover:underline\">📎 画像を別タブで開く</a>";
+
+                $commentId = 'comment_aiimg_' . bin2hex(random_bytes(8));
+                $pdo->prepare("
+                    INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, created_at)
+                    VALUES (:id, :task_id, :author_email, :author_name, :text, :likes, :read_by, NOW())
+                ")->execute([
+                    ':id'           => $commentId,
+                    ':task_id'      => $taskId,
+                    ':author_email' => $authorEmail,
+                    ':author_name'  => $authorName,
+                    ':text'         => $commentText,
+                    ':likes'        => json_encode([]),
+                    ':read_by'      => json_encode($authorEmail !== '' ? [$authorEmail] : []),
+                ]);
+                $stmt = $pdo->prepare("SELECT * FROM comments WHERE id = ?");
+                $stmt->execute([$commentId]);
+                $savedComment = commentFromRow($stmt->fetch());
+
+                echo json_encode(['success' => true, 'data' => [
+                    'success'  => true,
+                    'fileId'   => $fileId,
+                    'fileUrl'  => $viewUrl,
+                    'imageUrl' => $directUrl,
+                    'fileName' => $fileName,
+                    'comment'  => $savedComment,
+                ]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => $e->getMessage()]]);
+            }
+            break;
+
+        // ============================================================
         // generateTasksFromContext — 複数の資料(画像/PDF/CSV/テキスト)から課題を一括生成
         //   入力 payload:
         //     sources:      [{kind: 'text'|'image'|'pdf'|'sheet', name: string,
@@ -1987,61 +2414,74 @@ PROMPT;
             break;
 
         // ============================================================
-        // verifyGoogleAuth — Google ID Token検証 + セッション開始
+        // verifySupabaseAuth — Supabase が発行した access_token (JWT) を
+        // 検証してローカル PHP セッションを確立する。
+        //
+        // payload: { accessToken: '<Supabase JWT>' }
+        //   1. HS256 署名検証 (SUPABASE_JWT_SECRET)
+        //   2. aud == 'authenticated' / exp の検証
+        //   3. email を取り出して members テーブルに登録があるか確認
+        //   4. あれば $_SESSION にセットしてログイン成立
+        //
+        // 認証プロバイダ (Google / Microsoft Azure AD / Email Magic Link)
+        // は Supabase 側で吸収。Supabase が JWT を発行している時点で
+        // email は verified と扱える。
         // ============================================================
-        case 'verifyGoogleAuth':
-            $idToken = $payload['idToken'] ?? '';
-            if (!$idToken) {
-                echo json_encode(['success' => false, 'error' => 'IDトークンが指定されていません']);
-                break;
-            }
+        case 'verifySupabaseAuth':
+            try {
+                $accessToken = (string)($payload['accessToken'] ?? '');
+                if ($accessToken === '') {
+                    echo json_encode(['success' => false, 'error' => 'アクセストークンが指定されていません']);
+                    break;
+                }
+                if (!defined('SUPABASE_JWT_SECRET') || SUPABASE_JWT_SECRET === '') {
+                    echo json_encode(['success' => false, 'error' => 'Supabase 設定が未完了です。管理者にお問い合わせください。']);
+                    break;
+                }
 
-            // Googleのtokeninfoエンドポイントで検証（署名・有効期限・aud検証もGoogle側でやってくれる）
-            $ch = curl_init('https://oauth2.googleapis.com/tokeninfo?id_token=' . urlencode($idToken));
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => 10,
-            ]);
-            $res  = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+                $jwtPayload = verifySupabaseJwt($accessToken, SUPABASE_JWT_SECRET);
+                if (!$jwtPayload) {
+                    echo json_encode(['success' => false, 'error' => 'トークンが無効または期限切れです。再ログインしてください。']);
+                    break;
+                }
+                // aud は RFC 7519 上 string でも array でも合法。Supabase は通常 string
+                // 'authenticated' を返すが将来仕様変更や別認証経路で配列になる可能性に備える
+                $aud = $jwtPayload['aud'] ?? null;
+                $audOk = is_array($aud) ? in_array('authenticated', $aud, true) : ($aud === 'authenticated');
+                if (!$audOk) {
+                    echo json_encode(['success' => false, 'error' => 'トークンの audience が不正です']);
+                    break;
+                }
 
-            if ($code !== 200) {
-                echo json_encode(['success' => false, 'error' => 'IDトークンの検証に失敗しました']);
-                break;
-            }
-            $tokenData = json_decode($res, true);
+                $email = strtolower((string)($jwtPayload['email'] ?? ''));
+                if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    echo json_encode(['success' => false, 'error' => 'メールアドレスが取得できませんでした']);
+                    break;
+                }
 
-            // audience（クライアントID）の照合
-            if (($tokenData['aud'] ?? '') !== GOOGLE_CLIENT_ID) {
-                echo json_encode(['success' => false, 'error' => 'クライアントIDが一致しません']);
-                break;
-            }
-            // emailの確認
-            $email = $tokenData['email'] ?? '';
-            if (!$email || ($tokenData['email_verified'] ?? '') !== 'true') {
-                echo json_encode(['success' => false, 'error' => 'メールアドレスが確認できません']);
-                break;
-            }
+                $stmt = $pdo->prepare("SELECT * FROM members WHERE email = ? LIMIT 1");
+                $stmt->execute([$email]);
+                $member = $stmt->fetch();
+                if (!$member) {
+                    // メンバー未登録 — レスポンスには email を含めず汎用メッセージにとどめる
+                    // (ブラウザの DevTools で見ても情報漏えいしないようにする)
+                    echo json_encode(['success' => false, 'error' => 'このアカウントは Olive Note のメンバーとして登録されていません。管理者にお問い合わせください。']);
+                    break;
+                }
 
-            // membersテーブルに登録があるか
-            $stmt = $pdo->prepare("SELECT * FROM members WHERE email = ? LIMIT 1");
-            $stmt->execute([$email]);
-            $member = $stmt->fetch();
-            if (!$member) {
-                echo json_encode(['success' => false, 'error' => 'このGoogleアカウント (' . htmlspecialchars($email) . ') は登録されていません。管理者に連絡してください。']);
-                break;
+                session_regenerate_id(true);
+                $_SESSION['user_email'] = $email;
+                $_SESSION['user_name']  = $member['name'];
+                echo json_encode(['success' => true, 'data' => [
+                    'email' => $email,
+                    'name'  => $member['name'],
+                ]]);
+            } catch (Throwable $e) {
+                error_log('[supabase-auth] verifySupabaseAuth exception: ' . $e->getMessage());
+                echo json_encode(['success' => false, 'error' => 'サーバーエラーが発生しました']);
             }
-
-            // セッション再生成（セッション固定攻撃対策）
-            session_regenerate_id(true);
-            $_SESSION['user_email'] = $email;
-            $_SESSION['user_name']  = $member['name'];
-            echo json_encode(['success' => true, 'data' => [
-                'email' => $email,
-                'name'  => $member['name'],
-            ]]);
             break;
+
 
         // ============================================================
         // logout — セッション破棄

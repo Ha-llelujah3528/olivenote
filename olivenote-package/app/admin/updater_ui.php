@@ -76,15 +76,15 @@ async function check() {
   const actionEl = document.getElementById('action');
 
   if (!json.success) {
-    statusEl.innerHTML = '<div class="alert error">❌ ' + (json.error || '不明なエラー') + '</div>';
+    statusEl.innerHTML = '<div class="alert error">❌ ' + escapeHtml(json.error || '不明なエラー') + '</div>';
     return;
   }
 
   const { current, latest, updateAvailable, changelog } = json.data;
 
   let html = '<div class="version-box">';
-  html += '<div class="col"><div class="label">現在のバージョン</div><div class="value">v' + current + '</div></div>';
-  html += '<div class="col"><div class="label">最新バージョン</div><div class="value">v' + latest;
+  html += '<div class="col"><div class="label">現在のバージョン</div><div class="value">v' + escapeHtml(current) + '</div></div>';
+  html += '<div class="col"><div class="label">最新バージョン</div><div class="value">v' + escapeHtml(latest);
   if (updateAvailable) html += ' <span class="badge">UPDATE</span>';
   html += '</div></div></div>';
   statusEl.innerHTML = html;

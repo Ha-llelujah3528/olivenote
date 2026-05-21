@@ -2,6 +2,19 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.8] - 2026-05-21
+
+### バグ修正 / UX 改善
+- **インストーラ Step3 の認証エラーをブラウザ画面に表示するよう修正** — JS 無効時や JS バリデーション回避時に「なぜか前画面に戻された」状態になっていた問題を解消。サーバー側のバリデーションエラーが赤いアラートで画面上に表示されるようになった
+- **インストーラ Step3 のエラー時に入力値が保持されるよう修正** — Google にチェックして Client ID を入力した後 Secret を空欄で送信すると、エラーで戻ったときにチェックが外れて入力値も消えていた問題を解消。バリデーション前にセッションへ退避するよう処理順を変更
+- **インストーラ Step3 に Supabase Auth Providers の説明注記を追加** — Google / Microsoft の Client ID・Secret は「Supabase の Auth Providers 設定に入れる値と同一」であることを fieldset 冒頭の注記と各 hint で明示
+- **インストーラ Step3 の Client ID/Secret 欄に `required` 属性をトグル** — チェックボックス連動で `disabled` 切替と同時に `required` も同期。ブラウザネイティブのフォーム検証が機能するように
+- **インストーラ Step3 の文言を修正** — 「以下の3つを設定します」を「以下の項目を設定します」に変更し、④ Vertex AI（任意）を追記
+
+### 内部改善
+- **インストーラ `handle_step2_db()` の dead code を削除** — `compact()` に同一キーの配列を `+` で結合していた冗長なコードをシンプル化
+- **アップデータ画面のバージョン表示 XSS を修正** — `updater_ui.php` でマニフェスト由来の `latest` / `current` / `published_at` を `innerHTML` に未エスケープで挿入していた箇所に `escapeHtml()` を適用
+
 ## [1.0.7] - 2026-05-18
 
 ### 機能追加 / UX 改善

@@ -15,9 +15,36 @@ define('DB_USER', '__DB_USER__');
 define('DB_PASS', '__DB_PASS__');
 
 // ============================================================
-// Google OAuth (Sign-In)
+// Supabase Auth (認証基盤)
 // ============================================================
-define('GOOGLE_CLIENT_ID', '__GOOGLE_CLIENT_ID__');
+// Olive Note は Supabase Auth を通じて Email Magic Link / Google / Microsoft
+// などのログインを提供する。詳細セットアップは docs/SUPABASE_SETUP.md 参照。
+//
+// 取得元: Supabase ダッシュボード → Project Settings → API
+//   - SUPABASE_URL      : Project URL (例: https://abcdef.supabase.co)
+//   - SUPABASE_ANON_KEY : anon / public key (フロントエンドから安全に使える鍵)
+//   - SUPABASE_JWT_SECRET : JWT Secret (★絶対秘密。サーバー側 JWT 検証用)
+define('SUPABASE_URL',        '__SUPABASE_URL__');
+define('SUPABASE_ANON_KEY',   '__SUPABASE_ANON_KEY__');
+define('SUPABASE_JWT_SECRET', '__SUPABASE_JWT_SECRET__');
+
+// ============================================================
+// 認証プロバイダの選択
+// ============================================================
+// セットアップ時に選択した認証方法をここに列記
+// 有効な値: 'google', 'microsoft', 'email'
+// 例: ['google', 'email']
+define('SUPABASE_PROVIDERS', __SUPABASE_PROVIDERS__);
+
+// Google OAuth（SUPABASE_PROVIDERS に 'google' が含まれる場合）
+// 取得元: Google Cloud Console → OAuth 2.0 クライアント
+define('GOOGLE_CLIENT_ID',     '__GOOGLE_CLIENT_ID__');
+define('GOOGLE_CLIENT_SECRET', '__GOOGLE_CLIENT_SECRET__');
+
+// Microsoft Azure AD OAuth（SUPABASE_PROVIDERS に 'microsoft' が含まれる場合）
+// 取得元: Microsoft Entra ID → App registrations
+define('MICROSOFT_CLIENT_ID',     '__MICROSOFT_CLIENT_ID__');
+define('MICROSOFT_CLIENT_SECRET', '__MICROSOFT_CLIENT_SECRET__');
 
 // ============================================================
 // Google Drive 用 サービスアカウント

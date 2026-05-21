@@ -229,6 +229,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [isAdvisorTyping, setIsAdvisorTyping] = useState(false);
       const advisorMessagesEndRef = useRef(null);
 
+      // ★ アドバイザー会話の Google Doc 化
+      const [isGenAdvisorDocOpen, setIsGenAdvisorDocOpen] = useState(false);
+      const [advisorDocFormat, setAdvisorDocFormat] = useState('');
+      const [isGeneratingAdvisorDoc, setIsGeneratingAdvisorDoc] = useState(false);
+
+      // ★ AI 画像生成
+      const [isGenImageOpen, setIsGenImageOpen] = useState(false);
+      const [imagePrompt, setImagePrompt] = useState('');
+      const [imageAspect, setImageAspect] = useState('1:1');
+      const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+
       useEffect(() => {
         if (advisorMessagesEndRef.current) {
           advisorMessagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -264,6 +275,80 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const handleAdvisorKeyDown = (e) => {
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
           handleAdvisorSend();
+        }
+      };
+
+      // ★ AI 画像生成 → AI生成フォルダに保存 → コメント欄にインライン表示
+      const handleGenerateImage = async () => {
+        const p = (imagePrompt || '').trim();
+        if (!p) {
+          showCustomAlert?.('error', '画像生成プロンプトを入力してください');
+          return;
+        }
+        if (!formData?.id) {
+          showCustomAlert?.('error', '先に課題を保存してからご利用ください');
+          return;
+        }
+        setIsGeneratingImage(true);
+        try {
+          const res = await api.generateImage(formData, p, imageAspect);
+          if (res?.success) {
+            if (res.comment) {
+              const saved = res.comment;
+              setFormData(prev => ({ ...prev, comments: [...(prev.comments || []), saved] }));
+              setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: [...(t.comments || []), saved] } : t));
+            }
+            setAdvisorMessages(prev => [...prev, {
+              role: 'model',
+              text: `🎨 画像を生成しコメント欄に追加しました（${imageAspect}）。\n\n![生成画像](${res.imageUrl})`
+            }]);
+            setImagePrompt('');
+            setIsGenImageOpen(false);
+            showToast?.('画像を生成しました');
+          } else {
+            showCustomAlert?.('error', `生成に失敗しました: ${res?.error || '不明なエラー'}`);
+          }
+        } catch (e) {
+          showCustomAlert?.('error', '通信エラー: ' + (e?.message || e));
+        } finally {
+          setIsGeneratingImage(false);
+        }
+      };
+
+      // ★ アドバイザー会話を元に Google Doc を生成 → コメント欄にリンクを残す
+      const handleGenerateAdvisorDoc = async () => {
+        const fmt = (advisorDocFormat || '').trim();
+        if (!fmt) {
+          showCustomAlert?.('error', 'ドキュメントの形式や観点を入力してください');
+          return;
+        }
+        if (!formData?.id) {
+          showCustomAlert?.('error', '先に課題を保存してからご利用ください');
+          return;
+        }
+        setIsGeneratingAdvisorDoc(true);
+        try {
+          const res = await api.generateAdvisorDoc(formData, advisorMessages, fmt);
+          if (res?.success) {
+            if (res.comment) {
+              const saved = res.comment;
+              setFormData(prev => ({ ...prev, comments: [...(prev.comments || []), saved] }));
+              setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: [...(t.comments || []), saved] } : t));
+            }
+            setAdvisorMessages(prev => [...prev, {
+              role: 'model',
+              text: `📄 Google Doc を作成し、コメント欄にリンクを追加しました。\n\n[${res.docName}](${res.docUrl})`
+            }]);
+            setAdvisorDocFormat('');
+            setIsGenAdvisorDocOpen(false);
+            showToast?.('ドキュメントを生成しました');
+          } else {
+            showCustomAlert?.('error', `生成に失敗しました: ${res?.error || '不明なエラー'}`);
+          }
+        } catch (e) {
+          showCustomAlert?.('error', '通信エラー: ' + (e?.message || e));
+        } finally {
+          setIsGeneratingAdvisorDoc(false);
         }
       };
 
@@ -1627,7 +1712,23 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <Bot size={16} />
                       <span className="font-bold text-sm">タスクアドバイザー</span>
                     </div>
-                    <button onClick={() => setIsAdvisorOpen(false)} className="text-indigo-200 hover:text-white transition-colors bg-transparent"><X size={18}/></button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => { setIsGenAdvisorDocOpen(v => !v); setIsGenImageOpen(false); }}
+                        title="この会話を元に Google Doc を作成"
+                        className="text-[11px] px-2 py-1 rounded bg-white/15 hover:bg-white/25 text-white transition-colors flex items-center gap-1"
+                      >
+                        <FileText size={12} /> ドキュメント化
+                      </button>
+                      <button
+                        onClick={() => { setIsGenImageOpen(v => !v); setIsGenAdvisorDocOpen(false); }}
+                        title="AI で画像を生成"
+                        className="text-[11px] px-2 py-1 rounded bg-white/15 hover:bg-white/25 text-white transition-colors flex items-center gap-1"
+                      >
+                        <ImageIcon size={12} /> 画像生成
+                      </button>
+                      <button onClick={() => setIsAdvisorOpen(false)} className="text-indigo-200 hover:text-white transition-colors bg-transparent p-1"><X size={18}/></button>
+                    </div>
                  </div>
                  
                  {/* メッセージエリア */}
@@ -1667,6 +1768,93 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     <div ref={advisorMessagesEndRef} />
                  </div>
                  
+                 {/* ★ 画像生成フォーム（ヘッダのボタンで開閉） */}
+                 {isGenImageOpen && (
+                   <div className="border-t border-indigo-100 bg-white p-3 shrink-0">
+                     <div className="text-xs font-bold text-indigo-700 mb-1.5 flex items-center gap-1">
+                       <ImageIcon size={12} /> AI 画像生成 (Imagen)
+                     </div>
+                     <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
+                       プロンプトを元に画像を生成し、「AI生成」フォルダに保存してコメント欄に貼り付けます。
+                     </p>
+                     <textarea
+                       value={imagePrompt}
+                       onChange={(e) => setImagePrompt(e.target.value)}
+                       placeholder="例：オリーブ畑の俯瞰イラスト、淡い水彩風 / シンプルなアイコン、青系の配色"
+                       disabled={isGeneratingImage}
+                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 outline-none disabled:bg-gray-50"
+                       rows={3}
+                     />
+                     <div className="flex items-center justify-between gap-2 mt-2">
+                       <label className="text-[11px] text-gray-600 flex items-center gap-1">
+                         アスペクト比:
+                         <select
+                           value={imageAspect}
+                           onChange={(e) => setImageAspect(e.target.value)}
+                           disabled={isGeneratingImage}
+                           className="text-xs border border-gray-200 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 disabled:bg-gray-50"
+                         >
+                           <option value="1:1">1:1 (正方形)</option>
+                           <option value="16:9">16:9 (横長)</option>
+                           <option value="9:16">9:16 (縦長)</option>
+                           <option value="4:3">4:3</option>
+                           <option value="3:4">3:4</option>
+                         </select>
+                       </label>
+                       <div className="flex gap-2">
+                         <button
+                           onClick={() => { setIsGenImageOpen(false); setImagePrompt(''); }}
+                           disabled={isGeneratingImage}
+                           className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
+                         >キャンセル</button>
+                         <button
+                           onClick={handleGenerateImage}
+                           disabled={isGeneratingImage || !imagePrompt.trim()}
+                           className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                         >
+                           {isGeneratingImage && <Loader2 size={12} className="animate-spin" />}
+                           {isGeneratingImage ? '生成中...' : '生成して登録'}
+                         </button>
+                       </div>
+                     </div>
+                   </div>
+                 )}
+
+                 {/* ★ ドキュメント化フォーム（ヘッダのボタンで開閉） */}
+                 {isGenAdvisorDocOpen && (
+                   <div className="border-t border-indigo-100 bg-white p-3 shrink-0">
+                     <div className="text-xs font-bold text-indigo-700 mb-1.5 flex items-center gap-1">
+                       <FileText size={12} /> Google Doc にまとめる
+                     </div>
+                     <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
+                       会話履歴と課題情報を元に、指定した形式で Google Doc を「AI生成」フォルダ内に作成し、リンクをコメント欄に追加します。
+                     </p>
+                     <textarea
+                       value={advisorDocFormat}
+                       onChange={(e) => setAdvisorDocFormat(e.target.value)}
+                       placeholder="例：議事録形式 / 要件定義書として / 進捗報告書として、観点A・Bを盛り込む 等"
+                       disabled={isGeneratingAdvisorDoc}
+                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 outline-none disabled:bg-gray-50"
+                       rows={3}
+                     />
+                     <div className="flex justify-end gap-2 mt-2">
+                       <button
+                         onClick={() => { setIsGenAdvisorDocOpen(false); setAdvisorDocFormat(''); }}
+                         disabled={isGeneratingAdvisorDoc}
+                         className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
+                       >キャンセル</button>
+                       <button
+                         onClick={handleGenerateAdvisorDoc}
+                         disabled={isGeneratingAdvisorDoc || !advisorDocFormat.trim()}
+                         className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                       >
+                         {isGeneratingAdvisorDoc && <Loader2 size={12} className="animate-spin" />}
+                         {isGeneratingAdvisorDoc ? '生成中...' : '生成して登録'}
+                       </button>
+                     </div>
+                   </div>
+                 )}
+
                  {/* 入力エリア */}
                  <div className="p-3 bg-white border-t border-indigo-100 shrink-0">
                    <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-indigo-400 focus-within:ring-1 focus-within:ring-indigo-400 transition-all">

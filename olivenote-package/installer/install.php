@@ -35,7 +35,7 @@ if (file_exists($configFile) && empty($_GET['force']) && $incomingStep !== 'done
 $steps = [
     1 => '環境チェック',
     2 => 'データベース接続',
-    3 => 'Google設定',
+    3 => '認証方法の選択',
     4 => '初期管理者',
     5 => '確定・実行',
 ];
@@ -145,31 +145,113 @@ function render_step2(): void {
 
 function render_step3(): void {
     $prev = $_SESSION['install']['google'] ?? [
-        'client_id' => '',
+        'supabase_url' => '', 'supabase_anon' => '', 'supabase_jwt' => '',
         'sa_email'  => '', 'sa_pk' => '',
         'doc_folder'=> '', 'att_folder' => '', 'ai_folder' => '',
         'vertex_project' => '', 'vertex_location' => 'us-central1',
         'vertex_sa_email' => '', 'vertex_sa_pk' => ''
     ];
-    ?>
-    <h1>③ Google 連携設定</h1>
-    <p>Google OAuth と Drive サービスアカウントの情報を登録します。<br>
-       <strong>初めての場合は</strong> <a href="../docs/view.php?doc=OAUTH_SETUP.md" target="_blank">OAuthセットアップ手順書</a> と
-       <a href="../docs/view.php?doc=DRIVE_SETUP.md" target="_blank">Drive準備手順書</a> を先にご確認ください。</p>
 
-    <form method="post">
+    $authMethods = $_SESSION['install']['auth_methods'] ?? [];
+    $authCreds = $_SESSION['install']['auth_creds'] ?? [];
+    $prevGoogle = !empty($authMethods['google']);
+    $prevMicrosoft = !empty($authMethods['microsoft']);
+    $prevEmail = !empty($authMethods['email']);
+
+    // Email は初期値 ON
+    if (empty($authMethods)) {
+        $prevEmail = true;
+    }
+
+    $authError = $_SESSION['install']['errors']['auth'] ?? '';
+    unset($_SESSION['install']['errors']['auth']);
+    ?>
+    <h1>③ 認証方法の選択</h1>
+    <p>以下の項目を設定します: <strong>①認証方法</strong>、<strong>②Supabase 情報</strong>、<strong>③Google Drive 連携</strong>、<strong>④Vertex AI（任意）</strong><br>
+       <strong>初めての場合は</strong> <a href="../docs/view.php?doc=SUPABASE_SETUP.md" target="_blank">Supabase セットアップ手順書</a> と
+       <a href="../docs/view.php?doc=DRIVE_SETUP.md" target="_blank">Drive 準備手順書</a> を先にご確認ください。</p>
+
+    <?php if ($authError): ?>
+        <div class="alert error"><?= h($authError) ?></div>
+    <?php endif; ?>
+
+    <form method="post" onsubmit="return validateAuthMethods()">
         <input type="hidden" name="_token" value="<?= h($_SESSION['_token']) ?>">
 
         <fieldset>
-            <legend>Google Sign-In（必須）</legend>
-            <label>OAuth Client ID
-                <span class="hint">~.apps.googleusercontent.com で終わる文字列</span>
-                <input name="client_id" required value="<?= h($prev['client_id']) ?>" placeholder="123456789-xxxxx.apps.googleusercontent.com">
+            <legend>① 認証方法の選択（最低1つは選択必須）</legend>
+            <p style="font-size: 13px; color: #6b7280; margin: 0 0 8px 0;">顧客の組織が使っている認証方式を選択してください。複数選択も可能です。</p>
+            <p style="font-size: 12px; color: #92400e; background: #fef3c7; padding: 8px 12px; border-radius: 6px; margin: 0 0 16px 0;">
+                ⚠️ Google / Microsoft の Client ID・Secret は <strong>Supabase の Auth Providers 設定に入れる値</strong>と同一のものを指定してください。
+                実際の OAuth ハンドシェイクは Supabase が代行し、Olive Note 本体はこれらの値を直接使用しません（config.php に控えとして保存されます）。
+                詳細は <a href="../docs/view.php?doc=SUPABASE_SETUP.md" target="_blank">Supabase セットアップ手順書</a> の §2 を参照。
+            </p>
+
+            <label style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 16px;">
+                <input type="checkbox" name="auth_google" id="chk-google" value="1" <?= $prevGoogle ? 'checked' : '' ?>>
+                <span style="flex: 1;">
+                    <strong>Google Workspace / Google Account</strong>
+                    <span class="hint" style="display: block; margin-top: 4px;">顧客が Google Workspace を使用している場合や、個人の Google アカウント認証を提供する場合に選択</span>
+                </span>
+            </label>
+
+            <div id="google-creds" class="<?= $prevGoogle ? '' : 'hidden' ?>" style="margin-left: 24px; margin-bottom: 16px; border-left: 3px solid #3b82f6; padding-left: 12px;">
+                <label>Google OAuth Client ID
+                    <span class="hint">Google Cloud Console → OAuth 2.0 クライアント から取得</span>
+                    <input type="text" name="google_client_id" id="google_client_id" value="<?= h($authCreds['google_client_id'] ?? '') ?>" <?= $prevGoogle ? 'required' : 'disabled' ?> placeholder="例: 123456789-abc...apps.googleusercontent.com">
+                </label>
+                <label>Google OAuth Client Secret
+                    <span class="hint">Google Cloud Console → OAuth 2.0 クライアント の「シークレット」から取得。<strong>Supabase の Auth Providers にも同じ値を入力してください。</strong></span>
+                    <input type="text" name="google_client_secret" id="google_client_secret" value="<?= h($authCreds['google_client_secret'] ?? '') ?>" <?= $prevGoogle ? 'required' : 'disabled' ?> placeholder="例: GOCSPX-...">
+                </label>
+            </div>
+
+            <label style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 16px;">
+                <input type="checkbox" name="auth_microsoft" id="chk-microsoft" value="1" <?= $prevMicrosoft ? 'checked' : '' ?>>
+                <span style="flex: 1;">
+                    <strong>Microsoft 365 / Azure AD</strong>
+                    <span class="hint" style="display: block; margin-top: 4px;">顧客が Microsoft 365（O365）または Azure Active Directory を使用している場合に選択</span>
+                </span>
+            </label>
+
+            <div id="microsoft-creds" class="<?= $prevMicrosoft ? '' : 'hidden' ?>" style="margin-left: 24px; margin-bottom: 16px; border-left: 3px solid #3b82f6; padding-left: 12px;">
+                <label>Microsoft Application (Client) ID
+                    <span class="hint">Microsoft Entra ID → App registrations から取得</span>
+                    <input type="text" name="microsoft_client_id" id="microsoft_client_id" value="<?= h($authCreds['microsoft_client_id'] ?? '') ?>" <?= $prevMicrosoft ? 'required' : 'disabled' ?> placeholder="例: 12345678-1234-1234...">
+                </label>
+                <label>Microsoft Client Secret
+                    <span class="hint">Microsoft Entra ID → 証明書とシークレット から取得。<strong>Supabase の Auth Providers にも同じ値を入力してください。</strong></span>
+                    <input type="text" name="microsoft_client_secret" id="microsoft_client_secret" value="<?= h($authCreds['microsoft_client_secret'] ?? '') ?>" <?= $prevMicrosoft ? 'required' : 'disabled' ?> placeholder="例: ~Z2...">
+                </label>
+            </div>
+
+            <label style="display: flex; gap: 8px; align-items: flex-start;">
+                <input type="checkbox" name="auth_email" id="chk-email" value="1" <?= $prevEmail ? 'checked' : '' ?>>
+                <span style="flex: 1;">
+                    <strong>📧 Email Magic Link（メール認証）</strong>
+                    <span class="hint" style="display: block; margin-top: 4px;">メールアドレスで安全に認証。Supabase の標準 SMTP から送信（追加設定不要）。本番運用で自社ドメインから送りたい場合はセットアップ後に Supabase で SMTP 差し替え可能。</span>
+                </span>
             </label>
         </fieldset>
 
         <fieldset>
-            <legend>Drive サービスアカウント（必須）</legend>
+            <legend>② Supabase Auth（必須）</legend>
+            <label>Project URL
+                <span class="hint">例: https://abcdef.supabase.co （Supabase Dashboard → Project Settings → API）</span>
+                <input name="supabase_url" required value="<?= h($prev['supabase_url']) ?>" placeholder="https://abcdef.supabase.co">
+            </label>
+            <label>anon / public Key
+                <span class="hint">フロントエンドが使う公開可キー。eyJhbG... で始まる長い JWT</span>
+                <textarea name="supabase_anon" required rows="3" placeholder="eyJhbGciOi..."><?= h($prev['supabase_anon']) ?></textarea>
+            </label>
+            <label>JWT Secret
+                <span class="hint">★絶対秘密。サーバー側 JWT 検証用。Project Settings → API ページ下部から取得</span>
+                <input name="supabase_jwt" required value="<?= h($prev['supabase_jwt']) ?>" placeholder="super-secret-jwt-key">
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>③ Google Drive サービスアカウント（必須）</legend>
             <label>SA メールアドレス
                 <input name="sa_email" required value="<?= h($prev['sa_email']) ?>" placeholder="xxx@xxx.iam.gserviceaccount.com">
             </label>
@@ -189,7 +271,7 @@ function render_step3(): void {
         </fieldset>
 
         <fieldset>
-            <legend>Vertex AI（オプション・空欄でも可）</legend>
+            <legend>④ Vertex AI（オプション・空欄でも可）</legend>
             <label>Vertex Project ID
                 <input name="vertex_project" value="<?= h($prev['vertex_project']) ?>">
             </label>
@@ -209,6 +291,72 @@ function render_step3(): void {
             <button class="btn-primary" type="submit">次へ →</button>
         </div>
     </form>
+
+    <script>
+    // 認証方法チェックボックスと入力フォームの連動
+    document.getElementById('chk-google').addEventListener('change', (e) => {
+        const div = document.getElementById('google-creds');
+        const inputs = div.querySelectorAll('input');
+        if (e.target.checked) {
+            div.classList.remove('hidden');
+            inputs.forEach(inp => { inp.disabled = false; inp.required = true; });
+        } else {
+            div.classList.add('hidden');
+            inputs.forEach(inp => { inp.disabled = true; inp.required = false; });
+        }
+    });
+
+    document.getElementById('chk-microsoft').addEventListener('change', (e) => {
+        const div = document.getElementById('microsoft-creds');
+        const inputs = div.querySelectorAll('input');
+        if (e.target.checked) {
+            div.classList.remove('hidden');
+            inputs.forEach(inp => { inp.disabled = false; inp.required = true; });
+        } else {
+            div.classList.add('hidden');
+            inputs.forEach(inp => { inp.disabled = true; inp.required = false; });
+        }
+    });
+
+    // フォーム送信時のバリデーション
+    function validateAuthMethods() {
+        const google = document.getElementById('chk-google').checked;
+        const microsoft = document.getElementById('chk-microsoft').checked;
+        const email = document.getElementById('chk-email').checked;
+
+        if (!google && !microsoft && !email) {
+            alert('最低1つの認証方法は選択してください');
+            return false;
+        }
+
+        // Google を選択している場合、Client ID/Secret が空だと エラー
+        if (google) {
+            const clientId = document.getElementById('google_client_id').value.trim();
+            const secret = document.getElementById('google_client_secret').value.trim();
+            if (!clientId || !secret) {
+                alert('Google を選択した場合、Client ID と Client Secret の両方が必須です');
+                return false;
+            }
+        }
+
+        // Microsoft を選択している場合、Client ID/Secret が空だと エラー
+        if (microsoft) {
+            const clientId = document.getElementById('microsoft_client_id').value.trim();
+            const secret = document.getElementById('microsoft_client_secret').value.trim();
+            if (!clientId || !secret) {
+                alert('Microsoft を選択した場合、Client ID と Client Secret の両方が必須です');
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // CSS for .hidden class
+    const style = document.createElement('style');
+    style.textContent = '.hidden { display: none !important; }';
+    document.head.appendChild(style);
+    </script>
     <?php
 }
 
@@ -217,11 +365,11 @@ function render_step4(): void {
     ?>
     <h1>④ 初期管理者の登録</h1>
     <p>最初の管理者ユーザー（is_admin = 1）を登録します。<br>
-       <strong>このGoogleアカウントでログインしないとシステムに入れません。</strong></p>
+       <strong>このメールアドレスでログインしないとシステムに入れません。</strong>（Google / Microsoft / Magic Link いずれの方法でもOK）</p>
 
     <form method="post">
         <input type="hidden" name="_token" value="<?= h($_SESSION['_token']) ?>">
-        <label>Googleアカウント（メールアドレス）
+        <label>メールアドレス
             <input type="email" name="admin_email" required value="<?= h($prev['email']) ?>">
         </label>
         <label>表示名
@@ -243,6 +391,8 @@ function render_step5(): void {
     $db     = $_SESSION['install']['db']     ?? [];
     $google = $_SESSION['install']['google'] ?? [];
     $admin  = $_SESSION['install']['admin']  ?? [];
+    $authMethods = $_SESSION['install']['auth_methods'] ?? [];
+    $authCreds = $_SESSION['install']['auth_creds'] ?? [];
     ?>
     <h1>⑤ 確認と実行</h1>
     <p>以下の内容で <code>config/config.php</code> を生成し、データベースを初期化します。</p>
@@ -254,9 +404,34 @@ function render_step5(): void {
         <li>ユーザー: <code><?= h($db['user'] ?? '') ?></code></li>
     </ul>
 
-    <h3>Google 設定</h3>
+    <h3>認証方法</h3>
     <ul class="summary">
-        <li>OAuth Client ID: <code><?= h($google['client_id'] ?? '') ?></code></li>
+        <?php foreach (['google', 'microsoft', 'email'] as $method): ?>
+            <?php if (!empty($authMethods[$method])): ?>
+                <li>
+                    <?php if ($method === 'google'): ?>
+                        ✅ Google OAuth<br>
+                        <code style="font-size: 11px;"><?= h(mb_substr($authCreds['google_client_id'] ?? '', 0, 32)) ?>…</code>
+                    <?php elseif ($method === 'microsoft'): ?>
+                        ✅ Microsoft Azure AD<br>
+                        <code style="font-size: 11px;"><?= h(mb_substr($authCreds['microsoft_client_id'] ?? '', 0, 32)) ?>…</code>
+                    <?php elseif ($method === 'email'): ?>
+                        ✅ Email Magic Link（Supabase 標準 SMTP）
+                    <?php endif; ?>
+                </li>
+            <?php endif; ?>
+        <?php endforeach; ?>
+    </ul>
+
+    <h3>Supabase Auth</h3>
+    <ul class="summary">
+        <li>Project URL: <code><?= h($google['supabase_url']  ?? '') ?></code></li>
+        <li>anon Key: <code><?= h(mb_substr((string)($google['supabase_anon'] ?? ''), 0, 32)) ?>…(省略)</code></li>
+        <li>JWT Secret: <code><?= !empty($google['supabase_jwt']) ? '設定済' : '(未設定)' ?></code></li>
+    </ul>
+
+    <h3>Google Drive / Vertex</h3>
+    <ul class="summary">
         <li>Drive SA: <code><?= h($google['sa_email'] ?? '') ?></code></li>
         <li>DOC_FOLDER_ID: <code><?= h($google['doc_folder'] ?? '') ?></code></li>
         <li>ATTACHMENT_FOLDER_ID: <code><?= h($google['att_folder'] ?? '') ?></code></li>
@@ -274,7 +449,7 @@ function render_step5(): void {
         <strong>⚠️ 確認事項</strong>
         <ul style="margin:8px 0 0 18px">
             <li>Drive サービスアカウントが上記3フォルダに編集権限を持っているか</li>
-            <li>OAuth Client ID の「承認済みのJavaScript生成元」に本ドメイン (<code>https://<?= h($_SERVER['HTTP_HOST']) ?></code>) が登録されているか</li>
+            <li>Supabase の「Authentication → URL Configuration」に本ドメイン (<code>https://<?= h($_SERVER['HTTP_HOST']) ?>/</code>) が Site URL / Redirect URLs として登録されているか</li>
             <li>HTTPS でアクセスしているか</li>
         </ul>
     </div>
@@ -337,7 +512,7 @@ function handle_step2_db(array $post): void {
         ]);
     } catch (PDOException $e) {
         $_SESSION['install']['errors']['db'] = $e->getMessage();
-        $_SESSION['install']['db'] = compact('host','name','user','pass') + ['host' => $host, 'name' => $name, 'user' => $user, 'pass' => $pass];
+        $_SESSION['install']['db'] = compact('host', 'name', 'user', 'pass');
         header('Location: install.php?step=2');
         exit;
     }
@@ -347,7 +522,9 @@ function handle_step2_db(array $post): void {
 
 function handle_step3_google(array $post): void {
     $_SESSION['install']['google'] = [
-        'client_id'       => trim($post['client_id'] ?? ''),
+        'supabase_url'    => trim($post['supabase_url']  ?? ''),
+        'supabase_anon'   => trim($post['supabase_anon'] ?? ''),
+        'supabase_jwt'    => trim($post['supabase_jwt']  ?? ''),
         'sa_email'        => trim($post['sa_email']  ?? ''),
         'sa_pk'           => trim($post['sa_pk']     ?? ''),
         'doc_folder'      => trim($post['doc_folder']?? ''),
@@ -358,6 +535,48 @@ function handle_step3_google(array $post): void {
         'vertex_sa_email' => trim($post['vertex_sa_email'] ?? ''),
         'vertex_sa_pk'    => trim($post['vertex_sa_pk']    ?? ''),
     ];
+
+    // ---- 認証方法: 検証前にセッション退避（エラー戻り時に入力値を保持するため） ----
+    $authMethods = [];
+    $authCreds = [];
+
+    if (!empty($post['auth_google'])) {
+        $authMethods['google'] = true;
+        $authCreds['google_client_id']     = trim($post['google_client_id']     ?? '');
+        $authCreds['google_client_secret'] = trim($post['google_client_secret'] ?? '');
+    }
+    if (!empty($post['auth_microsoft'])) {
+        $authMethods['microsoft'] = true;
+        $authCreds['microsoft_client_id']     = trim($post['microsoft_client_id']     ?? '');
+        $authCreds['microsoft_client_secret'] = trim($post['microsoft_client_secret'] ?? '');
+    }
+    if (!empty($post['auth_email'])) {
+        $authMethods['email'] = true;
+    }
+
+    $_SESSION['install']['auth_methods'] = $authMethods;
+    $_SESSION['install']['auth_creds']   = $authCreds;
+
+    // ---- バリデーション ----
+    if (empty($authMethods)) {
+        $_SESSION['install']['errors']['auth'] = '最低1つの認証方法は選択してください';
+        header('Location: install.php?step=3');
+        exit;
+    }
+    if (!empty($authMethods['google'])) {
+        if (empty($authCreds['google_client_id']) || empty($authCreds['google_client_secret'])) {
+            $_SESSION['install']['errors']['auth'] = 'Google を選択した場合、Client ID と Client Secret が必須です';
+            header('Location: install.php?step=3');
+            exit;
+        }
+    }
+    if (!empty($authMethods['microsoft'])) {
+        if (empty($authCreds['microsoft_client_id']) || empty($authCreds['microsoft_client_secret'])) {
+            $_SESSION['install']['errors']['auth'] = 'Microsoft を選択した場合、Client ID と Client Secret が必須です';
+            header('Location: install.php?step=3');
+            exit;
+        }
+    }
 }
 
 function handle_step4_admin(array $post): void {
@@ -373,6 +592,13 @@ function handle_step5_finalize(): void {
     $db     = $_SESSION['install']['db'];
     $google = $_SESSION['install']['google'];
     $admin  = $_SESSION['install']['admin'];
+    $authMethods = $_SESSION['install']['auth_methods'] ?? [];
+    $authCreds = $_SESSION['install']['auth_creds'] ?? [];
+
+    // セッション切れ等で認証方法が空の場合はエラー
+    if (empty($authMethods)) {
+        die('セッションが切れたか無効な状態です。ステップ3からやり直してください。');
+    }
 
     $root = dirname(__DIR__);
 
@@ -382,12 +608,27 @@ function handle_step5_finalize(): void {
         die('config.sample.php が見つかりません');
     }
     $tmpl = file_get_contents($sampleFile);
+
+    // 認証方法配列を PHP 配列リテラル文字列に変換
+    $providers = [];
+    if (!empty($authMethods['google'])) $providers[] = 'google';
+    if (!empty($authMethods['microsoft'])) $providers[] = 'microsoft';
+    if (!empty($authMethods['email'])) $providers[] = 'email';
+    $providersStr = '[' . implode(', ', array_map(fn($p) => "'$p'", $providers)) . ']';
+
     $repl = [
         '__DB_HOST__'                => addslashes_php($db['host']),
         '__DB_NAME__'                => addslashes_php($db['name']),
         '__DB_USER__'                => addslashes_php($db['user']),
         '__DB_PASS__'                => addslashes_php($db['pass']),
-        '__GOOGLE_CLIENT_ID__'       => addslashes_php($google['client_id']),
+        '__SUPABASE_URL__'           => addslashes_php($google['supabase_url']),
+        '__SUPABASE_ANON_KEY__'      => addslashes_php($google['supabase_anon']),
+        '__SUPABASE_JWT_SECRET__'    => addslashes_php($google['supabase_jwt']),
+        '__SUPABASE_PROVIDERS__'     => $providersStr,
+        '__GOOGLE_CLIENT_ID__'       => addslashes_php($authCreds['google_client_id'] ?? ''),
+        '__GOOGLE_CLIENT_SECRET__'   => addslashes_php($authCreds['google_client_secret'] ?? ''),
+        '__MICROSOFT_CLIENT_ID__'    => addslashes_php($authCreds['microsoft_client_id'] ?? ''),
+        '__MICROSOFT_CLIENT_SECRET__' => addslashes_php($authCreds['microsoft_client_secret'] ?? ''),
         '__DRIVE_SA_EMAIL__'         => addslashes_php($google['sa_email']),
         '__DRIVE_SA_PRIVATE_KEY__'   => addslashes_php(normalize_pem($google['sa_pk'])),
         '__DOC_FOLDER_ID__'          => addslashes_php($google['doc_folder']),
@@ -406,7 +647,7 @@ function handle_step5_finalize(): void {
         die('config/config.php への書き込みに失敗しました');
     }
     @chmod($root . '/config/config.php', 0640);
-    $log[] = '✅ config/config.php を生成';
+    $log[] = '✅ config/config.php を生成（認証方法: ' . implode(', ', $providers) . '）';
 
     // ---- 2. データベース migration を実行 ----
     require_once $root . '/app/lib/bootstrap.php';
