@@ -501,8 +501,8 @@ function App() {
     let taskToSave = { ...taskData, id: isNew ? tempId : taskData.id };
 
     if (isNew && typeof taskToSave.order === 'undefined') {
-      const maxOrder = tasks.length > 0 ? Math.max(...tasks.map(t => t.order || 0)) : 0;
-      taskToSave.order = maxOrder + 1000;
+      const minOrder = tasks.length > 0 ? Math.min(...tasks.map(t => t.order || 0)) : 0;
+      taskToSave.order = minOrder - 1000;
     }
 
     setTasks(prev => {
@@ -532,6 +532,17 @@ function App() {
     } catch (e) {
       alert("保存に失敗しました: " + e.message);
     }
+  };
+
+  const handleAutoSave = async (taskData) => {
+    const dataForSave = { ...taskData };
+    delete dataForSave.updatedAt;
+    const savedTask = await api.saveTask(dataForSave);
+    setTasks(prev =>
+      prev.map(t => t.id === taskData.id ? savedTask : t)
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+    );
+    // setEditingTask は呼ばない → task prop を変えず、履歴差分の基点を保持
   };
 
   const handleDeleteTask = async (taskId) => {
@@ -1309,7 +1320,7 @@ function App() {
         <TaskModal
           task={editingTask} tasks={tasks} setTasks={setTasks} categories={categories} taskTypes={taskTypes}
           members={members} currentUser={currentUser} onClose={() => setIsModalOpen(false)}
-          onSave={handleSaveTask} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
+          onSave={handleSaveTask} onAutoSave={handleAutoSave} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
           taskTemplates={taskTemplates}
           docTemplates={docTemplates}
           showToast={showToast}

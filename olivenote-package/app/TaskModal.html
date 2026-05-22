@@ -1,4 +1,115 @@
-function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast }) {
+// ============================================================
+// @メンションサジェスト用カスタムフック
+// コメント欄・description どちらの textarea でも使い回せる
+// ============================================================
+
+// textarea 内の指定位置（文字インデックス）のピクセル座標を計算する
+// mirror div 法。親要素（position: relative）からの相対座標を返す
+function getCaretCoordinates(textarea, position) {
+  if (!textarea) return { top: 0, left: 0, height: 20 };
+  const div = document.createElement('div');
+  const style = window.getComputedStyle(textarea);
+  const props = [
+    'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle',
+    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
+    'fontFamily', 'lineHeight', 'letterSpacing', 'textAlign', 'whiteSpace',
+    'wordWrap', 'wordSpacing', 'tabSize'
+  ];
+  props.forEach(p => { div.style[p] = style[p]; });
+  div.style.position = 'absolute';
+  div.style.visibility = 'hidden';
+  div.style.whiteSpace = 'pre-wrap';
+  div.style.wordWrap = 'break-word';
+  div.style.top = '-9999px';
+  div.style.left = '-9999px';
+  div.textContent = textarea.value.substring(0, position);
+  const span = document.createElement('span');
+  span.textContent = textarea.value.substring(position) || '.';
+  div.appendChild(span);
+  document.body.appendChild(div);
+  const lineHeight = parseInt(style.lineHeight, 10) || parseInt(style.fontSize, 10) * 1.4;
+  const coords = {
+    top: textarea.offsetTop + span.offsetTop - textarea.scrollTop,
+    left: textarea.offsetLeft + span.offsetLeft - textarea.scrollLeft,
+    height: lineHeight
+  };
+  document.body.removeChild(div);
+  return coords;
+}
+
+function useMentionSuggest(members) {
+  const [state, setState] = React.useState({
+    active: false, query: '', startIndex: -1, members: [], selectedIndex: 0,
+    caret: { top: 0, left: 0, height: 20 }
+  });
+
+  const detectMention = (textareaRef, text, cursorPos) => {
+    const before = text.substring(0, cursorPos);
+    const match = before.match(/@([^\s　]*)$/);
+    if (match) {
+      const query = match[1];
+      const filtered = members.filter(m => m.name?.toLowerCase().includes(query?.toLowerCase()));
+      if (filtered.length > 0) {
+        const startIndex = cursorPos - match[0].length;
+        const caret = getCaretCoordinates(textareaRef?.current, startIndex);
+        setState({
+          active: true, query, startIndex,
+          members: filtered, selectedIndex: 0, caret
+        });
+        return;
+      }
+    }
+    setState(prev => prev.active ? { ...prev, active: false } : prev);
+  };
+
+  const insertMention = (textareaRef, currentText, setText, member) => {
+    const cursorPos = textareaRef.current?.selectionStart || 0;
+    const before = currentText.substring(0, state.startIndex);
+    const after = currentText.substring(cursorPos);
+    const newText = before + `@${member.name} ` + after;
+    setText(newText);
+    setState({ active: false, query: '', startIndex: -1, members: [], selectedIndex: 0, caret: { top: 0, left: 0, height: 20 } });
+    setTimeout(() => {
+      if (textareaRef.current) {
+        const pos = before.length + member.name.length + 2;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  };
+
+  const handleKeyDown = (e, textareaRef, currentText, setText) => {
+    if (!state.active) return false;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setState(p => ({ ...p, selectedIndex: (p.selectedIndex + 1) % p.members.length }));
+      return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setState(p => ({ ...p, selectedIndex: (p.selectedIndex - 1 + p.members.length) % p.members.length }));
+      return true;
+    }
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault();
+      insertMention(textareaRef, currentText, setText, state.members[state.selectedIndex]);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      setState(p => ({ ...p, active: false }));
+      return true;
+    }
+    return false;
+  };
+
+  const reset = () => setState({ active: false, query: '', startIndex: -1, members: [], selectedIndex: 0, caret: { top: 0, left: 0, height: 20 } });
+
+  return { state, detectMention, insertMention, handleKeyDown, reset };
+}
+
+function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast }) {
       const isNew = !task || !task.id;
       const textareaRef = useRef(null);
       const fileInputRef = useRef(null);
@@ -12,7 +123,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [isDeletingTask, setIsDeletingTask] = useState(false);
       const [showDraftBanner, setShowDraftBanner] = useState(false);
       const [draftData, setDraftData] = useState(null);
-      const [saveBtnText, setSaveBtnText] = useState('保存する');
+      const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved' | 'error'
       const [showCloseConfirm, setShowCloseConfirm] = useState(false);
 
       const [formData, setFormData] = useState({
@@ -491,18 +602,24 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           const initialTemplate = '';
           const defaultCat = currentUser?.defaultCategory || categories[0]?.name || '';
 
-          setFormData(prev => ({ 
-            ...prev, 
-            assigneeEmail: currentUser?.email || '', 
-            assigneeName: currentUser?.name || '', 
-            category: defaultCat, 
+          setFormData(prev => ({
+            ...prev,
+            assigneeEmail: currentUser?.email || '',
+            assigneeName: currentUser?.name || '',
+            category: defaultCat,
             type: initialType,
-            description: initialTemplate 
+            description: initialTemplate
           }));
         }
         setErrorMsg(''); setShowDeleteConfirm(false); setDeleteCommentId(null); setPendingNavigateTask(null); setShowDraftBanner(false); setIsDeletingTask(false);
         setEditorMode(task ? 'preview' : 'write');
-        
+
+        // 既存タスクは自動保存に任せるため、古い draft は削除しバナーも出さない
+        if (task) {
+          localStorage.removeItem(draftKey);
+          return;
+        }
+
         const savedDraft = localStorage.getItem(draftKey);
         if (savedDraft) {
           try {
@@ -537,7 +654,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       const [commentText, setCommentText] = useState('');
       const commentTextareaRef = useRef(null);
-      const [mentionSuggest, setMentionSuggest] = useState({ active: false, query: '', startIndex: -1, members: [], selectedIndex: 0 });
+      const commentMention = useMentionSuggest(members);
+      const descMention = useMentionSuggest(members);
       const [editingCommentId, setEditingCommentId] = useState(null);
       const [editingCommentText, setEditingCommentText] = useState('');
       const [isUploadingToComment, setIsUploadingToComment] = useState(false);
@@ -546,57 +664,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [editorMode, setEditorMode] = useState(isNew ? 'write' : 'preview');
 
       const handleCommentChange = (e) => {
-        const val = e.target.value;
-        setCommentText(val);
-
-        const cursor = e.target.selectionStart;
-        const textBeforeCursor = val.substring(0, cursor);
-        const match = textBeforeCursor.match(/@([^\s　]*)$/);
-
-        if (match) {
-          const query = match[1];
-          const matchedMembers = members.filter(m => m.name?.toLowerCase().includes(query?.toLowerCase()));
-          if (matchedMembers.length > 0) {
-            setMentionSuggest({ active: true, query, startIndex: match.index, members: matchedMembers, selectedIndex: 0 });
-          } else {
-            setMentionSuggest(prev => ({ ...prev, active: false }));
-          }
-        } else {
-          setMentionSuggest(prev => ({ ...prev, active: false }));
-        }
-      };
-
-      const insertMention = (member) => {
-        const before = commentText.substring(0, mentionSuggest.startIndex);
-        const after = commentText.substring(commentTextareaRef.current.selectionStart);
-        const newText = before + `@${member.name} ` + after; 
-        setCommentText(newText);
-        setMentionSuggest({ active: false, query: '', startIndex: -1, members: [], selectedIndex: 0 });
-        
-        setTimeout(() => {
-           if (commentTextareaRef.current) {
-             commentTextareaRef.current.focus();
-             const newPos = before.length + member.name.length + 2;
-             commentTextareaRef.current.setSelectionRange(newPos, newPos);
-           }
-        }, 0);
+        setCommentText(e.target.value);
+        commentMention.detectMention(commentTextareaRef, e.target.value, e.target.selectionStart);
       };
 
       const handleCommentKeyDown = (e) => {
-        if (mentionSuggest.active) {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex + 1) % prev.members.length }));
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex - 1 + prev.members.length) % prev.members.length }));
-          } else if (e.key === 'Tab' || e.key === 'Enter') {
-            e.preventDefault(); 
-            insertMention(mentionSuggest.members[mentionSuggest.selectedIndex]);
-          } else if (e.key === 'Escape') {
-            setMentionSuggest(prev => ({ ...prev, active: false }));
-          }
-        }
+        commentMention.handleKeyDown(e, commentTextareaRef, commentText, setCommentText);
       };
 
       const isDirty = useMemo(() => {
@@ -613,20 +686,161 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       }, [task, formData, taskTemplates]);
 
-      const requestClose = () => {
-        if (isDirty) {
-          setShowCloseConfirm(true);
+      const generateAndSaveHistoryComment = () => {
+        if (isNew || !task) return;
+        const changes = [];
+        if (task.title !== formData.title) {
+          changes.push(`・件名を変更`);
+        }
+        if (task.description !== formData.description) {
+          const oldDesc = task.description || '（空）';
+          const newDesc = formData.description || '（空）';
+          changes.push(
+            `・詳細を更新しました\n` +
+            `<details class="mt-2 mb-2 border border-gray-200 rounded-lg overflow-hidden">\n` +
+            `  <summary class="cursor-pointer text-blue-600 hover:bg-blue-50 text-xs font-bold px-3 py-2 bg-gray-50 transition-colors outline-none flex items-center justify-between">\n` +
+            `    <span>詳細の変更内容を比較する</span>\n` +
+            `    <span class="text-gray-400 font-normal">（クリックで展開）</span>\n` +
+            `  </summary>\n` +
+            `  <div class="flex flex-col md:flex-row gap-0 md:gap-px bg-gray-200">\n` +
+            `    <div class="flex-1 bg-red-50/30 p-3">\n` +
+            `      <div class="text-[10px] font-bold text-red-800 mb-2 border-b border-red-100 pb-1">変更前</div>\n` +
+            `      <div class="text-xs text-gray-600 break-words whitespace-pre-wrap">${oldDesc}</div>\n` +
+            `    </div>\n` +
+            `    <div class="flex-1 bg-green-50/30 p-3">\n` +
+            `      <div class="text-[10px] font-bold text-green-800 mb-2 border-b border-green-100 pb-1">変更後</div>\n` +
+            `      <div class="text-xs text-gray-800 break-words whitespace-pre-wrap">${newDesc}</div>\n` +
+            `    </div>\n` +
+            `  </div>\n` +
+            `</details>`
+          );
+        }
+        if (task.type !== formData.type) {
+          changes.push(`・種別を「${task.type || '未設定'}」から「${formData.type || '未設定'}」に変更`);
+        }
+        if (task.parentId !== formData.parentId) {
+          changes.push(`・親課題を「${task.parentId || '未設定'}」から「${formData.parentId || '未設定'}」に変更`);
+        }
+        if (task.status !== formData.status) {
+          const oldLabel = STATUSES.find(s => s.id === task.status)?.label || '未設定';
+          const newLabel = STATUSES.find(s => s.id === formData.status)?.label || '未設定';
+          changes.push(`・状態を「${oldLabel}」から「${newLabel}」に変更`);
+        }
+        if (task.priority !== formData.priority) {
+          const oldLabel = PRIORITIES.find(p => p.id === task.priority)?.label || '未設定';
+          const newLabel = PRIORITIES.find(p => p.id === formData.priority)?.label || '未設定';
+          changes.push(`・優先度を「${oldLabel}」から「${newLabel}」に変更`);
+        }
+        if (task.assigneeEmail !== formData.assigneeEmail) {
+          const oldName = task.assigneeName || '未設定';
+          const newName = formData.assigneeName || '未設定';
+          changes.push(`・担当者を「${oldName}」から「${newName}」に変更`);
+        }
+        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(formData.subAssignees || [])) {
+          changes.push(`・サブ担当を変更`);
+        }
+        if (task.category !== formData.category) {
+          changes.push(`・カテゴリを「${task.category || '未設定'}」から「${formData.category || '未設定'}」に変更`);
+        }
+        if (task.dueDate !== formData.dueDate) {
+          changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${formData.dueDate || '未設定'}」に変更`);
+        }
+        if (task.startDate !== formData.startDate) {
+          changes.push(`・開始日を「${task.startDate || '未設定'}」から「${formData.startDate || '未設定'}」に変更`);
+        }
+        if (changes.length > 0) {
+          const historyComment = {
+            id: 'comment_hist_' + Date.now().toString(),
+            taskId: formData.id,
+            authorEmail: currentUser?.email || 'system',
+            authorName: currentUser?.name || 'System',
+            text: "📝 **【更新履歴】**\n" + changes.join("\n"),
+            createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+            likes: []
+          };
+          api.saveComment(historyComment).catch(console.error);
+          // フロント state にも追記 → モーダル再オープン時に即反映される
+          setTasks(prev => prev.map(t =>
+            t.id === formData.id
+              ? { ...t, comments: [...(t.comments || []), historyComment] }
+              : t
+          ));
+        }
+        if (task.description !== formData.description) {
+          const descText = formData.description || '';
+          const mentionedMembers = members.filter(m => descText.includes(`@${m.name}`));
+          for (const targetUser of mentionedMembers) {
+            api.createNotification(
+              targetUser.email,
+              currentUser?.name || 'ゲスト',
+              formData.id,
+              formData.title,
+              "課題の詳細でメンションされました"
+            ).catch(() => {});
+          }
+        }
+      };
+
+      const requestClose = async () => {
+        if (isNew) {
+          if (isDirty) {
+            setShowCloseConfirm(true);
+          } else {
+            onClose();
+          }
         } else {
-          onClose(); 
+          await flushAutoSave();
+          generateAndSaveHistoryComment();
+          localStorage.removeItem(draftKey);
+          onClose();
         }
       };
 
       useEffect(() => {
+        // 既存タスクは自動保存があるので draft は不要
+        if (!isNew) return;
         const timer = setTimeout(() => {
-          if (isDirty || isNew) localStorage.setItem(draftKey, JSON.stringify(formData));
+          if (isDirty) localStorage.setItem(draftKey, JSON.stringify(formData));
         }, 1000);
         return () => clearTimeout(timer);
       }, [formData, isDirty, isNew, draftKey]);
+
+      const autoSaveTimerRef = useRef(null);
+
+      useEffect(() => {
+        if (isNew || !isDirty || !formData.title?.trim()) return;
+        if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = setTimeout(async () => {
+          autoSaveTimerRef.current = null;
+          setSaveStatus('saving');
+          try {
+            await onAutoSave({ ...formData, comments: task?.comments || [] });
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 3000);
+          } catch {
+            setSaveStatus('error');
+          }
+        }, 800);
+        return () => {
+          if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+        };
+      }, [formData, isNew, isDirty]);
+
+      const flushAutoSave = async () => {
+        if (autoSaveTimerRef.current) {
+          clearTimeout(autoSaveTimerRef.current);
+          autoSaveTimerRef.current = null;
+        }
+        if (!isNew && isDirty && formData.title?.trim()) {
+          setSaveStatus('saving');
+          try {
+            await onAutoSave({ ...formData, comments: task?.comments || [] });
+            setSaveStatus('saved');
+          } catch {
+            setSaveStatus('error');
+          }
+        }
+      };
 
       const handleChange = (e) => {
         const { name, value } = e.target;
@@ -747,136 +961,42 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           const selectedParent = tasks.find(t => t.id === formData.parentId);
           if (selectedParent && selectedParent.parentId) return setErrorMsg('選択した親課題はすでに子課題です。孫課題は作成できません。（階層は2段階まで）');
         }
-        
-        let taskToSave = { ...formData };
-        
-        if (!isNew && task) {
-          const changes = [];
-          
-          if (task.title !== formData.title) {
-            changes.push(`・件名を変更`);
-          }
-          if (task.description !== formData.description) {
-            const oldDesc = task.description || '（空）';
-            const newDesc = formData.description || '（空）';
-            
-            changes.push(
-              `・詳細を更新しました\n` +
-              `<details class="mt-2 mb-2 border border-gray-200 rounded-lg overflow-hidden">\n` +
-              `  <summary class="cursor-pointer text-blue-600 hover:bg-blue-50 text-xs font-bold px-3 py-2 bg-gray-50 transition-colors outline-none flex items-center justify-between">\n` +
-              `    <span>詳細の変更内容を比較する</span>\n` +
-              `    <span class="text-gray-400 font-normal">（クリックで展開）</span>\n` +
-              `  </summary>\n` +
-              `  <div class="flex flex-col md:flex-row gap-0 md:gap-px bg-gray-200">\n` +
-              `    <div class="flex-1 bg-red-50/30 p-3">\n` +
-              `      <div class="text-[10px] font-bold text-red-800 mb-2 border-b border-red-100 pb-1">変更前</div>\n` +
-              `      <div class="text-xs text-gray-600 break-words whitespace-pre-wrap">${oldDesc}</div>\n` +
-              `    </div>\n` +
-              `    <div class="flex-1 bg-green-50/30 p-3">\n` +
-              `      <div class="text-[10px] font-bold text-green-800 mb-2 border-b border-green-100 pb-1">変更後</div>\n` +
-              `      <div class="text-xs text-gray-800 break-words whitespace-pre-wrap">${newDesc}</div>\n` +
-              `    </div>\n` +
-              `  </div>\n` +
-              `</details>`
-            );
-          }
-          if (task.type !== formData.type) {
-            changes.push(`・種別を「${task.type || '未設定'}」から「${formData.type || '未設定'}」に変更`);
-          }
-          if (task.parentId !== formData.parentId) {
-            changes.push(`・親課題を「${task.parentId || '未設定'}」から「${formData.parentId || '未設定'}」に変更`);
-          }
-          
-          if (task.status !== formData.status) {
-            const oldLabel = STATUSES.find(s => s.id === task.status)?.label || '未設定';
-            const newLabel = STATUSES.find(s => s.id === formData.status)?.label || '未設定';
-            changes.push(`・状態を「${oldLabel}」から「${newLabel}」に変更`);
-          }
-          if (task.priority !== formData.priority) {
-            const oldLabel = PRIORITIES.find(p => p.id === task.priority)?.label || '未設定';
-            const newLabel = PRIORITIES.find(p => p.id === formData.priority)?.label || '未設定';
-            changes.push(`・優先度を「${oldLabel}」から「${newLabel}」に変更`);
-          }
-          if (task.assigneeEmail !== formData.assigneeEmail) {
-            const oldName = task.assigneeName || '未設定';
-            const newName = formData.assigneeName || '未設定';
-            changes.push(`・担当者を「${oldName}」から「${newName}」に変更`);
-          }
-          if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(formData.subAssignees || [])) {
-             changes.push(`・サブ担当を変更`);
-          }
-          if (task.category !== formData.category) {
-            changes.push(`・カテゴリを「${task.category || '未設定'}」から「${formData.category || '未設定'}」に変更`);
-          }
-          if (task.dueDate !== formData.dueDate) {
-            changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${formData.dueDate || '未設定'}」に変更`);
-          }
-          if (task.startDate !== formData.startDate) {
-             changes.push(`・開始日を「${task.startDate || '未設定'}」から「${formData.startDate || '未設定'}」に変更`);
-          }
-          
-          if (changes.length > 0) {
-            const historyComment = {
-               id: 'comment_hist_' + Date.now().toString(),
-               taskId: taskToSave.id, 
-               authorEmail: currentUser?.email || 'system',
-               authorName: currentUser?.name || 'System',
-               text: "📝 **【更新履歴】**\n" + changes.join("\n"),
-               createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-               likes: []
-            };
-            taskToSave.comments = [...(taskToSave.comments || []), historyComment];
-            setFormData(taskToSave); 
 
-            api.saveComment(historyComment).catch(console.error); 
-          }
-        }
-
-        if (isNew || (task && task.description !== formData.description)) {
-          const descText = formData.description || '';
-          const mentionedMembers = members.filter(m => descText.includes(`@${m.name}`));
-          
-          for (const targetUser of mentionedMembers) {
-            api.createNotification(
-              targetUser.email,
-              currentUser?.name || 'ゲスト',
-              formData.id || '新規課題', 
-              formData.title,
-              "課題の詳細でメンションされました"
-            ).catch(() => {});
-          }
+        const descText = formData.description || '';
+        const mentionedMembers = members.filter(m => descText.includes(`@${m.name}`));
+        for (const targetUser of mentionedMembers) {
+          api.createNotification(
+            targetUser.email,
+            currentUser?.name || 'ゲスト',
+            formData.id || '新規課題',
+            formData.title,
+            "課題の詳細でメンションされました"
+          ).catch(() => {});
         }
 
         setIsSaving(true);
         try {
-          await onSave(taskToSave, false); 
+          await onSave({ ...formData }, false);
           localStorage.removeItem(draftKey);
-          
-          setSaveBtnText('保存しました！');
-          setTimeout(() => {
-             setSaveBtnText('保存する');
-          }, 2000);
-
+          if (typeof showToast === 'function') showToast('課題を作成しました');
         } catch (e) {
           setErrorMsg(e.message);
         } finally {
-          setIsSaving(true);
           setIsSaving(false);
         }
       };
 
-      const handleDuplicate = () => {
-        if (isDirty) {
-          if (!window.confirm("未保存の変更があります。破棄して複製しますか？")) return;
-        }
+      const handleDuplicate = async () => {
+        await flushAutoSave();
+        generateAndSaveHistoryComment();
         const duplicatedTask = {
           ...formData,
-          id: '', 
+          id: '',
           title: formData.title + ' のコピー',
-          status: 'todo', 
-          comments: [], 
-          likes: [], 
-          attachments: [] 
+          status: 'todo',
+          comments: [],
+          likes: [],
+          attachments: []
         };
         onOpenTask(duplicatedTask);
       };
@@ -892,16 +1012,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
-      const handleOpenChild = (ct) => {
-        if (isDirty) setPendingNavigateTask(ct);
-        else onOpenTask(ct);
+      const handleOpenChild = async (ct) => {
+        await flushAutoSave();
+        generateAndSaveHistoryComment();
+        onOpenTask(ct);
       };
 
       // 親タスクから子課題を新規作成
-      const handleAddChild = () => {
-        if (isDirty) {
-          if (!window.confirm("未保存の変更があります。破棄して子課題を作成しますか？")) return;
-        }
+      const handleAddChild = async () => {
+        await flushAutoSave();
+        generateAndSaveHistoryComment();
         const newChild = {
           id: '',
           title: formData.title || '',
@@ -990,7 +1110,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
 
         setCommentText('');
-        setMentionSuggest({ active: false, query: '', startIndex: -1, members: [], selectedIndex: 0 });
+        commentMention.reset();
 
         try {
           const saved = await api.saveComment(newComment);
@@ -1180,6 +1300,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   <Bot size={16} className={isAdvisorOpen ? 'text-white' : 'text-indigo-600'} />
                   <span className="hidden sm:inline">AIに相談</span>
                 </button>
+                {!isNew && saveStatus !== 'idle' && (
+                  <span className="text-xs flex items-center gap-1 mr-1 shrink-0">
+                    {saveStatus === 'saving' && <><Loader2 size={12} className="animate-spin text-gray-400"/><span className="text-gray-400 hidden sm:inline">保存中...</span></>}
+                    {saveStatus === 'saved'  && <><Check  size={12} className="text-green-500"/><span className="text-green-600 hidden sm:inline">保存済み</span></>}
+                    {saveStatus === 'error'  && <span className="text-red-500">保存失敗</span>}
+                  </span>
+                )}
                 <button onClick={requestClose} disabled={isSaving || isDeletingTask} className="text-gray-400 hover:text-gray-800 hover:bg-gray-200 p-1.5 rounded-full disabled:opacity-50 transition-colors"><X size={20} /></button>
               </div>
             </div>
@@ -1262,7 +1389,55 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         <FilePlus size={14}/> テンプレート挿入
                       </button>
                     </div>
-                    <textarea ref={textareaRef} name="description" value={formData.description} onChange={handleChange} onKeyDown={handleKeyDown} disabled={isDeletingTask} rows="10" placeholder="課題の詳細をマークダウンで記入..." className="w-full border border-gray-300 rounded-b-lg rounded-t-none p-3 md:p-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50 shadow-sm resize-y min-h-[200px]" />
+                    <div className="relative">
+                      <textarea
+                        ref={textareaRef}
+                        name="description"
+                        value={formData.description}
+                        onChange={(e) => {
+                          handleChange(e);
+                          descMention.detectMention(textareaRef, e.target.value, e.target.selectionStart);
+                        }}
+                        onKeyDown={(e) => {
+                          const setDesc = (newText) => setFormData(prev => ({ ...prev, description: newText }));
+                          if (descMention.handleKeyDown(e, textareaRef, formData.description, setDesc)) return;
+                          handleKeyDown(e);
+                        }}
+                        disabled={isDeletingTask}
+                        rows="10"
+                        placeholder="課題の詳細をマークダウンで記入...（「@」でメンション）"
+                        className="w-full border border-gray-300 rounded-b-lg rounded-t-none p-3 md:p-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50 shadow-sm resize-y min-h-[200px]"
+                      />
+                      {descMention.state.active && (
+                        <div
+                          className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
+                          style={{
+                            top: descMention.state.caret.top + descMention.state.caret.height + 4,
+                            left: descMention.state.caret.left
+                          }}
+                        >
+                          <div className="p-1.5 bg-blue-50 border-b border-gray-100 text-xs font-bold text-blue-800">
+                            TabキーかEnterキーで選択
+                          </div>
+                          <ul className="max-h-48 overflow-y-auto">
+                            {descMention.state.members.map((m, idx) => (
+                              <li
+                                key={m.email}
+                                ref={(el) => {
+                                  if (el && idx === descMention.state.selectedIndex) {
+                                    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                  }
+                                }}
+                                onClick={() => descMention.insertMention(textareaRef, formData.description, (newText) => setFormData(prev => ({ ...prev, description: newText })), m)}
+                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === descMention.state.selectedIndex ? 'bg-blue-100 font-bold text-blue-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                              >
+                                <span>{m.avatar}</span> {m.name}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="w-full border border-gray-200 bg-gray-50 rounded-lg p-4 md:p-6 min-h-[200px] shadow-inner prose prose-sm max-w-none">
@@ -1551,17 +1726,28 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         onKeyDown={handleCommentKeyDown} 
                       />
                       
-                      {mentionSuggest.active && (
-                        <div className="absolute left-0 top-full mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+                      {commentMention.state.active && (
+                        <div
+                          className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
+                          style={{
+                            top: commentMention.state.caret.top + commentMention.state.caret.height + 4,
+                            left: commentMention.state.caret.left
+                          }}
+                        >
                           <div className="p-1.5 bg-blue-50 border-b border-gray-100 text-xs font-bold text-blue-800">
                             TabキーかEnterキーで選択
                           </div>
                           <ul className="max-h-48 overflow-y-auto">
-                            {mentionSuggest.members.map((m, idx) => (
-                              <li 
-                                key={m.email} 
-                                onClick={() => insertMention(m)}
-                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === mentionSuggest.selectedIndex ? 'bg-blue-100 font-bold text-blue-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                            {commentMention.state.members.map((m, idx) => (
+                              <li
+                                key={m.email}
+                                ref={(el) => {
+                                  if (el && idx === commentMention.state.selectedIndex) {
+                                    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                  }
+                                }}
+                                onClick={() => commentMention.insertMention(commentTextareaRef, commentText, setCommentText, m)}
+                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-blue-100 font-bold text-blue-900' : 'hover:bg-gray-50 text-gray-700'}`}
                               >
                                 <span>{m.avatar}</span> {m.name}
                               </li>
@@ -1917,11 +2103,15 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 )}
               </div>
               <div className="flex gap-2 md:gap-3 w-full sm:w-auto">
-                <button onClick={requestClose} disabled={isSaving || isDeletingTask} className="flex-1 sm:flex-initial px-4 md:px-5 py-2 rounded-lg font-bold text-gray-600 bg-white border border-gray-300 hover:bg-gray-50 shadow-sm transition-colors disabled:opacity-50 text-sm md:text-base">キャンセル</button>
-                <button onClick={handleSave} disabled={isSaving || isDeletingTask} className={`flex-1 sm:flex-initial px-4 md:px-6 py-2 rounded-lg font-bold text-white shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 text-sm md:text-base ${saveBtnText === '保存しました！' ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                  {isSaving && <Loader2 size={16} className="animate-spin" />}
-                  {saveBtnText}
+                <button onClick={requestClose} disabled={isSaving || isDeletingTask} className="flex-1 sm:flex-initial px-4 md:px-5 py-2 rounded-lg font-bold text-gray-600 bg-white border border-gray-300 hover:bg-gray-50 shadow-sm transition-colors disabled:opacity-50 text-sm md:text-base">
+                  {isNew ? 'キャンセル' : '閉じる'}
                 </button>
+                {isNew && (
+                  <button onClick={handleSave} disabled={isSaving || isDeletingTask} className="flex-1 sm:flex-initial px-4 md:px-6 py-2 rounded-lg font-bold text-white shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 text-sm md:text-base bg-blue-600 hover:bg-blue-700">
+                    {isSaving && <Loader2 size={16} className="animate-spin" />}
+                    作成する
+                  </button>
+                )}
               </div>
             </div>
           </div>
