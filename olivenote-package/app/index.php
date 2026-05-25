@@ -439,6 +439,39 @@ if (!$isLoggedIn) {
       /* Classic: SVG fill / 部分ボーダーも blue 系へ */
       [data-theme="classic"] .fill-olive-600 { fill: #2563eb !important; }
       [data-theme="classic"] .border-t-olive-500 { border-top-color: #3b82f6 !important; }
+
+      /* ===== Olive コンシェルジュ FAB（テーマ追随） ===== */
+      .olive-concierge-fab {
+        background: linear-gradient(to right, #3D6222, #6A9D50);
+        box-shadow: 0 4px 14px 0 rgba(77,122,45,0.4);
+      }
+      .olive-concierge-fab:hover {
+        box-shadow: 0 6px 20px rgba(77,122,45,0.3);
+      }
+      [data-theme="classic"] .olive-concierge-fab {
+        background: linear-gradient(to right, #2563eb, #4f46e5) !important;
+        box-shadow: 0 4px 14px 0 rgba(37,99,235,0.39) !important;
+      }
+      [data-theme="classic"] .olive-concierge-fab:hover {
+        box-shadow: 0 6px 20px rgba(37,99,235,0.23) !important;
+      }
+
+      /* ===== Classic: レスポンシブ修飾子の取りこぼし対策 ===== */
+      @media (min-width: 768px) {
+        [data-theme="classic"] .md\:bg-olive-50  { background-color: #eff6ff !important; }
+        [data-theme="classic"] .md\:bg-olive-100 { background-color: #dbeafe !important; }
+      }
+      /* group-hover / active / focus-within の olive 系も blue へ */
+      [data-theme="classic"] .group:hover .group-hover\:bg-olive-50,
+      [data-theme="classic"] .group:hover .group-hover\:bg-olive-100 { background-color: #eff6ff !important; }
+      [data-theme="classic"] .group:hover .group-hover\:text-olive-600 { color: #2563eb !important; }
+      [data-theme="classic"] .active\:bg-olive-100:active { background-color: #dbeafe !important; }
+      [data-theme="classic"] .focus\:border-olive-400:focus,
+      [data-theme="classic"] .focus\:border-olive-600:focus { border-color: #3b82f6 !important; }
+      [data-theme="classic"] .focus-within\:border-olive-600:focus-within { border-color: #3b82f6 !important; }
+      [data-theme="classic"] .focus-within\:ring-olive-400:focus-within { --tw-ring-color: rgba(59,130,246,0.35) !important; }
+      [data-theme="classic"] .hover\:text-olive-500:hover { color: #3b82f6 !important; }
+      [data-theme="classic"] .hover\:border-olive-200:hover { border-color: #bfdbfe !important; }
     </style>
     <script>
       // テーマを描画前に適用してフラッシュを防ぐ
