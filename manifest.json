@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.10",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.10/olivenote-1.0.10.zip",
-  "sha256": "a3848ccd8698611c9e524231d40f5faf77348a0b692a04d8e26a3ed1371548b5",
-  "size_bytes": 2727588,
+  "latest": "1.0.11",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.11/olivenote-1.0.11.zip",
+  "sha256": "5612c137b00e54048b3a5ce6c3e1ecb1fa5a89932c90b0a7ce0b78fe18a8dbf6",
+  "size_bytes": 2727896,
   "min_php_version": "8.0",
-  "changelog": "\n### デザインリニューアル\n- **カラースキームをオリーブグリーン基調にリニューアル** — 全体を blue/indigo 系から OliveNote らしい深緑 + クリームカラーへ刷新。ヘッダー・ボタン・ハイライト・AIパネル等を統一感のあるオリーブテーマに変更\n- **入力フィールドの視認性を改善** — 周囲セクションを薄オリーブ背景 (`#F2F6EE`)、入力フィールドを白＋オリーブボーダー (`#9DB88A`) に統一して、コメント・項目が多いタスクでも背景と入力欄の区別が明確に。ラベルも `font-semibold` + 濃いオリーブ色で強調\n- **課題詳細モーダルを画面幅いっぱいに拡大** — 従来の `max-w-5xl` (1024px) から `max-w-[96vw]` に変更。左右 2% の余白で画面から離れやすさは維持しつつ、広い画面で情報を一望できる\n- **テーマ切替機能を追加** — ヘッダー右側のパレットアイコンから「オリーブ（新）」と「クラシック（旧blue/navy）」を切り替え可能。選択は `localStorage` に保存され次回起動時にも維持。将来のテーマ追加にも対応した設計\n\n",
-  "published_at": "2026-05-25T00:38:10Z"
+  "changelog": "\n### バグ修正（テーマ切替）\n- **クラシックテーマ時の AI タスクアドバイザーパネル背景が緑のままだった問題を修正** — `md:bg-olive-50` のようなレスポンシブ修飾子付きクラスにもクラシック上書きCSSを追加\n- **Olive コンシェルジュの FAB ボタンがテーマに追従していなかった問題を修正** — グラデーション・ドロップシャドウを theme-aware なカスタムクラスに置換し、クラシックでは元の青／インディゴ配色に戻るように\n- **その他レスポンシブ／状態修飾子（group-hover, active, focus-within 等）の取りこぼしを一括フォロー**\n\n",
+  "published_at": "2026-05-25T01:45:10Z"
 }
