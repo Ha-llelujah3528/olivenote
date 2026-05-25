@@ -90,7 +90,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
               <button
                 key={task.id}
                 onClick={() => onTaskClick(task)}
-                className={`w-full text-left p-3 hover:bg-blue-50/40 transition-colors active:bg-blue-100/50 ${isChild ? 'pl-8 bg-gray-50/50' : ''}`}
+                className={`w-full text-left p-3 hover:bg-olive-50/40 transition-colors active:bg-olive-100/50 ${isChild ? 'pl-8 bg-gray-50/50' : ''}`}
               >
                 <div className="flex items-start gap-2">
                   {isChild && <CornerDownRight size={14} className="text-gray-300 mt-0.5 -ml-5 shrink-0" />}
@@ -275,7 +275,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                   const isOffDay = isWeekend || isHoliday;
                   
                   return (
-                    <div key={idx} className={`w-8 text-[10px] text-center border-r border-gray-200 py-1 flex flex-col items-center justify-center shrink-0 ${dateStr === todayStr ? 'bg-blue-100 font-bold text-blue-800' : isOffDay ? 'bg-gray-200/70 text-gray-400' : 'text-gray-700'}`}>
+                    <div key={idx} className={`w-8 text-[10px] text-center border-r border-gray-200 py-1 flex flex-col items-center justify-center shrink-0 ${dateStr === todayStr ? 'bg-olive-100 font-bold text-olive-800' : isOffDay ? 'bg-gray-200/70 text-gray-400' : 'text-gray-700'}`}>
                       <span className="font-bold">{d.getDate()}</span>
                       <span className="text-[8px] scale-90">{DAYS_OF_WEEK[d.getDay()]}</span>
                     </div>
@@ -293,7 +293,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
             const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
 
             return (
-              <div key={task.id} className="flex border-b border-gray-100 hover:bg-blue-50/40 group transition-colors">
+              <div key={task.id} className="flex border-b border-gray-100 hover:bg-olive-50/40 group transition-colors">
                 <div 
                   draggable 
                   onDragStart={(e) => { e.dataTransfer.setData('taskId', task.id); e.dataTransfer.effectAllowed = 'move'; }}
@@ -305,13 +305,13 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                     const draggedTaskId = e.dataTransfer.getData('taskId');
                     if (draggedTaskId && draggedTaskId !== task.id) onReorderTask(draggedTaskId, task.id);
                   }}
-                  className={`w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-white group-hover:bg-blue-50/40 border-r border-gray-200 flex flex-col justify-center cursor-pointer transition-colors relative shadow-[2px_0_4px_rgba(0,0,0,0.02)] shrink-0 ${isChild ? 'pl-8 py-2 pr-2' : 'p-2'} ${dragOverTaskId === task.id ? 'border-t-2 border-t-blue-500' : ''}`} 
+                  className={`w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-white group-hover:bg-olive-50/40 border-r border-gray-200 flex flex-col justify-center cursor-pointer transition-colors relative shadow-[2px_0_4px_rgba(0,0,0,0.02)] shrink-0 ${isChild ? 'pl-8 py-2 pr-2' : 'p-2'} ${dragOverTaskId === task.id ? 'border-t-2 border-t-olive-500' : ''}`} 
                   onClick={() => onTaskClick(task)}
                 >
                   {isChild && <CornerDownRight size={14} className="absolute left-3 top-3 text-gray-300" />}
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] text-gray-400 font-mono w-11 flex-shrink-0">{task.id.replace('TASK-','')}</span>
-                    <span className="text-sm font-medium truncate text-gray-800 group-hover:text-blue-600">{task.title}</span>
+                    <span className="text-sm font-medium truncate text-gray-800 group-hover:text-olive-600">{task.title}</span>
                   </div>
                   {!isCompact && (
                     <div className="flex items-center gap-1.5 mt-1 pl-13">

@@ -202,7 +202,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
   @page { size: A4; margin: 15mm; }
   * { box-sizing: border-box; }
   body { font-family: 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', 'Meiryo', sans-serif; color: #1f2937; font-size: 11pt; line-height: 1.65; margin: 0; }
-  .header { border-bottom: 2pt solid #0d9488; padding-bottom: 8pt; margin-bottom: 18pt; }
+  .header { border-bottom: 2pt solid #4D7A2D; padding-bottom: 8pt; margin-bottom: 18pt; }
   .id-row { color: #6b7280; font-size: 10pt; letter-spacing: 0.05em; }
   .title { font-size: 18pt; font-weight: bold; margin: 4pt 0 0 0; line-height: 1.4; }
   .meta { display: grid; grid-template-columns: 90pt 1fr; gap: 8pt 14pt; margin-bottom: 22pt; }
@@ -213,7 +213,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
   .badge-priority-low    { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
   .badge-priority-medium { background: #fefce8; border-color: #fde68a; color: #a16207; }
   .badge-priority-high   { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
-  .section-title { font-size: 12pt; font-weight: bold; border-bottom: 1pt solid #d1d5db; padding-bottom: 4pt; margin: 0 0 8pt 0; color: #0f766e; }
+  .section-title { font-size: 12pt; font-weight: bold; border-bottom: 1pt solid #d1d5db; padding-bottom: 4pt; margin: 0 0 8pt 0; color: #2C4A1C; }
   .desc { font-size: 11pt; word-wrap: break-word; }
   .desc h1 { font-size: 14pt; font-weight: bold; border-bottom: 1pt solid #e5e7eb; padding-bottom: 3pt; margin: 12pt 0 6pt; }
   .desc h2 { font-size: 13pt; font-weight: bold; border-bottom: 1pt solid #e5e7eb; padding-bottom: 2pt; margin: 10pt 0 5pt; }
@@ -535,7 +535,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             taskId: formData.id,
             authorEmail: 'system',
             authorName: '⚙️ システム通知',
-            text: `✨ **「${template.name}」を出力しました！**\n<a href="${result.url}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline font-bold flex items-center gap-1 mt-2">📄 出力されたドキュメントを別タブで開く</a>`,
+            text: `✨ **「${template.name}」を出力しました！**\n<a href="${result.url}" target="_blank" rel="noopener noreferrer" class="text-olive-600 hover:underline font-bold flex items-center gap-1 mt-2">📄 出力されたドキュメントを別タブで開く</a>`,
             createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
             likes: []
           };
@@ -698,7 +698,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           changes.push(
             `・詳細を更新しました\n` +
             `<details class="mt-2 mb-2 border border-gray-200 rounded-lg overflow-hidden">\n` +
-            `  <summary class="cursor-pointer text-blue-600 hover:bg-blue-50 text-xs font-bold px-3 py-2 bg-gray-50 transition-colors outline-none flex items-center justify-between">\n` +
+            `  <summary class="cursor-pointer text-olive-600 hover:bg-olive-50 text-xs font-bold px-3 py-2 bg-gray-50 transition-colors outline-none flex items-center justify-between">\n` +
             `    <span>詳細の変更内容を比較する</span>\n` +
             `    <span class="text-gray-400 font-normal">（クリックで展開）</span>\n` +
             `  </summary>\n` +
@@ -1166,9 +1166,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             
             if (file.type.startsWith('image/')) {
               const directImageUrl = `https://drive.google.com/uc?id=${uploadedResult.id}`;
-              uploadedUrls.push(`![${uploadedResult.name}](${directImageUrl})\n<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-blue-600 hover:underline">📎 画像を別タブで開く</a>`);
+              uploadedUrls.push(`![${uploadedResult.name}](${directImageUrl})\n<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-olive-600 hover:underline">📎 画像を別タブで開く</a>`);
             } else {
-              uploadedUrls.push(`<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline font-bold">📎 ${uploadedResult.name}</a>`);
+              uploadedUrls.push(`<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-olive-600 hover:underline font-bold">📎 ${uploadedResult.name}</a>`);
             }
           }
           
@@ -1211,7 +1211,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       return (
         <div 
-          className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
+          className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 px-[2%] py-4 backdrop-blur-sm"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) requestClose();
           }}
@@ -1272,11 +1272,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
               </div>
             </div>
           )}
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] flex flex-col overflow-hidden border border-gray-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-[96vw] max-h-[95vh] flex flex-col overflow-hidden border border-gray-200">
 
-            <div className="bg-gray-50 border-b px-3 md:px-6 py-2.5 md:py-4 flex items-center justify-between shrink-0 gap-2">
+            <div className="bg-olive-50 border-b border-olive-200 px-3 md:px-6 py-2.5 md:py-4 flex items-center justify-between shrink-0 gap-2">
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
-                <span className="bg-blue-100 text-blue-800 text-[10px] md:text-xs font-bold px-1.5 md:px-2 py-1 rounded shadow-sm shrink-0">{isNew ? '新規' : formData.id}</span>
+                <span className="bg-olive-100 text-olive-800 text-[10px] md:text-xs font-bold px-1.5 md:px-2 py-1 rounded shadow-sm shrink-0">{isNew ? '新規' : formData.id}</span>
                 <h2 className="text-base md:text-xl font-bold text-gray-800 truncate">
                   <span className="hidden sm:inline">{isNew ? '課題の追加' : '課題の編集'}</span>
                   <span className="sm:hidden">{isNew ? '追加' : '編集'}</span>
@@ -1287,7 +1287,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   <button
                     onClick={handleLikeTaskLocal}
                     title={getLikeNames(formData.likes)}
-                    className={`flex items-center gap-1 md:gap-1.5 px-2 md:px-3 py-1.5 rounded-full text-xs md:text-sm font-bold transition-colors shadow-sm ${formData.likes.includes(currentUserId) ? 'bg-blue-600 text-white' : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                    className={`flex items-center gap-1 md:gap-1.5 px-2 md:px-3 py-1.5 rounded-full text-xs md:text-sm font-bold transition-colors shadow-sm ${formData.likes.includes(currentUserId) ? 'bg-olive-600 text-white' : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'}`}
                   >
                     <ThumbsUp size={16} className={formData.likes.includes(currentUserId) ? 'fill-white' : ''} />
                     <span>{formData.likes.length > 0 ? formData.likes.length : <span className="hidden sm:inline">いいね</span>}</span>
@@ -1295,9 +1295,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 )}
                 <button
                   onClick={() => setIsAdvisorOpen(!isAdvisorOpen)}
-                  className={`flex items-center gap-1 md:gap-1.5 px-2 md:px-3 py-1.5 rounded-full text-xs md:text-sm font-bold transition-colors shadow-sm ${isAdvisorOpen ? 'bg-indigo-600 text-white' : 'bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100'}`}
+                  className={`flex items-center gap-1 md:gap-1.5 px-2 md:px-3 py-1.5 rounded-full text-xs md:text-sm font-bold transition-colors shadow-sm ${isAdvisorOpen ? 'bg-olive-600 text-white' : 'bg-olive-50 border border-olive-200 text-olive-700 hover:bg-olive-100'}`}
                 >
-                  <Bot size={16} className={isAdvisorOpen ? 'text-white' : 'text-indigo-600'} />
+                  <Bot size={16} className={isAdvisorOpen ? 'text-white' : 'text-olive-600'} />
                   <span className="hidden sm:inline">AIに相談</span>
                 </button>
                 {!isNew && saveStatus !== 'idle' && (
@@ -1312,11 +1312,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             </div>
 
             {showDraftBanner && (
-              <div className="mx-3 md:mx-6 mt-3 md:mt-4 p-3 bg-blue-50 border border-blue-200 text-blue-800 text-xs md:text-sm font-bold rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 shadow-sm">
-                <div className="flex items-center gap-2"><SaveAll size={18} className="text-blue-600 shrink-0" /><span>未保存の編集データ（下書き）が見つかりました。</span></div>
+              <div className="mx-3 md:mx-6 mt-3 md:mt-4 p-3 bg-olive-50 border border-olive-200 text-olive-800 text-xs md:text-sm font-bold rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0 shadow-sm">
+                <div className="flex items-center gap-2"><SaveAll size={18} className="text-olive-600 shrink-0" /><span>未保存の編集データ（下書き）が見つかりました。</span></div>
                 <div className="flex gap-2 shrink-0">
-                   <button onClick={() => { localStorage.removeItem(draftKey); setShowDraftBanner(false); }} className="flex-1 sm:flex-initial px-3 py-1.5 bg-white border border-blue-300 text-blue-700 rounded hover:bg-blue-100 transition-colors">破棄する</button>
-                   <button onClick={() => { setFormData(draftData); setShowDraftBanner(false); }} className="flex-1 sm:flex-initial px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow-sm transition-colors">復元する</button>
+                   <button onClick={() => { localStorage.removeItem(draftKey); setShowDraftBanner(false); }} className="flex-1 sm:flex-initial px-3 py-1.5 bg-white border border-olive-300 text-olive-700 rounded hover:bg-olive-100 transition-colors">破棄する</button>
+                   <button onClick={() => { setFormData(draftData); setShowDraftBanner(false); }} className="flex-1 sm:flex-initial px-3 py-1.5 bg-olive-600 text-white rounded hover:bg-olive-700 shadow-sm transition-colors">復元する</button>
                 </div>
               </div>
             )}
@@ -1353,7 +1353,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       type="button"
                       onClick={() => handleOpenChild(parentTask)}
                       title="親課題を開く"
-                      className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline mb-1.5 max-w-full"
+                      className="inline-flex items-center gap-1 text-xs text-olive-600 hover:text-olive-800 hover:underline mb-1.5 max-w-full"
                     >
                       <ChevronUp size={12} className="shrink-0"/>
                       <span className="text-gray-500 shrink-0">親:</span>
@@ -1362,17 +1362,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     </button>
                   );
                 })()}
-                <label className="block text-sm font-bold text-gray-700 mb-1">件名 <span className="text-red-500">*</span></label>
-                <input type="text" name="title" value={formData.title} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded-lg p-2.5 text-lg md:text-xl font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 shadow-sm" placeholder="課題のタイトルを入力" />
+                <label className="block text-sm font-semibold text-olive-900 mb-1">件名 <span className="text-red-500">*</span></label>
+                <input type="text" name="title" value={formData.title} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded-lg p-2.5 text-lg md:text-xl font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-olive-500 disabled:opacity-50 shadow-sm" placeholder="課題のタイトルを入力" />
               </div>
 
               {/* 2. 詳細 */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-bold text-gray-700 flex items-center gap-1"><AlignLeft size={16} /> 詳細</label>
+                  <label className="block text-sm font-semibold text-olive-900 flex items-center gap-1"><AlignLeft size={16} /> 詳細</label>
                   <div className="flex bg-gray-100 rounded p-0.5 border border-gray-200">
-                    <button onClick={() => setEditorMode('write')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'write' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}><Edit size={14}/> 編集</button>
-                    <button onClick={() => setEditorMode('preview')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'preview' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}><Eye size={14}/> プレビュー</button>
+                    <button onClick={() => setEditorMode('write')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'write' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-olive-600' : 'text-gray-500 hover:text-gray-700'}`}><Edit size={14}/> 編集</button>
+                    <button onClick={() => setEditorMode('preview')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'preview' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-olive-600' : 'text-gray-500 hover:text-gray-700'}`}><Eye size={14}/> プレビュー</button>
                   </div>
                 </div>
                 
@@ -1385,7 +1385,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <button type="button" onClick={() => insertMarkdown('\n| タイトル1 | タイトル2 |\n|---|---|\n| 内容 | 内容 |\n')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><Grid size={14}/> 表</button>
                       <button type="button" onClick={() => insertMarkdown('![コメント](', 'URL)')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ImageIcon size={14}/> 画像リンク</button>
 
-                      <button type="button" onClick={insertCurrentTemplate} className="p-1.5 text-blue-600 hover:bg-blue-100 rounded text-xs flex items-center gap-1 ml-auto font-bold transition-colors">
+                      <button type="button" onClick={insertCurrentTemplate} className="p-1.5 text-olive-600 hover:bg-olive-100 rounded text-xs flex items-center gap-1 ml-auto font-bold transition-colors">
                         <FilePlus size={14}/> テンプレート挿入
                       </button>
                     </div>
@@ -1406,7 +1406,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         disabled={isDeletingTask}
                         rows="10"
                         placeholder="課題の詳細をマークダウンで記入...（「@」でメンション）"
-                        className="w-full border border-gray-300 rounded-b-lg rounded-t-none p-3 md:p-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50 shadow-sm resize-y min-h-[200px]"
+                        className="w-full border border-gray-300 rounded-b-lg rounded-t-none p-3 md:p-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-olive-500 font-mono disabled:opacity-50 shadow-sm resize-y min-h-[200px]"
                       />
                       {descMention.state.active && (
                         <div
@@ -1416,7 +1416,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             left: descMention.state.caret.left
                           }}
                         >
-                          <div className="p-1.5 bg-blue-50 border-b border-gray-100 text-xs font-bold text-blue-800">
+                          <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
                             TabキーかEnterキーで選択
                           </div>
                           <ul className="max-h-48 overflow-y-auto">
@@ -1429,7 +1429,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                                   }
                                 }}
                                 onClick={() => descMention.insertMention(textareaRef, formData.description, (newText) => setFormData(prev => ({ ...prev, description: newText })), m)}
-                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === descMention.state.selectedIndex ? 'bg-blue-100 font-bold text-blue-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === descMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
                               >
                                 <span>{m.avatar}</span> {m.name}
                               </li>
@@ -1454,9 +1454,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                  {formData.attachments?.length > 0 && (
                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
                      {formData.attachments.map(file => (
-                       <div key={file.id} className="flex items-center justify-between bg-white border border-gray-200 p-2 rounded shadow-sm text-sm hover:border-blue-300 transition-colors">
-                         <a href={file.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-blue-600 hover:underline truncate">
-                           <div className="bg-blue-50 p-1.5 rounded"><Download size={14} className="shrink-0 text-blue-500" /></div>
+                       <div key={file.id} className="flex items-center justify-between bg-white border border-gray-200 p-2 rounded shadow-sm text-sm hover:border-olive-300 transition-colors">
+                         <a href={file.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-olive-600 hover:underline truncate">
+                           <div className="bg-olive-50 p-1.5 rounded"><Download size={14} className="shrink-0 text-olive-500" /></div>
                            <span className="truncate font-medium">{file.name}</span>
                          </a>
                          <button onClick={() => handleRemoveAttachment(file.id)} disabled={isDeletingTask} className="text-gray-400 hover:text-red-500 p-1.5 rounded hover:bg-red-50 disabled:opacity-50 transition-colors"><X size={14}/></button>
@@ -1467,7 +1467,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                  
                  <div className="flex items-center gap-3">
                    <input type="file" ref={fileInputRef} onChange={handleFileUpload} multiple disabled={isDeletingTask} className="hidden" id="file-upload" />
-                   <label htmlFor="file-upload" className={`cursor-pointer bg-white hover:bg-blue-50 text-blue-600 text-sm font-bold py-2 px-4 rounded border border-blue-200 transition-colors shadow-sm flex items-center gap-2 ${isDeletingTask ? 'opacity-50 pointer-events-none' : ''}`}>
+                   <label htmlFor="file-upload" className={`cursor-pointer bg-white hover:bg-olive-50 text-olive-600 text-sm font-bold py-2 px-4 rounded border border-olive-200 transition-colors shadow-sm flex items-center gap-2 ${isDeletingTask ? 'opacity-50 pointer-events-none' : ''}`}>
                      {isUploading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} ファイルを選択
                    </label>
                    <span className="text-xs text-gray-400">※保存ボタンを押さなくても即時アップロードされます</span>
@@ -1475,37 +1475,37 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
               </div>
 
               {/* 4. 状態〜期限日までの属性ブロック (横並びグリッド) */}
-              <div className="bg-white border border-gray-200 rounded-lg p-3 md:p-5 shadow-sm">
-                <h3 className="text-sm font-bold text-gray-800 mb-4 border-b pb-2 flex items-center gap-2"><Settings size={16}/> 課題の属性</h3>
+              <div className="bg-olive-50 border border-olive-200 rounded-lg p-3 md:p-5 shadow-sm">
+                <h3 className="text-sm font-bold text-olive-900 mb-4 border-b border-olive-200 pb-2 flex items-center gap-2"><Settings size={16}/> 課題の属性</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
                   {/* 状態 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">状態</label>
-                    <select name="status" value={formData.status} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm">
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">状態</label>
+                    <select name="status" value={formData.status} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm">
                       {STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                     </select>
                   </div>
                   {/* 優先度 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">優先度</label>
-                    <select name="priority" value={formData.priority} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm">
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">優先度</label>
+                    <select name="priority" value={formData.priority} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm">
                       {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                     </select>
                   </div>
                   {/* 担当者 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">担当者</label>
-                    <select name="assigneeEmail" value={formData.assigneeEmail} onChange={handleAssigneeChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm">
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">担当者</label>
+                    <select name="assigneeEmail" value={formData.assigneeEmail} onChange={handleAssigneeChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm">
                       <option value="">未設定</option>
                       {members.map(m => <option key={m.email} value={m.email}>{m.name}</option>)}
                     </select>
                   </div>
                   {/* サブ担当 */}
                   <div className="relative">
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">サブ担当</label>
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">サブ担当</label>
                     <div 
                       onClick={() => !isDeletingTask && setIsSubAssigneeMenuOpen(!isSubAssigneeMenuOpen)}
-                      className={`w-full border border-gray-300 rounded p-2 text-sm bg-white flex items-center justify-between shadow-sm transition-colors ${isDeletingTask ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-blue-400'}`}
+                      className={`w-full border border-gray-300 rounded p-2 text-sm bg-white flex items-center justify-between shadow-sm transition-colors ${isDeletingTask ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-olive-400'}`}
                     >
                       <span className="truncate">
                         {formData.subAssignees?.length > 0 ? `${formData.subAssignees.length}名選択中` : '設定しない'}
@@ -1520,7 +1520,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             const isMainAssignee = formData.assigneeEmail === m.email;
                             const isSelected = formData.subAssignees?.includes(m.email);
                             return (
-                              <label key={m.email} className={`flex items-center gap-2 px-3 py-2 text-sm transition-colors ${isMainAssignee ? 'opacity-50 cursor-not-allowed bg-gray-50' : 'cursor-pointer hover:bg-blue-50'}`}>
+                              <label key={m.email} className={`flex items-center gap-2 px-3 py-2 text-sm transition-colors ${isMainAssignee ? 'opacity-50 cursor-not-allowed bg-gray-50' : 'cursor-pointer hover:bg-olive-50'}`}>
                                 <input
                                   type="checkbox"
                                   disabled={isMainAssignee}
@@ -1531,7 +1531,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                                       : (formData.subAssignees || []).filter(email => email !== m.email);
                                     setFormData(prev => ({ ...prev, subAssignees: newSubs }));
                                   }}
-                                  className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 disabled:opacity-50"
+                                  className="w-4 h-4 text-olive-600 rounded border-gray-300 focus:ring-olive-500 disabled:opacity-50"
                                 />
                                 <span className="truncate">
                                   {m.name} 
@@ -1546,26 +1546,26 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   </div>
                   {/* 種別 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">種別</label>
-                    <select name="type" value={formData.type} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm">
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">種別</label>
+                    <select name="type" value={formData.type} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm">
                       <option value="">選択なし</option>
                       {taskTypes.map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
                   </div>
                   {/* カテゴリ */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">カテゴリ</label>
-                    <select name="category" value={formData.category} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm">
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">カテゴリ</label>
+                    <select name="category" value={formData.category} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm">
                       <option value="">選択なし</option>
                       {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                     </select>
                   </div>
                   {/* 親課題 */}
                   <div className="relative">
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">親課題</label>
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">親課題</label>
                     <div 
                       onClick={() => !isDeletingTask && setIsParentMenuOpen(!isParentMenuOpen)}
-                      className={`w-full border border-gray-300 rounded p-2 text-sm bg-white flex items-center justify-between shadow-sm transition-colors ${isDeletingTask ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-blue-400'}`}
+                      className={`w-full border border-gray-300 rounded p-2 text-sm bg-white flex items-center justify-between shadow-sm transition-colors ${isDeletingTask ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-olive-400'}`}
                     >
                       <span className="truncate">
                         {formData.parentId ? `${formData.parentId} : ${tasks.find(t => t.id === formData.parentId)?.title || '不明な課題'}` : '設定しない'}
@@ -1576,12 +1576,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => { setIsParentMenuOpen(false); setParentSearchQuery(''); }}></div>
                         <div className="absolute left-0 top-[calc(100%+4px)] w-full bg-white border border-gray-200 rounded-md shadow-xl z-50 flex flex-col overflow-hidden">
-                          <div className="p-2 border-b border-gray-100 bg-blue-50/50">
+                          <div className="p-2 border-b border-gray-100 bg-olive-50/50">
                             <div className="relative">
                               <Search className="absolute left-2.5 top-1.5 text-gray-400" size={14} />
                               <input 
                                 type="text" placeholder="番号や件名で検索..." 
-                                className="w-full pl-8 pr-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full pl-8 pr-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-olive-500"
                                 value={parentSearchQuery} onChange={e => setParentSearchQuery(e.target.value)} autoFocus
                               />
                             </div>
@@ -1592,7 +1592,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               <li className="px-3 py-4 text-sm text-center text-gray-400">見つかりません</li>
                             ) : (
                               filteredParentOptions.map(t => (
-                                <li key={t.id} className={`px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer truncate flex items-center ${formData.parentId === t.id ? 'bg-blue-100 text-blue-800 font-bold' : 'text-gray-700'}`} onClick={() => { setFormData(prev => ({ ...prev, parentId: t.id })); setIsParentMenuOpen(false); setParentSearchQuery(''); }} title={`${t.id} : ${t.title}`}>
+                                <li key={t.id} className={`px-3 py-2 text-sm hover:bg-olive-50 cursor-pointer truncate flex items-center ${formData.parentId === t.id ? 'bg-olive-100 text-olive-800 font-bold' : 'text-gray-700'}`} onClick={() => { setFormData(prev => ({ ...prev, parentId: t.id })); setIsParentMenuOpen(false); setParentSearchQuery(''); }} title={`${t.id} : ${t.title}`}>
                                   <span className="font-mono text-[10px] text-gray-400 mr-2 shrink-0">{t.id}</span>
                                   <span className="truncate">{t.title}</span>
                                 </li>
@@ -1605,32 +1605,32 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   </div>
                   {/* 開始日 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">開始日</label>
-                    <input type="date" name="startDate" value={formData.startDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm" />
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">開始日</label>
+                    <input type="date" name="startDate" value={formData.startDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm" />
                   </div>
                   {/* 期限日 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">期限日</label>
-                    <input type="date" name="dueDate" value={formData.dueDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 shadow-sm" />
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">期限日</label>
+                    <input type="date" name="dueDate" value={formData.dueDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm" />
                   </div>
                   {/* ★ 実施日と実施日数 */}
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">実施日</label>
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">実施日</label>
                     <input
                       type="date"
                       value={formData.implementationDate || ''}
                       onChange={(e) => setFormData({...formData, implementationDate: e.target.value})}
-                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm"
+                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none shadow-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">実施日数</label>
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">実施日数</label>
                     <input
                       type="number"
                       min="1"
                       value={formData.implementationDays || 1}
                       onChange={(e) => setFormData({...formData, implementationDays: parseInt(e.target.value) || 1})}
-                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none shadow-sm"
+                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none shadow-sm"
                     />
                   </div>
                 </div>
@@ -1638,14 +1638,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
               {/* 子課題一覧（保存済み かつ 自身が親（=parentIdなし）の場合のみ） */}
               {!isNew && !formData.parentId && (
-                <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3 md:p-5 shadow-sm">
+                <div className="border border-olive-200 bg-olive-50/50 rounded-lg p-3 md:p-5 shadow-sm">
                   <div className="flex items-center justify-between mb-3 gap-2">
-                    <h3 className="text-sm font-bold text-blue-800 flex items-center gap-2"><LinkIcon size={16}/> 子課題一覧 ({childTasks.length})</h3>
+                    <h3 className="text-sm font-bold text-olive-800 flex items-center gap-2"><LinkIcon size={16}/> 子課題一覧 ({childTasks.length})</h3>
                     <button
                       onClick={handleAddChild}
                       disabled={isSaving || isDeletingTask}
                       title="この課題の子課題として新規作成"
-                      className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50"
+                      className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50"
                     >
                       <Plus size={14}/> 子課題を追加
                     </button>
@@ -1653,17 +1653,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   {childTasks.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                       {childTasks.map(ct => (
-                        <div key={ct.id} onClick={() => handleOpenChild(ct)} className="flex items-center justify-between bg-white p-2.5 border border-blue-100 rounded shadow-sm text-sm cursor-pointer hover:border-blue-300 hover:shadow-md transition-all group">
+                        <div key={ct.id} onClick={() => handleOpenChild(ct)} className="flex items-center justify-between bg-white p-2.5 border border-olive-200 rounded shadow-sm text-sm cursor-pointer hover:border-olive-300 hover:shadow-md transition-all group">
                           <div className="flex items-center gap-2 overflow-hidden">
                             <span className="font-mono text-[10px] text-gray-400 shrink-0">{ct.id}</span>
-                            <span className="font-medium text-gray-700 group-hover:text-blue-600 transition-colors truncate">{ct.title}</span>
+                            <span className="font-medium text-gray-700 group-hover:text-olive-600 transition-colors truncate">{ct.title}</span>
                           </div>
                           <span className="text-[10px] font-bold bg-gray-100 px-2 py-1 rounded border border-gray-200 shrink-0">{STATUSES.find(s=>s.id===ct.status)?.label}</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="text-xs text-gray-500 text-center py-3 bg-white/60 rounded border border-dashed border-blue-200">
+                    <div className="text-xs text-gray-500 text-center py-3 bg-white/60 rounded border border-dashed border-olive-200">
                       まだ子課題はありません。「+ 子課題を追加」から作成できます。
                     </div>
                   )}
@@ -1676,7 +1676,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   <h3 className="font-bold text-gray-800 mb-5 flex items-center gap-2 text-lg"><MessageSquare size={20}/> コメント ({formData.comments.length})</h3>
                   
                   {/* コメント入力エリアを上に配置 */}
-                  <div className="flex flex-col gap-3 bg-blue-50/50 p-3 md:p-5 rounded-xl border border-blue-100 shadow-inner mb-8">
+                  <div className="flex flex-col gap-3 bg-olive-50/50 p-3 md:p-5 rounded-xl border border-olive-200 shadow-inner mb-8">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-2xl">{currentUser?.avatar}</span>
                       <span className="text-sm font-bold text-gray-700">{currentUser?.name} としてコメントを残す</span>
@@ -1706,7 +1706,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                                 setCommentText(prev => prev + `@${member.name} `);
                               }
                             }}
-                            className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 px-2 py-1 rounded-full hover:bg-blue-100 transition-colors flex items-center gap-1"
+                            className="text-[10px] bg-olive-50 text-olive-700 border border-olive-200 px-2 py-1 rounded-full hover:bg-olive-100 transition-colors flex items-center gap-1"
                           >
                             <span className="text-xs">{member.avatar}</span> @{member.name}
                           </button>
@@ -1718,7 +1718,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     <div className="relative">
                       <textarea 
                         ref={commentTextareaRef}
-                        className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white shadow-sm resize-y min-h-[100px]" 
+                        className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white shadow-sm resize-y min-h-[100px]" 
                         placeholder="進捗や連絡事項、メモなどを入力...（「@」でメンション）" 
                         value={commentText} 
                         disabled={isDeletingTask} 
@@ -1734,7 +1734,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             left: commentMention.state.caret.left
                           }}
                         >
-                          <div className="p-1.5 bg-blue-50 border-b border-gray-100 text-xs font-bold text-blue-800">
+                          <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
                             TabキーかEnterキーで選択
                           </div>
                           <ul className="max-h-48 overflow-y-auto">
@@ -1747,7 +1747,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                                   }
                                 }}
                                 onClick={() => commentMention.insertMention(commentTextareaRef, commentText, setCommentText, m)}
-                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-blue-100 font-bold text-blue-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
                               >
                                 <span>{m.avatar}</span> {m.name}
                               </li>
@@ -1761,11 +1761,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <div className="flex items-center gap-3">
                         <input type="file" ref={commentFileInputRef} onChange={handleCommentFileUpload} multiple disabled={isDeletingTask || isUploadingToComment} className="hidden" id="comment-file-upload" />
                         <label htmlFor="comment-file-upload" className={`cursor-pointer bg-white hover:bg-gray-50 text-gray-600 text-xs font-bold py-1.5 px-3 rounded-full border border-gray-300 transition-colors shadow-sm flex items-center gap-1.5 ${isDeletingTask || isUploadingToComment ? 'opacity-50 pointer-events-none' : ''}`}>
-                          {isUploadingToComment ? <Loader2 size={14} className="animate-spin text-blue-600" /> : <Paperclip size={14} className="text-gray-500" />}
+                          {isUploadingToComment ? <Loader2 size={14} className="animate-spin text-olive-600" /> : <Paperclip size={14} className="text-gray-500" />}
                           {isUploadingToComment ? 'アップロード中...' : 'ファイルを添付'}
                         </label>
                       </div>
-                      <button className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 shadow-sm disabled:opacity-50 transition-colors flex items-center gap-2" disabled={!commentText?.trim() || isDeletingTask} onClick={handleAddCommentLocal}>
+                      <button className="bg-olive-600 text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-olive-700 shadow-sm disabled:opacity-50 transition-colors flex items-center gap-2" disabled={!commentText?.trim() || isDeletingTask} onClick={handleAddCommentLocal}>
                         <MessageSquare size={16} /> 送信する
                       </button>
                     </div>
@@ -1782,7 +1782,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       const isMyComment = c.authorEmail === currentUserId || authorName === currentUser?.name;
 
                       return (
-                        <div key={c.id} className={`bg-white rounded-lg p-4 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-blue-400 shadow-md ring-1 ring-blue-400' : 'border-gray-200 hover:border-gray-300'}`}>
+                        <div key={c.id} className={`bg-white rounded-lg p-4 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-olive-400 shadow-md ring-1 ring-olive-400' : 'border-gray-200 hover:border-gray-300'}`}>
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-3">
                               <span className="text-2xl bg-gray-100 rounded-full w-10 h-10 flex items-center justify-center shadow-inner">{cMember ? cMember.avatar : '👤'}</span>
@@ -1803,7 +1803,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               ) : (
                                 !isEditing && isMyComment && ( 
                                   <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                                    <button onClick={() => startEditComment(c)} className="text-gray-300 hover:text-blue-500 p-1.5 rounded hover:bg-blue-50 transition-colors" title="編集"><Edit size={14}/></button>
+                                    <button onClick={() => startEditComment(c)} className="text-gray-300 hover:text-olive-500 p-1.5 rounded hover:bg-olive-50 transition-colors" title="編集"><Edit size={14}/></button>
                                     <button onClick={() => setDeleteCommentId(c.id)} className="text-gray-300 hover:text-red-500 p-1.5 rounded hover:bg-red-50 transition-colors" title="削除"><Trash2 size={14}/></button>
                                   </div>
                                 )
@@ -1816,14 +1816,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             {isEditing ? (
                               <div className="flex flex-col gap-2 mt-1">
                                 <textarea 
-                                  className="w-full border border-blue-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-y min-h-[100px]" 
+                                  className="w-full border border-olive-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white resize-y min-h-[100px]" 
                                   value={editingCommentText} 
                                   onChange={(e) => setEditingCommentText(e.target.value)}
                                   autoFocus
                                 />
                                 <div className="flex justify-end gap-2">
                                   <button onClick={cancelEditComment} className="px-3 py-1.5 text-xs font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">キャンセル</button>
-                                  <button onClick={() => saveEditComment(c.id)} className="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors" disabled={!editingCommentText?.trim()}>保存</button>
+                                  <button onClick={() => saveEditComment(c.id)} className="px-3 py-1.5 text-xs font-bold text-white bg-olive-600 rounded hover:bg-olive-700 transition-colors" disabled={!editingCommentText?.trim()}>保存</button>
                                 </div>
                               </div>
                             ) : (
@@ -1868,9 +1868,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               onClick={() => handleLikeCommentLocal(c.id)} 
                               disabled={isDeleting || isDeletingTask} 
                               title={getLikeNames(c.likes)}
-                              className={`absolute bottom-3 right-4 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full transition-colors border ${c.likes?.includes(currentUserId) ? 'text-blue-700 bg-blue-50 border-blue-200 shadow-sm' : 'text-gray-400 border-transparent hover:bg-gray-100 hover:text-gray-600'} ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              className={`absolute bottom-3 right-4 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full transition-colors border ${c.likes?.includes(currentUserId) ? 'text-olive-700 bg-olive-50 border-olive-200 shadow-sm' : 'text-gray-400 border-transparent hover:bg-gray-100 hover:text-gray-600'} ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
-                              <ThumbsUp size={14} className={c.likes?.includes(currentUserId) ? 'fill-blue-600' : ''}/>
+                              <ThumbsUp size={14} className={c.likes?.includes(currentUserId) ? 'fill-olive-600' : ''}/>
                               {c.likes?.length > 0 && <span>{c.likes.length}</span>}
                             </button>
                           )}
@@ -1891,9 +1891,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             {/* ★ 追加：AIアドバイザー チャットパネル（右側にスライドイン） */}
             {/* ========================================== */}
             {isAdvisorOpen && (
-              <div className="w-full md:w-80 lg:w-96 border-l border-indigo-100 bg-white md:bg-indigo-50/30 flex flex-col shrink-0 absolute md:relative right-0 inset-0 md:inset-y-0 md:right-0 z-30 shadow-2xl md:shadow-none animate-in slide-in-from-right-8 duration-300">
+              <div className="w-full md:w-80 lg:w-96 border-l border-olive-200 bg-white md:bg-olive-50 flex flex-col shrink-0 absolute md:relative right-0 inset-0 md:inset-y-0 md:right-0 z-30 shadow-2xl md:shadow-none animate-in slide-in-from-right-8 duration-300">
                  {/* ヘッダー */}
-                 <div className="p-3 bg-indigo-600 text-white flex items-center justify-between shrink-0">
+                 <div className="p-3 bg-olive-800 text-white flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-2">
                       <Bot size={16} />
                       <span className="font-bold text-sm">タスクアドバイザー</span>
@@ -1913,7 +1913,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       >
                         <ImageIcon size={12} /> 画像生成
                       </button>
-                      <button onClick={() => setIsAdvisorOpen(false)} className="text-indigo-200 hover:text-white transition-colors bg-transparent p-1"><X size={18}/></button>
+                      <button onClick={() => setIsAdvisorOpen(false)} className="text-olive-200 hover:text-white transition-colors bg-transparent p-1"><X size={18}/></button>
                     </div>
                  </div>
                  
@@ -1922,17 +1922,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     {advisorMessages.map((msg, idx) => (
                       <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         {msg.role === 'model' && (
-                          <div className="w-7 h-7 rounded-full bg-white border border-indigo-200 flex items-center justify-center mr-2 shrink-0">
-                            <Bot size={14} className="text-indigo-600" />
+                          <div className="w-7 h-7 rounded-full bg-white border border-olive-200 flex items-center justify-center mr-2 shrink-0">
+                            <Bot size={14} className="text-olive-600" />
                           </div>
                         )}
                         {msg.role === 'user' ? (
-                          <div className="px-3 py-2 rounded-2xl max-w-[85%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm bg-indigo-600 text-white rounded-tr-none break-words">
+                          <div className="px-3 py-2 rounded-2xl max-w-[85%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm bg-olive-600 text-white rounded-tr-none break-words">
                             {msg.text}
                           </div>
                         ) : (
                           <div
-                            className="px-4 py-2.5 rounded-2xl max-w-[90%] text-sm leading-relaxed shadow-sm bg-white text-gray-800 border border-indigo-100 rounded-tl-none markdown-body [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words overflow-x-auto [&_pre]:overflow-x-auto [&_pre]:max-w-full"
+                            className="px-4 py-2.5 rounded-2xl max-w-[90%] text-sm leading-relaxed shadow-sm bg-white text-gray-800 border border-olive-200 rounded-tl-none markdown-body [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words overflow-x-auto [&_pre]:overflow-x-auto [&_pre]:max-w-full"
                             dangerouslySetInnerHTML={{ __html: marked.parse(msg.text) }}
                           />
                         )}
@@ -1941,13 +1941,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     
                     {isAdvisorTyping && (
                       <div className="flex justify-start">
-                        <div className="w-7 h-7 rounded-full bg-white border border-indigo-200 flex items-center justify-center mr-2 shrink-0">
-                          <Bot size={14} className="text-indigo-600" />
+                        <div className="w-7 h-7 rounded-full bg-white border border-olive-200 flex items-center justify-center mr-2 shrink-0">
+                          <Bot size={14} className="text-olive-600" />
                         </div>
-                        <div className="bg-white border border-indigo-100 px-3 py-2 rounded-2xl rounded-tl-none flex items-center gap-1 shadow-sm">
-                          <div className="w-1.5 h-1.5 bg-indigo-300 rounded-full animate-bounce"></div>
-                          <div className="w-1.5 h-1.5 bg-indigo-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                          <div className="w-1.5 h-1.5 bg-indigo-300 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                        <div className="bg-white border border-olive-200 px-3 py-2 rounded-2xl rounded-tl-none flex items-center gap-1 shadow-sm">
+                          <div className="w-1.5 h-1.5 bg-olive-300 rounded-full animate-bounce"></div>
+                          <div className="w-1.5 h-1.5 bg-olive-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                          <div className="w-1.5 h-1.5 bg-olive-300 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
                         </div>
                       </div>
                     )}
@@ -1956,8 +1956,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                  
                  {/* ★ 画像生成フォーム（ヘッダのボタンで開閉） */}
                  {isGenImageOpen && (
-                   <div className="border-t border-indigo-100 bg-white p-3 shrink-0">
-                     <div className="text-xs font-bold text-indigo-700 mb-1.5 flex items-center gap-1">
+                   <div className="border-t border-olive-200 bg-white p-3 shrink-0">
+                     <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
                        <ImageIcon size={12} /> AI 画像生成 (Imagen)
                      </div>
                      <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
@@ -1968,7 +1968,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                        onChange={(e) => setImagePrompt(e.target.value)}
                        placeholder="例：オリーブ畑の俯瞰イラスト、淡い水彩風 / シンプルなアイコン、青系の配色"
                        disabled={isGeneratingImage}
-                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 outline-none disabled:bg-gray-50"
+                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
                        rows={3}
                      />
                      <div className="flex items-center justify-between gap-2 mt-2">
@@ -1978,7 +1978,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                            value={imageAspect}
                            onChange={(e) => setImageAspect(e.target.value)}
                            disabled={isGeneratingImage}
-                           className="text-xs border border-gray-200 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 disabled:bg-gray-50"
+                           className="text-xs border border-gray-200 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 disabled:bg-gray-50"
                          >
                            <option value="1:1">1:1 (正方形)</option>
                            <option value="16:9">16:9 (横長)</option>
@@ -1996,7 +1996,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                          <button
                            onClick={handleGenerateImage}
                            disabled={isGeneratingImage || !imagePrompt.trim()}
-                           className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                           className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
                          >
                            {isGeneratingImage && <Loader2 size={12} className="animate-spin" />}
                            {isGeneratingImage ? '生成中...' : '生成して登録'}
@@ -2008,8 +2008,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
                  {/* ★ ドキュメント化フォーム（ヘッダのボタンで開閉） */}
                  {isGenAdvisorDocOpen && (
-                   <div className="border-t border-indigo-100 bg-white p-3 shrink-0">
-                     <div className="text-xs font-bold text-indigo-700 mb-1.5 flex items-center gap-1">
+                   <div className="border-t border-olive-200 bg-white p-3 shrink-0">
+                     <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
                        <FileText size={12} /> Google Doc にまとめる
                      </div>
                      <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
@@ -2020,7 +2020,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                        onChange={(e) => setAdvisorDocFormat(e.target.value)}
                        placeholder="例：議事録形式 / 要件定義書として / 進捗報告書として、観点A・Bを盛り込む 等"
                        disabled={isGeneratingAdvisorDoc}
-                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-indigo-400 focus:border-indigo-400 outline-none disabled:bg-gray-50"
+                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
                        rows={3}
                      />
                      <div className="flex justify-end gap-2 mt-2">
@@ -2032,7 +2032,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                        <button
                          onClick={handleGenerateAdvisorDoc}
                          disabled={isGeneratingAdvisorDoc || !advisorDocFormat.trim()}
-                         className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                         className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
                        >
                          {isGeneratingAdvisorDoc && <Loader2 size={12} className="animate-spin" />}
                          {isGeneratingAdvisorDoc ? '生成中...' : '生成して登録'}
@@ -2042,8 +2042,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                  )}
 
                  {/* 入力エリア */}
-                 <div className="p-3 bg-white border-t border-indigo-100 shrink-0">
-                   <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-indigo-400 focus-within:ring-1 focus-within:ring-indigo-400 transition-all">
+                 <div className="p-3 bg-white border-t border-olive-200 shrink-0">
+                   <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
                       <textarea
                         value={advisorInput}
                         onChange={(e) => setAdvisorInput(e.target.value)}
@@ -2055,7 +2055,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <button
                         onClick={handleAdvisorSend}
                         disabled={!advisorInput?.trim() || isAdvisorTyping}
-                        className="p-2 mb-0.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 transition-colors"
+                        className="p-2 mb-0.5 bg-olive-600 text-white rounded-lg hover:bg-olive-700 disabled:bg-gray-300 transition-colors"
                       >
                         <Send size={16} />
                       </button>
@@ -2065,7 +2065,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             )}
           </div>
 
-            <div className="bg-gray-50 border-t border-gray-200 px-3 md:px-6 py-3 md:py-4 flex flex-col-reverse sm:flex-row sm:justify-between sm:items-center gap-2 md:gap-3 shrink-0">
+            <div className="bg-olive-50 border-t border-olive-200 px-3 md:px-6 py-3 md:py-4 flex flex-col-reverse sm:flex-row sm:justify-between sm:items-center gap-2 md:gap-3 shrink-0">
               <div className="w-full sm:w-auto">
                 {!isNew && (
                   showDeleteConfirm ? (
@@ -2093,7 +2093,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         <button
                           onClick={() => setIsAiModalOpen(true)}
                           disabled={isDeletingTask || isSaving}
-                          className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-3 md:px-4 py-2 rounded-lg font-bold shadow-sm hover:from-blue-700 hover:to-indigo-700 transition-all flex items-center gap-1.5 disabled:opacity-50 sm:ml-2 text-sm"
+                          className="bg-olive-600 text-white px-3 md:px-4 py-2 rounded-lg font-bold shadow-sm hover:bg-olive-700 transition-all flex items-center gap-1.5 disabled:opacity-50 sm:ml-2 text-sm"
                         >
                           <FileText size={16} /> <span className="hidden md:inline">ドキュメントを出力</span>
                         </button>
@@ -2107,7 +2107,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   {isNew ? 'キャンセル' : '閉じる'}
                 </button>
                 {isNew && (
-                  <button onClick={handleSave} disabled={isSaving || isDeletingTask} className="flex-1 sm:flex-initial px-4 md:px-6 py-2 rounded-lg font-bold text-white shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 text-sm md:text-base bg-blue-600 hover:bg-blue-700">
+                  <button onClick={handleSave} disabled={isSaving || isDeletingTask} className="flex-1 sm:flex-initial px-4 md:px-6 py-2 rounded-lg font-bold text-white shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 text-sm md:text-base bg-olive-600 hover:bg-olive-700">
                     {isSaving && <Loader2 size={16} className="animate-spin" />}
                     作成する
                   </button>
@@ -2125,9 +2125,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
               <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[90vh]">
                 
-                <div className="p-4 border-b border-indigo-100 bg-indigo-50 flex items-center justify-between shrink-0">
-                  <h3 className="font-bold text-indigo-900 flex items-center gap-2 text-lg">
-                    <FileText size={20} className="text-indigo-600" /> ドキュメント自動出力ツール
+                <div className="p-4 border-b border-olive-200 bg-olive-50 flex items-center justify-between shrink-0">
+                  <h3 className="font-bold text-olive-900 flex items-center gap-2 text-lg">
+                    <FileText size={20} className="text-olive-600" /> ドキュメント自動出力ツール
                   </h3>
                   <button onClick={() => !isAiGenerating && !isGatheringInfo && setIsAiModalOpen(false)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm"><X size={18} /></button>
                 </div>
@@ -2138,7 +2138,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     <select
                       value={selectedDocTemplateId}
                       onChange={(e) => setSelectedDocTemplateId(e.target.value)}
-                      className="w-full border border-gray-300 rounded-md p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 bg-gray-50 font-medium cursor-pointer"
+                      className="w-full border border-gray-300 rounded-md p-2.5 text-sm focus:ring-2 focus:ring-olive-500 bg-gray-50 font-medium cursor-pointer"
                       disabled={isAiGenerating || isGatheringInfo}
                     >
                       <option value="">▼ リストから選択してください</option>
@@ -2149,38 +2149,38 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   {selectedDocTemplateId && (
                     <>
                       {/* ▼ ステップ1：情報収集エリア（AIを使用） */}
-                      <div className="bg-blue-50 p-5 rounded-lg border border-blue-200 shadow-sm flex flex-col gap-3">
+                      <div className="bg-olive-50 p-5 rounded-lg border border-olive-200 shadow-sm flex flex-col gap-3">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="bg-blue-600 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">1</span>
-                          <h4 className="text-sm font-bold text-blue-800">情報を収集して下書きを作る（AI）</h4>
+                          <span className="bg-olive-600 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">1</span>
+                          <h4 className="text-sm font-bold text-olive-800">情報を収集して下書きを作る（AI）</h4>
                         </div>
-                        <p className="text-xs text-blue-600 leading-relaxed bg-white/60 p-2 rounded border border-blue-100">
+                        <p className="text-xs text-olive-600 leading-relaxed bg-white/60 p-2 rounded border border-olive-200">
                           課題の内容やコメント履歴から、この様式に必要な情報をAIが自動で抽出します。<br/>
                           抽出結果は「コメント」として登録されるので、ドキュメントに出力する前に手作業で修正することができます。
                         </p>
                         <button 
                           onClick={handleGatherInfo} 
                           disabled={isGatheringInfo || isAiGenerating}
-                          className="w-full bg-blue-600 text-white px-4 py-2.5 rounded text-sm font-bold shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
+                          className="w-full bg-olive-600 text-white px-4 py-2.5 rounded text-sm font-bold shadow-sm hover:bg-olive-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
                         >
                           {isGatheringInfo ? <><Loader2 size={16} className="animate-spin" /> 収集中...</> : <><Search size={16}/> 情報を収集する</>}
                         </button>
                       </div>
 
                       {/* ▼ ステップ2：ドキュメント生成エリア（GASによる確実な転記） */}
-                      <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-200 shadow-sm flex flex-col gap-3">
+                      <div className="bg-olive-50 p-5 rounded-lg border border-olive-200 shadow-sm flex flex-col gap-3">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="bg-indigo-600 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">2</span>
-                          <h4 className="text-sm font-bold text-indigo-800">ドキュメントに転記して出力する</h4>
+                          <span className="bg-olive-600 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">2</span>
+                          <h4 className="text-sm font-bold text-olive-800">ドキュメントに転記して出力する</h4>
                         </div>
-                        <p className="text-xs text-indigo-600 leading-relaxed bg-white/60 p-2 rounded border border-indigo-100">
+                        <p className="text-xs text-olive-600 leading-relaxed bg-white/60 p-2 rounded border border-olive-200">
                           ステップ1で収集し、コメント欄に登録された情報を読み取って、雛形ファイルに一言一句正確に転記します。<br/>
                           <span className="font-bold text-red-600">※ 必ず事前にステップ1を実行してください。</span>
                         </p>
                         <button 
                           onClick={handleGenerateDocument} 
                           disabled={isAiGenerating || isGatheringInfo} 
-                          className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-2.5 rounded text-sm font-bold shadow-md hover:from-indigo-700 hover:to-purple-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
+                          className="w-full bg-olive-600 text-white px-6 py-2.5 rounded text-sm font-bold shadow-md hover:bg-olive-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
                         >
                           {isAiGenerating ? <><Loader2 size={18} className="animate-spin" /> 出力中...</> : <><FileText size={18} /> ドキュメントを出力する</>}
                         </button>
@@ -2201,22 +2201,22 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           {/* ========================================== */}
           {isGatherInfoModalOpen && (
             <div className="fixed inset-0 z-[110] flex items-center justify-center bg-gray-900/70 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden max-h-[90vh] border border-blue-200 animate-in fade-in zoom-in duration-200">
-                <div className="p-4 border-b border-blue-100 bg-blue-50 flex items-center gap-2 shrink-0">
-                  <div className="bg-blue-600 text-white p-1.5 rounded-full"><Search size={18} /></div>
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden max-h-[90vh] border border-olive-200 animate-in fade-in zoom-in duration-200">
+                <div className="p-4 border-b border-olive-200 bg-olive-50 flex items-center gap-2 shrink-0">
+                  <div className="bg-olive-600 text-white p-1.5 rounded-full"><Search size={18} /></div>
                   <div>
-                    <h3 className="font-bold text-blue-900 text-lg">収集結果の確認</h3>
-                    <p className="text-xs text-blue-700">AIが抽出した情報です。コメントとして登録後、必要に応じて手作業で微調整してください。</p>
+                    <h3 className="font-bold text-olive-900 text-lg">収集結果の確認</h3>
+                    <p className="text-xs text-olive-700">AIが抽出した情報です。コメントとして登録後、必要に応じて手作業で微調整してください。</p>
                   </div>
                 </div>
                 
                 <div className="p-6 flex-1 overflow-y-auto bg-gray-50/50">
-                  <textarea value={gatheredInfoText} onChange={(e) => setGatheredInfoText(e.target.value)} className="w-full border border-gray-300 rounded-lg p-4 text-sm focus:ring-2 focus:ring-blue-500 min-h-[300px] font-mono leading-relaxed resize-y shadow-inner bg-white" />
+                  <textarea value={gatheredInfoText} onChange={(e) => setGatheredInfoText(e.target.value)} className="w-full border border-gray-300 rounded-lg p-4 text-sm focus:ring-2 focus:ring-olive-500 min-h-[300px] font-mono leading-relaxed resize-y shadow-inner bg-white" />
                 </div>
                 
                 <div className="p-4 border-t border-gray-200 bg-white flex justify-end gap-3 shrink-0">
                   <button onClick={() => { if(window.confirm("収集した情報を破棄しますか？")) setIsGatherInfoModalOpen(false); }} className="px-5 py-2.5 rounded-md text-sm font-bold text-red-600 hover:bg-red-50 transition-colors border border-red-200">破棄して閉じる</button>
-                  <button onClick={handleRegisterGatheredInfo} disabled={!gatheredInfoText?.trim()} className="bg-blue-600 text-white px-6 py-2.5 rounded-md text-sm font-bold shadow-md hover:bg-blue-700 transition-colors flex items-center gap-2"><MessageSquare size={18} /> コメントとして登録する</button>
+                  <button onClick={handleRegisterGatheredInfo} disabled={!gatheredInfoText?.trim()} className="bg-olive-600 text-white px-6 py-2.5 rounded-md text-sm font-bold shadow-md hover:bg-olive-700 transition-colors flex items-center gap-2"><MessageSquare size={18} /> コメントとして登録する</button>
                 </div>
               </div>
             </div>

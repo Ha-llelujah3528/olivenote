@@ -56,7 +56,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask }) {
             onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(null); const draggedTaskId = e.dataTransfer.getData('taskId'); if (draggedTaskId && draggedTaskId !== task.id) onDropTask(draggedTaskId, statusIdForDrop, task.id); }}
             onClick={() => onTaskClick(task)}
             style={{ boxShadow: isDragOver ? '0 -4px 0 0 #3b82f6' : '' }}
-            className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-blue-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
+            className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-olive-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
           >
             <div className="flex flex-wrap items-center justify-between mb-2 gap-1">
               <span className="text-[11px] text-gray-400 font-mono tracking-tighter">{task.id}</span>
@@ -65,7 +65,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask }) {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${priorityObj.bgColor} ${priorityObj.borderColor} ${priorityObj.textColor}`}>{priorityObj.label}</span>
               </div>
             </div>
-            <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-blue-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
+            <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-olive-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
             {task.parentId && <div className="text-[10px] text-gray-500 mb-2 flex items-center gap-1 bg-gray-50 p-1.5 rounded border border-gray-100"><LinkIcon size={10} /> 親: {task.parentId}</div>}
             <div className="flex items-center justify-between text-xs mt-auto pt-2 border-t border-gray-100">
               <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>
@@ -203,7 +203,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask }) {
                         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTaskId(null); const draggedTaskId = e.dataTransfer.getData('taskId'); if (draggedTaskId && draggedTaskId !== task.id) onDropTask(draggedTaskId, status.id, task.id); }} 
                         onClick={() => onTaskClick(task)} 
                         style={{ boxShadow: isDragOver ? '0 -4px 0 0 #3b82f6' : '' }} 
-                        className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-blue-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
+                        className="bg-white p-3 rounded-lg cursor-pointer transition-all duration-200 group border border-transparent hover:border-olive-200 shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]"
                       >
                         <div className="flex flex-wrap items-center justify-between mb-2 gap-1">
                           <span className="text-[11px] text-gray-400 font-mono tracking-tighter">{task.id}</span>
@@ -212,7 +212,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask }) {
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${priorityObj.bgColor} ${priorityObj.borderColor} ${priorityObj.textColor}`}>{priorityObj.label}</span>
                           </div>
                         </div>
-                        <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-blue-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
+                        <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-olive-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
                         {task.parentId && <div className="text-[10px] text-gray-500 mb-2 flex items-center gap-1 bg-gray-50 p-1.5 rounded border border-gray-100"><LinkIcon size={10} /> 親: {task.parentId}</div>}
                         <div className="flex items-center justify-between text-xs mt-auto pt-2 border-t border-gray-100">
                           <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>

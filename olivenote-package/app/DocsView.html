@@ -232,7 +232,7 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
 
       // ドロップ先のスタイルクラス（ハイライト）
       const dropTargetClass = (id) =>
-        dropTargetId === id ? 'ring-2 ring-blue-500 ring-offset-1' : '';
+        dropTargetId === id ? 'ring-2 ring-olive-500 ring-offset-1' : '';
 
       return (
         <div className="flex-1 bg-white border border-gray-200 rounded-lg p-3 md:p-6 flex flex-col overflow-hidden shadow-sm">
@@ -253,7 +253,7 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
               )}
               <div className="relative w-full md:w-auto flex-1 md:flex-initial">
                 <Search className="absolute left-2.5 top-2 text-gray-400" size={16} />
-                <input type="text" placeholder="名前・タグで検索..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="border border-gray-300 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full md:w-64" />
+                <input type="text" placeholder="名前・タグで検索..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="border border-gray-300 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 w-full md:w-64" />
               </div>
             </div>
           </div>
@@ -266,7 +266,7 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
                 onDragOver={e => handleDragOver(e, docFolderRootId)}
                 onDragLeave={e => handleDragLeave(e, docFolderRootId)}
                 onDrop={e => handleDrop(e, docFolderRootId)}
-                className={`flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline font-medium px-1.5 py-0.5 rounded transition-colors ${dropTargetClass(docFolderRootId)}`}
+                className={`flex items-center gap-1 text-olive-600 hover:text-olive-800 hover:underline font-medium px-1.5 py-0.5 rounded transition-colors ${dropTargetClass(docFolderRootId)}`}
               >
                 <Home size={14}/>ホーム
               </button>
@@ -284,7 +284,7 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
                       onDragOver={e => handleDragOver(e, node.id)}
                       onDragLeave={e => handleDragLeave(e, node.id)}
                       onDrop={e => handleDrop(e, node.id)}
-                      className={`text-blue-600 hover:text-blue-800 hover:underline truncate max-w-[200px] px-1.5 py-0.5 rounded transition-colors ${dropTargetClass(node.id)}`}
+                      className={`text-olive-600 hover:text-olive-800 hover:underline truncate max-w-[200px] px-1.5 py-0.5 rounded transition-colors ${dropTargetClass(node.id)}`}
                       title={node.name}
                     >{node.name}</button>
                   )}
@@ -297,10 +297,10 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
           )}
 
           {/* 新規作成エリア */}
-          <div className="flex flex-col md:flex-row gap-2 mb-4 md:mb-6 p-3 md:p-4 bg-blue-50 rounded-lg border border-blue-100 shrink-0">
+          <div className="flex flex-col md:flex-row gap-2 mb-4 md:mb-6 p-3 md:p-4 bg-olive-50 rounded-lg border border-olive-200 shrink-0">
             <div className="flex flex-1 gap-2 min-w-0">
-              <input type="text" value={newDocTitle} onChange={e => setNewDocTitle(e.target.value)} placeholder="新しいドキュメントのタイトル..." className="flex-1 min-w-0 border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500" />
-              <button onClick={handleCreate} disabled={isCreating || !newDocTitle.trim()} className="bg-blue-600 text-white px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold flex items-center justify-center gap-1.5 md:gap-2 disabled:opacity-50 transition-colors hover:bg-blue-700 shadow-sm shrink-0">
+              <input type="text" value={newDocTitle} onChange={e => setNewDocTitle(e.target.value)} placeholder="新しいドキュメントのタイトル..." className="flex-1 min-w-0 border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-olive-500" />
+              <button onClick={handleCreate} disabled={isCreating || !newDocTitle.trim()} className="bg-olive-600 text-white px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold flex items-center justify-center gap-1.5 md:gap-2 disabled:opacity-50 transition-colors hover:bg-olive-700 shadow-sm shrink-0">
                 {isCreating ? <Loader2 size={16} className="animate-spin" /> : <FilePlus size={16} />}
                 <span className="hidden sm:inline">ドキュメント作成</span>
                 <span className="sm:hidden">作成</span>
@@ -349,7 +349,7 @@ function DocsView({ docs, setDocs, docTags, docFileTags, setDocFileTags, current
                       </button>
                     ) : (
                       <h3 className="font-bold text-gray-800 line-clamp-2 flex items-start gap-1.5" title={item.name}>
-                        <FileText size={16} className="text-blue-500 shrink-0 mt-1"/>
+                        <FileText size={16} className="text-olive-500 shrink-0 mt-1"/>
                         <span>{item.name}</span>
                       </h3>
                     )}

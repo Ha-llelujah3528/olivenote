@@ -176,9 +176,9 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
         <div className="bg-white w-[350px] sm:w-[400px] h-[500px] max-h-[70vh] rounded-2xl shadow-2xl border border-gray-200 mb-4 flex flex-col pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
           
           {/* ヘッダー */}
-          <div className="bg-[#1e2a35] text-white px-4 py-3 flex justify-between items-center shrink-0">
+          <div className="bg-olive-800 text-white px-4 py-3 flex justify-between items-center shrink-0">
             <div className="flex items-center gap-2">
-              <Bot size={20} className="text-blue-400" />
+              <Bot size={20} className="text-olive-200" />
               <span className="font-bold text-sm tracking-wide">Olive コンシェルジュ</span>
             </div>
             <button onClick={() => setIsOpen(false)} className="text-gray-300 hover:text-white transition-colors">
@@ -187,13 +187,13 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
           </div>
 
           {/* モード切替トグル */}
-          <div className="bg-[#26323f] px-3 py-2 flex items-center gap-1 shrink-0 border-b border-black/20">
+          <div className="bg-olive-700 px-3 py-2 flex items-center gap-1 shrink-0 border-b border-black/20">
             <button
               onClick={() => switchMode('concierge')}
               disabled={isTyping}
               className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-colors disabled:opacity-50 ${
                 mode === 'concierge'
-                  ? 'bg-blue-600 text-white shadow'
+                  ? 'bg-olive-600 text-white shadow'
                   : 'text-gray-300 hover:bg-white/10'
               }`}
               title="使い方・仕様について（gemini-2.5-flash）"
@@ -205,7 +205,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
               disabled={isTyping}
               className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 ${
                 mode === 'concierge-tasks'
-                  ? 'bg-indigo-600 text-white shadow'
+                  ? 'bg-olive-600 text-white shadow'
                   : 'text-gray-300 hover:bg-white/10'
               }`}
               title="表示中の課題について（gemini-2.5-pro）"
@@ -220,18 +220,18 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
           </div>
 
           {/* メッセージエリア */}
-          <div className="flex-1 overflow-y-auto p-4 bg-[#f8fafc] flex flex-col gap-4">
+          <div className="flex-1 overflow-y-auto p-4 bg-olive-50 flex flex-col gap-4">
             {messages.map((msg, idx) => (
               <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 {msg.role === 'model' && (
-                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-2 shrink-0">
-                    <Bot size={16} className="text-blue-600" />
+                  <div className="w-8 h-8 rounded-full bg-olive-100 flex items-center justify-center mr-2 shrink-0">
+                    <Bot size={16} className="text-olive-600" />
                   </div>
                 )}
                 
                 {/* ユーザーのメッセージはそのまま表示 */}
                 {msg.role === 'user' ? (
-                  <div className="px-4 py-2.5 rounded-2xl max-w-[80%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm bg-blue-600 text-white rounded-tr-none">
+                  <div className="px-4 py-2.5 rounded-2xl max-w-[80%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm bg-olive-600 text-white rounded-tr-none">
                     {msg.text}
                   </div>
                 ) : (
@@ -246,8 +246,8 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
             {/* タイピング中のアニメーション */}
             {isTyping && (
               <div className="flex justify-start">
-                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mr-2 shrink-0">
-                  <Bot size={16} className="text-blue-600" />
+                <div className="w-8 h-8 rounded-full bg-olive-100 flex items-center justify-center mr-2 shrink-0">
+                  <Bot size={16} className="text-olive-600" />
                 </div>
                 <div className="bg-white border border-gray-100 px-4 py-3 rounded-2xl rounded-tl-none flex items-center gap-1 shadow-sm">
                   <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
@@ -261,7 +261,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
 
           {/* 入力エリア */}
           <div className="p-3 bg-white border-t border-gray-100 shrink-0">
-            <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400 transition-all">
+            <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
@@ -275,7 +275,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
               <button 
                 onClick={handleSend}
                 disabled={!inputText.trim() || isTyping}
-                className="p-2 mb-0.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                className="p-2 mb-0.5 bg-olive-600 text-white rounded-lg hover:bg-olive-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
                 <Send size={16} />
               </button>
@@ -287,7 +287,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
       {/* フローティングボタン */}
       <button 
         onClick={() => setIsOpen(!isOpen)}
-        className="w-14 h-14 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.23)] hover:-translate-y-1 transition-all duration-300 flex items-center justify-center text-white pointer-events-auto relative group"
+        className="w-14 h-14 bg-gradient-to-r from-olive-700 to-olive-500 rounded-full shadow-[0_4px_14px_0_rgba(77,122,45,0.4)] hover:shadow-[0_6px_20px_rgba(77,122,45,0.3)] hover:-translate-y-1 transition-all duration-300 flex items-center justify-center text-white pointer-events-auto relative group"
       >
         {isOpen ? <X size={28} /> : <MessageCircle size={28} />}
         
@@ -359,6 +359,21 @@ function App() {
 
   const [notifications, setNotifications] = useState([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+
+  // ===== テーマ切替 =====
+  const [currentTheme, setCurrentTheme] = useState(() => {
+    try { return localStorage.getItem('olivenote_theme') || 'olive'; }
+    catch (e) { return 'olive'; }
+  });
+  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem('olivenote_theme', currentTheme); } catch (e) {}
+    if (currentTheme === 'olive') {
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', currentTheme);
+    }
+  }, [currentTheme]);
 
   const [toast, setToast] = useState(null);
   const showToast = (message, type = 'success') => {
@@ -919,8 +934,8 @@ function App() {
 
   if (isInitializing) {
     return (
-      <div className="min-h-screen bg-[#f0f2f5] flex flex-col items-center justify-center font-sans px-4 text-center">
-        <Loader2 className="animate-spin text-blue-500 mb-6" size={52} />
+      <div className="min-h-screen bg-olive-50 flex flex-col items-center justify-center font-sans px-4 text-center">
+        <Loader2 className="animate-spin text-olive-600 mb-6" size={52} />
         <h2 className="text-2xl font-bold text-gray-700 mb-8 tracking-wider">Olive Note を読み込み中...</h2>
         
         <div className="max-w-md w-full bg-white p-5 rounded-2xl shadow-sm border border-gray-200 animate-in fade-in zoom-in duration-500">
@@ -936,10 +951,10 @@ function App() {
   }
 
   return (
-    <div className="h-screen bg-[#f0f2f5] flex flex-col font-sans text-gray-800 relative">
+    <div className="h-screen bg-olive-50 flex flex-col font-sans text-gray-800 relative">
       {/* バージョン情報。Oliveコンシェルジュ（右下）/トースト（右下）と被らないよう左下に固定 */}
       <div className="fixed bottom-2 left-2 md:bottom-4 md:left-4 z-50 flex items-center gap-1.5">
-        <div className="bg-blue-600/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
+        <div className="bg-olive-700/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
           Olive Note v{appVersion}
         </div>
         {updateInfo?.updateAvailable && (
@@ -956,7 +971,7 @@ function App() {
         )}
       </div>
 
-      <header className="bg-[#1e2a35] text-white px-3 md:px-6 py-2.5 md:py-3 flex flex-col md:flex-row items-center justify-between shadow-md relative z-40 shrink-0 gap-2 md:gap-0">
+      <header className="bg-olive-800 text-white px-3 md:px-6 py-2.5 md:py-3 flex flex-col md:flex-row items-center justify-between shadow-md relative z-40 shrink-0 gap-2 md:gap-0">
         <div className="flex items-center justify-between w-full md:w-auto">
           <button
             type="button"
@@ -974,7 +989,7 @@ function App() {
               <>
                 <button
                   onClick={() => setIsAutoGenOpen(true)}
-                  className="bg-gradient-to-r from-indigo-600 to-blue-600 text-white p-1.5 rounded-full shadow-sm"
+                  className="bg-olive-600 text-white p-1.5 rounded-full shadow-sm"
                   title="AI 課題生成"
                 >
                   <Wand2 size={18} />
@@ -986,10 +1001,10 @@ function App() {
             )}
             {/* モバイル時：通知ベルもロゴと同じ行に表示 */}
             <div className="relative">
-              <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-1.5 rounded-full transition-colors relative ${isNotifOpen ? 'bg-blue-500/30 text-blue-200' : 'text-gray-300 hover:bg-white/10'}`}>
+              <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-1.5 rounded-full transition-colors relative ${isNotifOpen ? 'bg-olive-500/30 text-olive-200' : 'text-gray-300 hover:bg-white/10'}`}>
                 <Bell size={20} />
                 {validNotifications.filter(n => !n.isRead).length > 0 && (
-                  <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-[#1e2a35] shadow-sm">
+                  <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-olive-800 shadow-sm">
                     {notifications.filter(n => !n.isRead).length}
                   </span>
                 )}
@@ -997,7 +1012,7 @@ function App() {
               {isNotifOpen && (
                 <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh] text-gray-800">
                   <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-                    <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-blue-600"/> 通知</h3>
+                    <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-olive-600"/> 通知</h3>
                     <span className="text-xs text-gray-500">{validNotifications.filter(n => !n.isRead).length} 件の未読</span>
                   </div>
                   <div className="overflow-y-auto flex-1 p-2 space-y-1">
@@ -1008,7 +1023,7 @@ function App() {
                         <button
                           key={notif.id}
                           onClick={() => handleNotificationClick(notif)}
-                          className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-blue-500 bg-blue-50/30'}`}
+                          className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-olive-500 bg-olive-50/30'}`}
                         >
                           <div className="flex justify-between items-start gap-2">
                             <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{notif.taskId}</span>
@@ -1022,6 +1037,38 @@ function App() {
                     )}
                   </div>
                 </div>
+              )}
+            </div>
+            {/* モバイル時：テーマ切替ボタン */}
+            <div className="relative">
+              <button
+                onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
+                className="text-gray-300 hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors"
+                title="デザイン切替"
+              >
+                <Palette size={18} />
+              </button>
+              {isThemeMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsThemeMenuOpen(false)}></div>
+                  <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden text-gray-800">
+                    <div className="px-3 py-2 text-xs font-bold text-gray-500 border-b border-gray-100 bg-gray-50">デザインを選択</div>
+                    {THEMES.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => { setCurrentTheme(t.id); setIsThemeMenuOpen(false); }}
+                        className={`w-full px-3 py-2.5 text-left text-sm flex items-center gap-2.5 transition-colors ${currentTheme === t.id ? 'bg-olive-50 font-bold' : 'hover:bg-gray-50'}`}
+                      >
+                        <span className="w-4 h-4 rounded-full shrink-0 ring-1 ring-gray-300" style={{ background: t.previewColor }}></span>
+                        <span className="flex-1 min-w-0">
+                          <div className="truncate">{t.label}</div>
+                          <div className="text-[10px] text-gray-500 truncate font-normal">{t.desc}</div>
+                        </span>
+                        {currentTheme === t.id && <Check size={14} className="text-olive-600 shrink-0"/>}
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
             {/* モバイル時：ログアウトボタン */}
@@ -1039,17 +1086,17 @@ function App() {
           </div>
         </div>
 
-        <div className="flex bg-[#2c3e50] rounded-md overflow-x-auto [&::-webkit-scrollbar]:hidden w-full md:w-auto md:ml-6 md:mr-auto snap-x">
-          <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><Columns size={16} /> ボード</button>
-          <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><CalendarDays size={16} /> ガント</button>
-          <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><CalendarIcon size={16} /> カレンダー</button>
-          <button onClick={() => setActiveTab('docs')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'docs' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><FileText size={16} /> ドキュメント</button>
-          <button onClick={() => setActiveTab('settings')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'settings' ? 'bg-[#34495e] text-white' : 'text-gray-300 hover:bg-[#34495e]/50'}`}><Settings size={16} /> 設定</button>
+        <div className="flex bg-olive-700 rounded-md overflow-x-auto [&::-webkit-scrollbar]:hidden w-full md:w-auto md:ml-6 md:mr-auto snap-x">
+          <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Columns size={16} /> ボード</button>
+          <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarDays size={16} /> ガント</button>
+          <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarIcon size={16} /> カレンダー</button>
+          <button onClick={() => setActiveTab('docs')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'docs' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><FileText size={16} /> ドキュメント</button>
+          <button onClick={() => setActiveTab('settings')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'settings' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Settings size={16} /> 設定</button>
         </div>
 
         {/* PC時のみ表示する通知ベル */}
         <div className="relative hidden md:block">
-          <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-2 rounded-full transition-colors relative ${isNotifOpen ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}>
+          <button onClick={() => setIsNotifOpen(!isNotifOpen)} className={`p-2 rounded-full transition-colors relative ${isNotifOpen ? 'bg-olive-100 text-olive-600' : 'text-gray-500 hover:bg-gray-100'}`}>
             <Bell size={20} />
             {validNotifications.filter(n => !n.isRead).length > 0 && (
               <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-white shadow-sm">
@@ -1061,7 +1108,7 @@ function App() {
           {isNotifOpen && (
             <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh]">
               <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-                <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-blue-600"/> 通知</h3>
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><Bell size={16} className="text-olive-600"/> 通知</h3>
                 <span className="text-xs text-gray-500">{validNotifications.filter(n => !n.isRead).length} 件の未読</span>
               </div>
               <div className="overflow-y-auto flex-1 p-2 space-y-1">
@@ -1072,7 +1119,7 @@ function App() {
                     <button 
                       key={notif.id} 
                       onClick={() => handleNotificationClick(notif)}
-                      className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-blue-500 bg-blue-50/30'}`}
+                      className={`w-full text-left p-3 rounded-lg transition-colors border-l-4 flex flex-col gap-1 hover:bg-gray-50 ${notif.isRead ? 'border-transparent opacity-60' : 'border-olive-500 bg-olive-50/30'}`}
                     >
                       <div className="flex justify-between items-start gap-2">
                         <span className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{notif.taskId}</span>
@@ -1094,6 +1141,39 @@ function App() {
             <span className="text-xl">{currentUser?.avatar}</span>
             <span className="truncate max-w-[120px]">{currentUser?.name}</span>
           </div>
+          {/* テーマ切替 */}
+          <div className="relative">
+            <button
+              onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
+              className="text-gray-300 hover:text-white p-1.5 rounded-full hover:bg-white/10 transition-colors flex items-center gap-1.5"
+              title="デザイン切替"
+            >
+              <Palette size={18} />
+              <span className="w-2.5 h-2.5 rounded-full ring-2 ring-white/40" style={{ background: THEMES.find(t => t.id === currentTheme)?.previewColor }}></span>
+            </button>
+            {isThemeMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setIsThemeMenuOpen(false)}></div>
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden text-gray-800">
+                  <div className="px-3 py-2 text-xs font-bold text-gray-500 border-b border-gray-100 bg-gray-50">デザインを選択</div>
+                  {THEMES.map(t => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setCurrentTheme(t.id); setIsThemeMenuOpen(false); }}
+                      className={`w-full px-3 py-2.5 text-left text-sm flex items-center gap-2.5 transition-colors ${currentTheme === t.id ? 'bg-olive-50 font-bold' : 'hover:bg-gray-50'}`}
+                    >
+                      <span className="w-4 h-4 rounded-full shrink-0 ring-1 ring-gray-300" style={{ background: t.previewColor }}></span>
+                      <span className="flex-1 min-w-0">
+                        <div className="truncate">{t.label}</div>
+                        <div className="text-[10px] text-gray-500 truncate font-normal">{t.desc}</div>
+                      </span>
+                      {currentTheme === t.id && <Check size={14} className="text-olive-600 shrink-0"/>}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={async () => {
               if (!window.confirm('ログアウトしますか？')) return;
@@ -1109,7 +1189,7 @@ function App() {
             <>
               <button
                 onClick={() => setIsAutoGenOpen(true)}
-                className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:opacity-90 text-white px-3 py-1.5 rounded-full text-sm font-bold flex items-center gap-1 transition-colors shadow-sm ml-2"
+                className="bg-olive-600 hover:bg-olive-700 text-white px-3 py-1.5 rounded-full text-sm font-bold flex items-center gap-1 transition-colors shadow-sm ml-2"
                 title="資料から AI が課題を自動生成"
               >
                 <Wand2 size={16} /> <span className="hidden sm:inline">AI生成</span>
@@ -1130,7 +1210,7 @@ function App() {
                 <label className="block text-xs font-bold text-gray-500 mb-1">キーワード</label>
                 <div className="relative">
                   <Search className="absolute left-2.5 top-2 text-gray-400" size={16} />
-                  <input type="text" placeholder="キーワード検索..." className="border border-gray-300 rounded p-1.5 pl-9 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                  <input type="text" placeholder="キーワード検索..." className="border border-gray-300 rounded p-1.5 pl-9 text-sm w-full focus:outline-none bg-white" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
                 </div>
               </div>
 
@@ -1139,7 +1219,7 @@ function App() {
                 <label className="block text-xs font-bold text-gray-500 mb-1">ステータス</label>
                 <button
                   onClick={() => setIsStatusMenuOpen(!isStatusMenuOpen)}
-                  className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                  className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-olive-500 shadow-sm"
                 >
                   <span className="truncate">
                     {filters.statuses?.length === STATUSES.length ? 'すべて' :
@@ -1164,7 +1244,7 @@ function App() {
                                 : (filters.statuses || []).filter(id => id !== s.id);
                               setFilters({ ...filters, statuses: newStatuses });
                             }}
-                            className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                            className="w-4 h-4 text-olive-600 rounded border-gray-300 focus:ring-olive-500 cursor-pointer"
                           />
                           <span className={`font-medium ${s.textColor}`}>{s.label}</span>
                         </label>
@@ -1180,7 +1260,7 @@ function App() {
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => setIsAssigneeMenuOpen(!isAssigneeMenuOpen)}
-                    className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                    className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-olive-500 shadow-sm"
                   >
                     <span className="truncate">
                       {filters.assigneeEmail?.length === 0 ? 'すべて' : `${filters.assigneeEmail?.length}人を選択中`}
@@ -1203,7 +1283,7 @@ function App() {
                                   : (filters.assigneeEmail || []).filter(email => email !== m.email);
                                 setFilters({ ...filters, assigneeEmail: newAssignees });
                               }}
-                              className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                              className="w-4 h-4 text-olive-600 rounded border-gray-300 focus:ring-olive-500 cursor-pointer"
                             />
                             <span className="font-medium truncate">{m.name}</span>
                           </label>
@@ -1217,7 +1297,7 @@ function App() {
                       const isOnlyMe = filters.assigneeEmail?.length === 1 && filters.assigneeEmail[0] === currentUser?.email;
                       setFilters({...filters, assigneeEmail: isOnlyMe ? [] : [currentUser?.email || '']})
                     }} 
-                    className={`shrink-0 border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm ${(filters.assigneeEmail?.length === 1 && filters.assigneeEmail[0] === currentUser?.email) ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 hover:bg-blue-100 text-blue-600 border-blue-200'}`} 
+                    className={`shrink-0 border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm ${(filters.assigneeEmail?.length === 1 && filters.assigneeEmail[0] === currentUser?.email) ? 'bg-olive-600 text-white border-olive-600' : 'bg-olive-50 hover:bg-olive-100 text-olive-600 border-olive-200'}`} 
                     title="自分の担当課題を絞り込み"
                   >
                     自分
@@ -1228,7 +1308,7 @@ function App() {
               {/* 種別 */}
               <div className="w-[calc(50%-0.375rem)] md:w-36">
                 <label className="block text-xs font-bold text-gray-500 mb-1">種別</label>
-                <select value={filters.type} onChange={e => setFilters({...filters, type: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                <select value={filters.type} onChange={e => setFilters({...filters, type: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none bg-white">
                   <option value="">すべて</option>
                   {taskTypes.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
@@ -1237,7 +1317,7 @@ function App() {
               {/* カテゴリ */}
               <div className="w-[calc(50%-0.375rem)] md:w-36">
                 <label className="block text-xs font-bold text-gray-500 mb-1">カテゴリ</label>
-                <select value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                <select value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none bg-white">
                   <option value="">すべて</option>
                   {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
@@ -1246,7 +1326,7 @@ function App() {
               {/* 優先度 */}
               <div className="w-[calc(50%-0.375rem)] md:w-28">
                 <label className="block text-xs font-bold text-gray-500 mb-1">優先度</label>
-                <select value={filters.priority} onChange={e => setFilters({...filters, priority: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                <select value={filters.priority} onChange={e => setFilters({...filters, priority: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none bg-white">
                   <option value="">すべて</option>
                   {PRIORITIES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                 </select>
@@ -1256,9 +1336,9 @@ function App() {
               <div className="w-full md:w-64">
                 <label className="block text-xs font-bold text-gray-500 mb-1">期限日</label>
                 <div className="flex items-center gap-1">
-                  <input type="date" value={filters.dueDateFrom} onChange={e => setFilters({...filters, dueDateFrom: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                  <input type="date" value={filters.dueDateFrom} onChange={e => setFilters({...filters, dueDateFrom: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none bg-white" />
                   <span className="text-gray-400">~</span>
-                  <input type="date" value={filters.dueDateTo} onChange={e => setFilters({...filters, dueDateTo: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white" />
+                  <input type="date" value={filters.dueDateTo} onChange={e => setFilters({...filters, dueDateTo: e.target.value})} className="border border-gray-300 rounded p-1.5 text-sm w-full focus:outline-none bg-white" />
                 </div>
               </div>
 
@@ -1279,7 +1359,7 @@ function App() {
               {/* クリアボタン */}
               {(activeFilterCount > 0 || searchQuery) && (
                  <div className="w-full md:w-auto pb-1 text-right md:text-left">
-                   <button onClick={() => { clearFilters(); setSearchQuery(''); }} className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors px-2 underline">条件をクリア</button>
+                   <button onClick={() => { clearFilters(); setSearchQuery(''); }} className="text-sm font-bold text-olive-600 hover:text-olive-800 transition-colors px-2 underline">条件をクリア</button>
                  </div>
               )}
 

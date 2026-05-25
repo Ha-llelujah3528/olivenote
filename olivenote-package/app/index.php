@@ -287,6 +287,27 @@ if (!$isLoggedIn) {
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/png" href="favicon.png">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            olive: {
+              50:  '#F2F6EE',
+              100: '#E8F2DF',
+              200: '#B8D4A8',
+              300: '#9DB88A',
+              500: '#6A9D50',
+              600: '#4D7A2D',
+              700: '#3D6222',
+              800: '#2C4A1C',
+              900: '#2A3E1C',
+            }
+          }
+        }
+      }
+    }
+  </script>
   <script type="importmap">
     {
       "imports": {
@@ -339,9 +360,99 @@ if (!$isLoggedIn) {
       .markdown-body { word-break: break-word; overflow-wrap: anywhere; }
       .markdown-body pre { overflow-x: auto; max-width: 100%; }
       .markdown-body code { word-break: break-all; }
+
+      /* ===== OliveNote カラーリニューアル: 入力フィールド視認性向上 ===== */
+      input:not([type=checkbox]):not([type=radio]),
+      textarea,
+      select {
+        background-color: #ffffff;
+        border-color: #9DB88A;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      input:not([type=checkbox]):not([type=radio]):focus,
+      textarea:focus,
+      select:focus {
+        border-color: #4D7A2D !important;
+        box-shadow: 0 0 0 3px rgba(77,122,45,0.2) !important;
+        outline: none !important;
+      }
+      /* Tailwind の ring ユーティリティを olive に上書き */
+      .focus\:ring-blue-500:focus,
+      .focus\:ring-2:focus {
+        --tw-ring-color: rgba(77,122,45,0.35);
+      }
+
+      /* ===== Classic Theme (旧デザイン: blue/indigo + navy header) ===== */
+      /* data-theme は早期スクリプトで <html> に設定される */
+      [data-theme="classic"] body { background-color: #f0f2f5 !important; }
+      [data-theme="classic"] .bg-olive-50    { background-color: #eff6ff !important; }
+      [data-theme="classic"] .bg-olive-100   { background-color: #dbeafe !important; }
+      [data-theme="classic"] .bg-olive-300   { background-color: #93c5fd !important; }
+      [data-theme="classic"] .bg-olive-500   { background-color: #3b82f6 !important; }
+      [data-theme="classic"] .bg-olive-600   { background-color: #2563eb !important; }
+      [data-theme="classic"] .bg-olive-700   { background-color: #2c3e50 !important; }
+      [data-theme="classic"] .bg-olive-800   { background-color: #1e2a35 !important; }
+      [data-theme="classic"] .border-olive-200 { border-color: #bfdbfe !important; }
+      [data-theme="classic"] .border-olive-300 { border-color: #93c5fd !important; }
+      [data-theme="classic"] .border-olive-400 { border-color: #60a5fa !important; }
+      [data-theme="classic"] .border-olive-500 { border-color: #3b82f6 !important; }
+      [data-theme="classic"] .border-olive-600 { border-color: #2563eb !important; }
+      [data-theme="classic"] .border-olive-800 { border-color: #1e2a35 !important; }
+      [data-theme="classic"] .text-olive-200 { color: #bfdbfe !important; }
+      [data-theme="classic"] .text-olive-500 { color: #3b82f6 !important; }
+      [data-theme="classic"] .text-olive-600 { color: #2563eb !important; }
+      [data-theme="classic"] .text-olive-700 { color: #1d4ed8 !important; }
+      [data-theme="classic"] .text-olive-800 { color: #1e40af !important; }
+      [data-theme="classic"] .text-olive-900 { color: #374151 !important; }
+      [data-theme="classic"] .hover\:bg-olive-50:hover   { background-color: #eff6ff !important; }
+      [data-theme="classic"] .hover\:bg-olive-100:hover  { background-color: #dbeafe !important; }
+      [data-theme="classic"] .hover\:bg-olive-500:hover  { background-color: #3b82f6 !important; }
+      [data-theme="classic"] .hover\:bg-olive-600:hover  { background-color: #2563eb !important; }
+      [data-theme="classic"] .hover\:bg-olive-700:hover  { background-color: #1d4ed8 !important; }
+      [data-theme="classic"] .hover\:bg-olive-800:hover  { background-color: #1e3a8a !important; }
+      [data-theme="classic"] .hover\:text-olive-600:hover { color: #2563eb !important; }
+      [data-theme="classic"] .hover\:text-olive-800:hover { color: #1e40af !important; }
+      [data-theme="classic"] .hover\:border-olive-300:hover,
+      [data-theme="classic"] .hover\:border-olive-400:hover { border-color: #93c5fd !important; }
+      /* Classic: 入力フィールドは元のニュートラルなグレーに戻す */
+      [data-theme="classic"] input:not([type=checkbox]):not([type=radio]),
+      [data-theme="classic"] textarea,
+      [data-theme="classic"] select {
+        border-color: #d1d5db !important;
+      }
+      [data-theme="classic"] input:not([type=checkbox]):not([type=radio]):focus,
+      [data-theme="classic"] textarea:focus,
+      [data-theme="classic"] select:focus {
+        border-color: #3b82f6 !important;
+        box-shadow: 0 0 0 3px rgba(59,130,246,0.2) !important;
+      }
+      [data-theme="classic"] .focus\:ring-olive-400:focus,
+      [data-theme="classic"] .focus\:ring-olive-500:focus,
+      [data-theme="classic"] .focus\:ring-olive-600:focus {
+        --tw-ring-color: rgba(59,130,246,0.35) !important;
+      }
+      /* Classic: 静的 ring も blue 系へ */
+      [data-theme="classic"] .ring-olive-300 { --tw-ring-color: #93c5fd !important; }
+      [data-theme="classic"] .ring-olive-400 { --tw-ring-color: #60a5fa !important; }
+      [data-theme="classic"] .ring-olive-500 { --tw-ring-color: #3b82f6 !important; }
+      [data-theme="classic"] .ring-olive-600 { --tw-ring-color: #2563eb !important; }
+      /* Classic: SVG fill / 部分ボーダーも blue 系へ */
+      [data-theme="classic"] .fill-olive-600 { fill: #2563eb !important; }
+      [data-theme="classic"] .border-t-olive-500 { border-top-color: #3b82f6 !important; }
     </style>
+    <script>
+      // テーマを描画前に適用してフラッシュを防ぐ
+      (function() {
+        try {
+          var t = localStorage.getItem('olivenote_theme');
+          if (t && t !== 'olive') {
+            document.documentElement.setAttribute('data-theme', t);
+          }
+        } catch (e) {}
+      })();
+    </script>
 </head>
-<body class="bg-[#f0f2f5] m-0 p-0 overflow-hidden h-screen">
+<body class="bg-olive-50 m-0 p-0 overflow-hidden h-screen">
   
   <div id="root" class="h-full"></div>
 
@@ -355,8 +466,14 @@ if (!$isLoggedIn) {
       FileText, ExternalLink, FilePlus, SaveAll, Tag, Copy,
       List, ListOrdered, Grid, Image as ImageIcon, Bell, Star, Sparkles, Wand2, Save, MessageCircle, Send, Bot,
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
-      UploadCloud, Check, Edit3, Table
+      UploadCloud, Check, Edit3, Table, Palette
     } from 'lucide-react';
+
+    // ===== テーマ定義（将来追加可能） =====
+    const THEMES = [
+      { id: 'olive',   label: 'オリーブ（新）', previewColor: '#4D7A2D', desc: '深緑＋クリーム' },
+      { id: 'classic', label: 'クラシック',     previewColor: '#2563eb', desc: '青＋ネイビーヘッダー' }
+    ];
 
     const STATUSES = [
       { id: 'todo', label: '未対応', bgColor: 'bg-gray-200', borderColor: 'border-gray-300', textColor: 'text-gray-700', barColor: 'bg-gray-400' },

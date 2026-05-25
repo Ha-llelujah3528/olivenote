@@ -43,8 +43,8 @@ function TaskAutoGenerateModal({
   useEffect(() => {
     if (!open || !dropRef.current) return;
     const el = dropRef.current;
-    const onOver = (e) => { e.preventDefault(); el.classList.add('ring-2','ring-blue-400'); };
-    const onLeave = () => el.classList.remove('ring-2','ring-blue-400');
+    const onOver = (e) => { e.preventDefault(); el.classList.add('ring-2','ring-olive-400'); };
+    const onLeave = () => el.classList.remove('ring-2','ring-olive-400');
     const onDrop = (e) => {
       e.preventDefault(); onLeave();
       if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
@@ -279,7 +279,7 @@ function TaskAutoGenerateModal({
     <div className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-2 sm:p-6">
       <div className="bg-white w-full max-w-5xl h-[90vh] rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* ヘッダー */}
-        <div className="bg-gradient-to-r from-indigo-700 to-blue-700 text-white px-4 sm:px-6 py-3 flex justify-between items-center">
+        <div className="bg-olive-800 text-white px-4 sm:px-6 py-3 flex justify-between items-center">
           <div className="flex items-center gap-2">
             <Wand2 size={20} />
             <span className="font-bold tracking-wide">AI 課題自動生成</span>
@@ -301,7 +301,7 @@ function TaskAutoGenerateModal({
               <div
                 ref={dropRef}
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-gray-300 rounded-xl p-6 mb-3 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/40 transition-colors"
+                className="border-2 border-dashed border-gray-300 rounded-xl p-6 mb-3 text-center cursor-pointer hover:border-olive-400 hover:bg-olive-50/40 transition-colors"
               >
                 <UploadCloud size={28} className="mx-auto text-gray-400 mb-1" />
                 <div className="text-sm text-gray-600">ここに <strong>ドラッグ&ドロップ</strong> または <strong>クリックして選択</strong></div>
@@ -315,7 +315,7 @@ function TaskAutoGenerateModal({
 
               <div className="flex justify-between items-center mb-2">
                 <span className="text-xs text-gray-500">{sources.length} 個のソース</span>
-                <button onClick={addTextSource} className="text-xs text-blue-600 hover:text-blue-800 inline-flex items-center gap-1">
+                <button onClick={addTextSource} className="text-xs text-olive-600 hover:text-olive-800 inline-flex items-center gap-1">
                   <Plus size={12} /> テキストメモを追加
                 </button>
               </div>
@@ -328,7 +328,7 @@ function TaskAutoGenerateModal({
                         {s.kind === 'image' && <ImageIcon size={16} className="text-purple-600" />}
                         {s.kind === 'pdf'   && <FileText size={16} className="text-red-600" />}
                         {s.kind === 'sheet' && <Table size={16} className="text-emerald-600" />}
-                        {s.kind === 'text'  && <Edit3 size={16} className="text-blue-600" />}
+                        {s.kind === 'text'  && <Edit3 size={16} className="text-olive-600" />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-bold text-gray-700 truncate">{s.name}</div>
@@ -338,7 +338,7 @@ function TaskAutoGenerateModal({
                             onChange={(e) => updateTextSource(s.id, e.target.value)}
                             placeholder="例: 議事録、メールの内容、口頭でのToDo指示など"
                             rows={3}
-                            className="w-full text-xs border border-gray-200 rounded p-1.5 mt-1 focus:ring-1 focus:ring-blue-300 focus:border-blue-400 outline-none"
+                            className="w-full text-xs border border-gray-200 rounded p-1.5 mt-1 focus:ring-1 focus:ring-olive-400 focus:border-olive-400 outline-none"
                           />
                         ) : (
                           <div className="text-[11px] text-gray-500 mt-0.5">
@@ -360,7 +360,7 @@ function TaskAutoGenerateModal({
                 onChange={(e) => setInstructions(e.target.value)}
                 placeholder="例: サブタスクは作らないで、全部「開発」カテゴリで、担当は山田さんにして、期限は今月末まで"
                 rows={3}
-                className="w-full text-sm border border-gray-200 rounded-lg p-2 mb-5 focus:ring-1 focus:ring-blue-300 focus:border-blue-400 outline-none"
+                className="w-full text-sm border border-gray-200 rounded-lg p-2 mb-5 focus:ring-1 focus:ring-olive-400 focus:border-olive-400 outline-none"
                 disabled={stage === 'generating'}
               />
 
@@ -373,7 +373,7 @@ function TaskAutoGenerateModal({
                 <button
                   onClick={handleGenerate}
                   disabled={stage === 'generating'}
-                  className="px-5 py-2 text-sm rounded-lg bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-bold hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-2"
+                  className="px-5 py-2 text-sm rounded-lg bg-olive-600 text-white font-bold hover:bg-olive-700 disabled:opacity-50 inline-flex items-center gap-2"
                 >
                   {stage === 'generating' ? (
                     <>
@@ -401,7 +401,7 @@ function TaskAutoGenerateModal({
                 <div className="flex gap-2">
                   <button
                     onClick={() => setDraftSelected(Object.fromEntries(drafts.map(d => [d.tempId, true])))}
-                    className="text-xs text-blue-600 hover:text-blue-800"
+                    className="text-xs text-olive-600 hover:text-olive-800"
                   >全選択</button>
                   <button
                     onClick={() => setDraftSelected({})}
@@ -433,7 +433,7 @@ function TaskAutoGenerateModal({
                       className={`border rounded-lg p-3 transition-colors ${
                         isDup
                           ? (isSel ? 'border-amber-400 bg-amber-50/60' : 'border-amber-200 bg-amber-50/30')
-                          : (isSel ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50/60')
+                          : (isSel ? 'border-olive-300 bg-olive-50/30' : 'border-gray-200 bg-gray-50/60')
                       } ${isChild ? 'ml-6' : ''}`}
                     >
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -470,7 +470,7 @@ function TaskAutoGenerateModal({
                       <input
                         type="text" value={d.title}
                         onChange={(e) => updateDraft(d.tempId, { title: e.target.value })}
-                        className="w-full text-sm font-bold border-b border-gray-200 px-1 py-1 mb-2 focus:outline-none focus:border-blue-400"
+                        className="w-full text-sm font-bold border-b border-gray-200 px-1 py-1 mb-2 focus:outline-none focus:border-olive-400"
                         disabled={!isSel}
                       />
 
@@ -479,7 +479,7 @@ function TaskAutoGenerateModal({
                         onChange={(e) => updateDraft(d.tempId, { description: e.target.value })}
                         rows={2}
                         placeholder="(詳細)"
-                        className="w-full text-xs text-gray-700 border border-gray-200 rounded p-1.5 mb-2 focus:outline-none focus:border-blue-400"
+                        className="w-full text-xs text-gray-700 border border-gray-200 rounded p-1.5 mb-2 focus:outline-none focus:border-olive-400"
                         disabled={!isSel}
                       />
 
