@@ -1,15 +1,9 @@
 <?php
 ini_set('display_errors', 0);
 require_once __DIR__ . '/lib/bootstrap.php';
-// セッション開始（HTTPS環境前提でセキュアCookieを使用）
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path'     => '/',
-    'secure'   => true,
-    'httponly' => true,
-    'samesite' => 'Lax',
-]);
-session_start();
+require_once __DIR__ . '/lib/auth/auth.php';
+
+auth_start_session();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -17,59 +11,9 @@ $input   = json_decode(file_get_contents('php://input'), true) ?? [];
 $action  = $input['action'] ?? '';
 $payload = $input['payload'] ?? [];
 
-// =====================================================
-// 認証ガード: ログイン不要のアクション以外はセッション必須
-// =====================================================
-$publicActions = ['verifySupabaseAuth', 'logout'];
-if (!in_array($action, $publicActions, true)) {
-    if (empty($_SESSION['user_email'])) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'Authentication required', 'authRequired' => true]);
-        exit;
-    }
-}
+// 認証ガード（provider が公開しているアクション + logout 以外はセッション必須）
+auth_require_session($action);
 
-// ================================================================
-// Supabase JWT 検証ヘルパー
-//
-// Supabase の access_token は HS256 (HMAC-SHA256) で署名されている。
-// シークレットは Supabase プロジェクト設定 (Settings > API > JWT Secret)
-// から取得して config.php の SUPABASE_JWT_SECRET に格納する。
-//
-// 戻り値: 検証成功時は payload (配列)、失敗時は null
-// ================================================================
-function base64url_decode_safe(string $s): ?string {
-    $remainder = strlen($s) % 4;
-    if ($remainder) $s .= str_repeat('=', 4 - $remainder);
-    $decoded = base64_decode(strtr($s, '-_', '+/'), true);
-    return $decoded === false ? null : $decoded;
-}
-
-function verifySupabaseJwt(string $jwt, string $secret): ?array {
-    $parts = explode('.', $jwt);
-    if (count($parts) !== 3) return null;
-    [$h64, $p64, $s64] = $parts;
-
-    $headerRaw = base64url_decode_safe($h64);
-    if ($headerRaw === null) return null;
-    $header = json_decode($headerRaw, true);
-    if (!is_array($header) || ($header['alg'] ?? '') !== 'HS256') return null;
-
-    $expected = hash_hmac('sha256', $h64 . '.' . $p64, $secret, true);
-    $actual   = base64url_decode_safe($s64);
-    if ($actual === null || !hash_equals($expected, $actual)) return null;
-
-    $payloadRaw = base64url_decode_safe($p64);
-    if ($payloadRaw === null) return null;
-    $jwtPayload = json_decode($payloadRaw, true);
-    if (!is_array($jwtPayload)) return null;
-
-    $now = time();
-    if (isset($jwtPayload['exp']) && (int)$jwtPayload['exp'] < $now) return null;
-    if (isset($jwtPayload['nbf']) && (int)$jwtPayload['nbf'] > $now) return null;
-
-    return $jwtPayload;
-}
 
 // ================================================================
 // Google Drive API ヘルパー
@@ -687,6 +631,9 @@ function assignNextTaskId(PDO $pdo): string {
 // ================================================================
 
 try {
+    // 認証関連 action（provider 固有 verify / logout）は lib/auth で処理
+    if (auth_dispatch($action, $payload, $pdo)) exit;
+
     switch ($action) {
 
         // ============================================================
@@ -744,7 +691,7 @@ try {
                 $docs[] = docFromRow($row);
             }
 
-            // User preferences（ログイン中ユーザーの表示設定 — 要件2/3/4/6）
+            // User preferences（ログイン中ユーザーの表示設定）
             $userPrefs = new stdClass();
             $filterPresets = [];
             if (!empty($currentUser['email'])) {
@@ -1068,22 +1015,30 @@ try {
         // ============================================================
         case 'uploadFile':
             $name     = $payload['name']     ?? 'upload';
-            $mimeType = $payload['mimeType'] ?? 'application/octet-stream';
+            $mimeType = $payload['mimeType'] ?? '';
             $data     = $payload['data']     ?? '';
 
-            // MIME タイプは形式 (type/subtype) のみ検証し、Drive が受け入れる拡張子は基本的に許可する
+            // ブラウザが MIME を判定できなかった場合は Drive 側で推定させるため octet-stream を渡す
+            if (trim($mimeType) === '') {
+                $mimeType = 'application/octet-stream';
+            }
+            // `text/html; charset=utf-8` のような charset 付きで届くケースに備え、パラメータ部は落とす
+            if (strpos($mimeType, ';') !== false) {
+                $mimeType = trim(substr($mimeType, 0, strpos($mimeType, ';')));
+            }
+            // 想定外の文字が混入していれば octet-stream にフォールバック（Drive が拒否する形式ならエラーで返る）
             if (!preg_match('#^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$#', $mimeType)) {
-                echo json_encode(['success' => false, 'error' => '無効なファイル形式です']);
-                break;
+                $mimeType = 'application/octet-stream';
             }
 
             $decoded = base64_decode($data, true);
-            if ($decoded === false) {
+            if ($decoded === false || $decoded === '') {
                 echo json_encode(['success' => false, 'error' => 'ファイルのデコードに失敗しました']);
                 break;
             }
-            if (strlen($decoded) > 10 * 1024 * 1024) {
-                echo json_encode(['success' => false, 'error' => 'ファイルサイズは10MB以下にしてください']);
+            // Drive 側の上限は実質無いが、PHP の post_max_size と整合する 50MB を上限とする
+            if (strlen($decoded) > 50 * 1024 * 1024) {
+                echo json_encode(['success' => false, 'error' => 'ファイルサイズは50MB以下にしてください']);
                 break;
             }
 
@@ -2448,76 +2403,6 @@ PROMPT;
             break;
 
         // ============================================================
-        // verifySupabaseAuth — Supabase が発行した access_token (JWT) を
-        // 検証してローカル PHP セッションを確立する。
-        //
-        // payload: { accessToken: '<Supabase JWT>' }
-        //   1. HS256 署名検証 (SUPABASE_JWT_SECRET)
-        //   2. aud == 'authenticated' / exp の検証
-        //   3. email を取り出して members テーブルに登録があるか確認
-        //   4. あれば $_SESSION にセットしてログイン成立
-        //
-        // 認証プロバイダ (Google / Microsoft Azure AD / Email Magic Link)
-        // は Supabase 側で吸収。Supabase が JWT を発行している時点で
-        // email は verified と扱える。
-        // ============================================================
-        case 'verifySupabaseAuth':
-            try {
-                $accessToken = (string)($payload['accessToken'] ?? '');
-                if ($accessToken === '') {
-                    echo json_encode(['success' => false, 'error' => 'アクセストークンが指定されていません']);
-                    break;
-                }
-                if (!defined('SUPABASE_JWT_SECRET') || SUPABASE_JWT_SECRET === '') {
-                    echo json_encode(['success' => false, 'error' => 'Supabase 設定が未完了です。管理者にお問い合わせください。']);
-                    break;
-                }
-
-                $jwtPayload = verifySupabaseJwt($accessToken, SUPABASE_JWT_SECRET);
-                if (!$jwtPayload) {
-                    echo json_encode(['success' => false, 'error' => 'トークンが無効または期限切れです。再ログインしてください。']);
-                    break;
-                }
-                // aud は RFC 7519 上 string でも array でも合法。Supabase は通常 string
-                // 'authenticated' を返すが将来仕様変更や別認証経路で配列になる可能性に備える
-                $aud = $jwtPayload['aud'] ?? null;
-                $audOk = is_array($aud) ? in_array('authenticated', $aud, true) : ($aud === 'authenticated');
-                if (!$audOk) {
-                    echo json_encode(['success' => false, 'error' => 'トークンの audience が不正です']);
-                    break;
-                }
-
-                $email = strtolower((string)($jwtPayload['email'] ?? ''));
-                if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                    echo json_encode(['success' => false, 'error' => 'メールアドレスが取得できませんでした']);
-                    break;
-                }
-
-                $stmt = $pdo->prepare("SELECT * FROM members WHERE email = ? LIMIT 1");
-                $stmt->execute([$email]);
-                $member = $stmt->fetch();
-                if (!$member) {
-                    // メンバー未登録 — レスポンスには email を含めず汎用メッセージにとどめる
-                    // (ブラウザの DevTools で見ても情報漏えいしないようにする)
-                    echo json_encode(['success' => false, 'error' => 'このアカウントは Olive Note のメンバーとして登録されていません。管理者にお問い合わせください。']);
-                    break;
-                }
-
-                session_regenerate_id(true);
-                $_SESSION['user_email'] = $email;
-                $_SESSION['user_name']  = $member['name'];
-                echo json_encode(['success' => true, 'data' => [
-                    'email' => $email,
-                    'name'  => $member['name'],
-                ]]);
-            } catch (Throwable $e) {
-                error_log('[supabase-auth] verifySupabaseAuth exception: ' . $e->getMessage());
-                echo json_encode(['success' => false, 'error' => 'サーバーエラーが発生しました']);
-            }
-            break;
-
-
-        // ============================================================
         // saveUserPreference — ユーザー別表示設定の upsert（要件2/3/4/6）
         // ============================================================
         case 'saveUserPreference':
@@ -2627,21 +2512,6 @@ PROMPT;
             $stmt = $pdo->prepare("DELETE FROM filter_presets WHERE id = ? AND user_email = ?");
             $stmt->execute([$id, $email]);
             echo json_encode(['success' => true, 'data' => ['deleted' => $stmt->rowCount()]]);
-            break;
-
-        // ============================================================
-        // logout — セッション破棄
-        // ============================================================
-        case 'logout':
-            $_SESSION = [];
-            if (ini_get('session.use_cookies')) {
-                $params = session_get_cookie_params();
-                setcookie(session_name(), '', time() - 42000,
-                    $params['path'], $params['domain'],
-                    $params['secure'], $params['httponly']);
-            }
-            session_destroy();
-            echo json_encode(['success' => true, 'data' => null]);
             break;
 
         default:

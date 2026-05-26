@@ -2,6 +2,13 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.0.15] - 2026-05-26
+
+### 内部
+- **認証レイヤを分離** — `index.php` / `api.php` に直書きされていた認証コード（セッション開始 / ログイン画面 HTML / Supabase JWT 検証 / logout）を `lib/auth/auth.php`（プロバイダ非依存の共通インターフェース）と `lib/auth/auth_supabase.php`（Supabase 固有実装）に分割。これにより stg（Google OAuth2 直）↔ dist（Supabase Auth）を **auth プロバイダファイルだけの差し替え** で運用できるようになり、stg → dist 同期スクリプトが `index.php`/`api.php` を上書きしても認証が壊れない構造に。`OLIVENOTE_AUTH_PROVIDER` 定数（bootstrap.php で `supabase` 固定）で provider を切替。フロントの API action 名（`verifySupabaseAuth` / `logout`）と `$_SESSION` 構造は維持しているため、エンドユーザー体験への影響はゼロ
+- **Supabase ログイン画面の JS 出力に XSS 防御強化** — `json_encode` のフラグに `JSON_HEX_APOS | JSON_HEX_QUOT` を追加し、SUPABASE_URL / SUPABASE_ANON_KEY 中に万が一クォートが混入してもスクリプトブレイクアウトしないように
+- **STG → dist 同期スクリプト改修** — `lib/auth/auth.php`（共通部）を同期対象に追加、provider 固有（`auth_google.php`/`auth_supabase.php`）は明示 EXCLUDE。`ListView.html` を COPY_AS_IS に登録、`.user.ini` を EXCLUDE_FROM_STG に追加（リリース時の警告解消）
+
 ## [1.0.14] - 2026-05-26
 
 ### 追加

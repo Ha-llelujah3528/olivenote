@@ -11,6 +11,13 @@
 if (defined('OLIVENOTE_BOOTSTRAPPED')) return;
 define('OLIVENOTE_BOOTSTRAPPED', true);
 
+// 認証プロバイダ: dist パッケージ版は Supabase Auth 固定。
+// （stg/prd は config.php 直 require で 'google'（デフォルト）を使用）
+// lib/auth/auth.php より前に定義しておく必要がある。
+if (!defined('OLIVENOTE_AUTH_PROVIDER')) {
+    define('OLIVENOTE_AUTH_PROVIDER', 'supabase');
+}
+
 // ---- パス定数 ----
 define('OLIVENOTE_APP',     dirname(__DIR__));               // .../app
 define('OLIVENOTE_ROOT',    dirname(OLIVENOTE_APP));         // .../ (project root)
