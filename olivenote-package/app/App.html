@@ -62,7 +62,7 @@ const CONCIERGE_GREETING = {
   'concierge-tasks': 'こんにちは！現在フィルターで表示中の課題について分析します。\n「期限超過は何件？」「担当者ごとの件数は？」「優先度が高い未着手を教えて」など、お気軽にどうぞ📊'
 };
 
-function OliveConcierge({ filteredTasks = [], members = [], categories = [], taskTypes = [], filters = {}, searchQuery = '' }) {
+function OliveConcierge({ filteredTasks = [], members = [], categories = [], taskTypes = [], filters = {}, searchQuery = '', hidden = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const [mode, setMode] = useState('concierge');
   const [messages, setMessages] = useState([
@@ -169,7 +169,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
   };
 
   return (
-    <div className="fixed bottom-6 right-6 z-[60] flex flex-col items-end pointer-events-none">
+    <div className={`fixed bottom-6 right-6 z-[60] flex flex-col items-end pointer-events-none transition-opacity duration-200 ${hidden && !isOpen ? 'opacity-0 invisible' : 'opacity-100 visible'}`}>
       
       {/* チャットウィンドウ */}
       {isOpen && (
@@ -1013,25 +1013,6 @@ function App() {
 
   return (
     <div className="h-screen bg-olive-50 flex flex-col font-sans text-gray-800 relative">
-      {/* バージョン情報。Oliveコンシェルジュ（右下）/トースト（右下）と被らないよう左下に固定 */}
-      <div className="fixed bottom-2 left-2 md:bottom-4 md:left-4 z-50 flex items-center gap-1.5">
-        <div className="bg-olive-700/80 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
-          Olive Note v{appVersion}
-        </div>
-        {updateInfo?.updateAvailable && (
-          <a
-            href="app/admin/updater_ui.php"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="bg-amber-500/95 hover:bg-amber-600 text-white text-[10px] md:text-xs font-bold px-2 py-1 rounded-full shadow-md backdrop-blur-sm inline-flex items-center gap-1 transition-colors"
-            title={`v${updateInfo.latest} へのアップデートが利用可能。クリックで更新画面を開きます`}
-          >
-            <RefreshCw size={11} />
-            v{updateInfo.latest} 利用可能
-          </a>
-        )}
-      </div>
-
       <header className="bg-olive-800 text-white px-3 md:px-6 py-2.5 md:py-3 flex flex-col md:flex-row items-center justify-between shadow-md relative z-40 shrink-0 gap-2 md:gap-0">
         <div className="flex items-center justify-between w-full md:w-auto">
           <button
@@ -1043,6 +1024,25 @@ function App() {
             <CheckSquare className="text-green-400 shrink-0" />
             <h1 className="text-lg md:text-xl font-bold tracking-wider truncate">Olive Note</h1>
           </button>
+          {/* バージョン情報（ヘッダー左上、ロゴ右隣）。以前は左下 fixed でカレンダーの日付と被る問題があった */}
+          <div className="flex items-center gap-1.5 ml-1.5 md:ml-2">
+            <span className="bg-white/15 text-white/90 text-[9px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded-full whitespace-nowrap">
+              v{appVersion}
+            </span>
+            {updateInfo?.updateAvailable && (
+              <a
+                href="app/admin/updater_ui.php"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-amber-500/95 hover:bg-amber-600 text-white text-[9px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded-full inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+                title={`v${updateInfo.latest} へのアップデートが利用可能。クリックで更新画面を開きます`}
+              >
+                <RefreshCw size={10} />
+                <span className="hidden sm:inline">v{updateInfo.latest} 利用可能</span>
+                <span className="sm:hidden">更新</span>
+              </a>
+            )}
+          </div>
 
           <div className="flex md:hidden items-center gap-2">
             <span className="text-xl">{currentUser?.avatar}</span>
@@ -1449,7 +1449,7 @@ function App() {
         </div>
       )}
 
-      <main className="flex-1 overflow-hidden flex flex-col p-2 md:p-4 relative z-0 h-full">
+      <main className="flex-1 overflow-hidden flex flex-col p-2 md:p-4 relative h-full">
         {activeTab === 'board' && <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} />}
         {activeTab === 'gantt' && <GanttView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onSaveTask={handleSaveTask} onReorderTask={handleReorderTask} holidays={holidays} />}
         {activeTab === 'calendar' && <CalendarView tasks={filteredTasks} onOpenTask={handleOpenTask} holidays={holidays} taskTypes={taskTypes} members={members} />}
@@ -1474,6 +1474,7 @@ function App() {
         taskTypes={taskTypes}
         filters={filters}
         searchQuery={searchQuery}
+        hidden={isModalOpen}
       />
 
       <TaskAutoGenerateModal
