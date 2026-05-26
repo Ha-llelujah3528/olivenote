@@ -232,7 +232,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
   };
 
   return (
-    <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col overflow-hidden relative">
+    <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col overflow-hidden relative isolate">
       <button
         onClick={() => setIsCompact(!isCompact)}
         className="absolute top-2 left-2 z-[90] bg-white border border-gray-300 text-xs font-bold text-gray-600 px-2 py-1 rounded shadow-sm hover:bg-gray-50 flex items-center gap-1"
