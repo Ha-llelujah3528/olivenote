@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.15",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.15/olivenote-1.0.15.zip",
-  "sha256": "d1cd7d263dce0642eca090749eae221c5d389a8b9f8298f3249ec1302f19d629",
-  "size_bytes": 2745530,
+  "latest": "1.0.16",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.16/olivenote-1.0.16.zip",
+  "sha256": "59cf3fe497bb27a9bfac5705fd9de73934525ad4da9f731520e5ecf0499864ad",
+  "size_bytes": 2745534,
   "min_php_version": "8.0",
-  "changelog": "\n### 内部\n- **認証レイヤを分離** — `index.php` / `api.php` に直書きされていた認証コード（セッション開始 / ログイン画面 HTML / Supabase JWT 検証 / logout）を `lib/auth/auth.php`（プロバイダ非依存の共通インターフェース）と `lib/auth/auth_supabase.php`（Supabase 固有実装）に分割。これにより stg（Google OAuth2 直）↔ dist（Supabase Auth）を **auth プロバイダファイルだけの差し替え** で運用できるようになり、stg → dist 同期スクリプトが `index.php`/`api.php` を上書きしても認証が壊れない構造に。`OLIVENOTE_AUTH_PROVIDER` 定数（bootstrap.php で `supabase` 固定）で provider を切替。フロントの API action 名（`verifySupabaseAuth` / `logout`）と `$_SESSION` 構造は維持しているため、エンドユーザー体験への影響はゼロ\n- **Supabase ログイン画面の JS 出力に XSS 防御強化** — `json_encode` のフラグに `JSON_HEX_APOS | JSON_HEX_QUOT` を追加し、SUPABASE_URL / SUPABASE_ANON_KEY 中に万が一クォートが混入してもスクリプトブレイクアウトしないように\n- **STG → dist 同期スクリプト改修** — `lib/auth/auth.php`（共通部）を同期対象に追加、provider 固有（`auth_google.php`/`auth_supabase.php`）は明示 EXCLUDE。`ListView.html` を COPY_AS_IS に登録、`.user.ini` を EXCLUDE_FROM_STG に追加（リリース時の警告解消）\n\n",
-  "published_at": "2026-05-26T07:04:05Z"
+  "changelog": "\n### 修正\n- **ガントチャートの表示崩れ修正** — 担当者フィルターのプルダウンが日付ヘッダの裏に隠れる／課題詳細モーダルを開いてもガントの課題一覧と日付ヘッダがモーダルの上に乗ってしまう問題を修正。GanttView ルートに `isolation: isolate` を付与して新しいスタッキングコンテキストを作り、内部の sticky 要素（`z-[70]`/`z-[80]`/`z-[90]`）が外側のオーバーレイ（`z-50`）に漏れ出さないようにした\n\n",
+  "published_at": "2026-05-26T07:21:11Z"
 }
