@@ -1,9 +1,9 @@
 {
-  "latest": "1.0.14",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.14/olivenote-1.0.14.zip",
-  "sha256": "6e386ea9ad1a4ddbc74ee39c5427eabac13c983c1fb1675e26fe11f86e1d6943",
-  "size_bytes": 2741705,
+  "latest": "1.0.15",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.0.15/olivenote-1.0.15.zip",
+  "sha256": "d1cd7d263dce0642eca090749eae221c5d389a8b9f8298f3249ec1302f19d629",
+  "size_bytes": 2745530,
   "min_php_version": "8.0",
-  "changelog": "\n### 追加\n- **ボードカードのパステル色付け** — 課題ごとに 7色（赤/橙/黄/緑/青/紫/グレー）から好きなパステル色を選んでカード全体を着色できるように。色はタスクモーダルから設定。一覧ビューでは細い色帯としてタイトル左に表示\n- **ボード簡略ビュー切替** — フィルタバーの「簡略」トグルで、タイトル＋期限のみのコンパクト表示に切替可能。設定はサーバー DB に保存され、PC/別端末でも引き継がれる\n- **メイン担当 / サブ担当の上下分割ビュー（PCのみ）** — ボード/一覧で「分割」トグルを ON にすると、上半分に自分がメイン担当のタスク、下半分にサブ担当のタスクが表示される。中央のリサイザーで比率調整可能。下半分はカラムヘッダーを非表示にして見やすく\n- **フィルタープリセット** — よく使うフィルタ条件に名前を付けて保存。「プリセット▼」ドロップダウンからワンクリックで適用・削除可能\n- **一覧ビュー** — タブに「一覧」を追加。テーブル形式でソート・列表示切替が可能。表示列の選択はユーザーごとに保存\n\n### 改善\n- **デフォルトフィルター変更** — 初期表示で全ステータスを表示するように変更。フィルタバーに「全選択 / 完了以外 / クリア」のクイックボタンを追加\n- **初回ログイン時のみ「担当者=自分」を自動 ON** — 2回目以降はフィルタを保持\n\n### 内部\n- 新規 DB 列 `tasks.card_color`、新規テーブル `user_preferences` / `filter_presets` を追加（migrations/002_view_features.sql）\n- API: `saveUserPreference` / `listFilterPresets` / `saveFilterPreset` / `deleteFilterPreset` の4アクションを追加\n\n",
-  "published_at": "2026-05-26T05:17:41Z"
+  "changelog": "\n### 内部\n- **認証レイヤを分離** — `index.php` / `api.php` に直書きされていた認証コード（セッション開始 / ログイン画面 HTML / Supabase JWT 検証 / logout）を `lib/auth/auth.php`（プロバイダ非依存の共通インターフェース）と `lib/auth/auth_supabase.php`（Supabase 固有実装）に分割。これにより stg（Google OAuth2 直）↔ dist（Supabase Auth）を **auth プロバイダファイルだけの差し替え** で運用できるようになり、stg → dist 同期スクリプトが `index.php`/`api.php` を上書きしても認証が壊れない構造に。`OLIVENOTE_AUTH_PROVIDER` 定数（bootstrap.php で `supabase` 固定）で provider を切替。フロントの API action 名（`verifySupabaseAuth` / `logout`）と `$_SESSION` 構造は維持しているため、エンドユーザー体験への影響はゼロ\n- **Supabase ログイン画面の JS 出力に XSS 防御強化** — `json_encode` のフラグに `JSON_HEX_APOS | JSON_HEX_QUOT` を追加し、SUPABASE_URL / SUPABASE_ANON_KEY 中に万が一クォートが混入してもスクリプトブレイクアウトしないように\n- **STG → dist 同期スクリプト改修** — `lib/auth/auth.php`（共通部）を同期対象に追加、provider 固有（`auth_google.php`/`auth_supabase.php`）は明示 EXCLUDE。`ListView.html` を COPY_AS_IS に登録、`.user.ini` を EXCLUDE_FROM_STG に追加（リリース時の警告解消）\n\n",
+  "published_at": "2026-05-26T07:04:05Z"
 }
