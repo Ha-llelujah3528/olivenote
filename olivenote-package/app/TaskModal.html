@@ -111,6 +111,30 @@ function useMentionSuggest(members) {
 
 function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast }) {
       const isNew = !task || !task.id;
+
+      // この課題への共有用ディープリンクをクリップボードへコピー
+      const handleCopyLink = async () => {
+        if (!task?.id) return;
+        try {
+          const url = new URL(window.location.href);
+          url.hash = '';
+          url.searchParams.set('task', task.id);
+          const link = url.toString();
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(link);
+          } else {
+            // クリップボード API が無い環境向けのフォールバック
+            const ta = document.createElement('textarea');
+            ta.value = link; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy'); document.body.removeChild(ta);
+          }
+          showToast && showToast('リンクをコピーしました');
+        } catch (e) {
+          showToast && showToast('リンクのコピーに失敗しました', 'error');
+        }
+      };
+
       const textareaRef = useRef(null);
       const fileInputRef = useRef(null);
       
@@ -137,22 +161,58 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const insertMarkdown = (prefix, suffix = '') => {
         const textarea = textareaRef.current;
         if (!textarea) return;
-        
+
         const scrollTop = textarea.scrollTop;
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
-        
+
         textarea.focus();
         textarea.setSelectionRange(start, end);
-        
+
         const selected = textarea.value.substring(start, end);
         const insertText = prefix + selected + suffix;
-        
+
         document.execCommand('insertText', false, insertText);
-        
+
         const newCursorPos = selected ? start + prefix.length + selected.length : start + prefix.length;
         setTimeout(() => {
           textarea.setSelectionRange(newCursorPos, newCursorPos);
+          textarea.scrollTop = scrollTop;
+        }, 0);
+      };
+
+      // マークダウンリンク挿入: 選択中テキスト → [selected](URL) として URL 部分を選択状態にする
+      // 何も選択していなければ [リンクテキスト](URL) を挿入し、「リンクテキスト」を選択状態にする
+      const insertMarkdownLink = () => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const scrollTop = textarea.scrollTop;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+
+        textarea.focus();
+        textarea.setSelectionRange(start, end);
+
+        const selected = textarea.value.substring(start, end);
+        const hasSelection = selected.length > 0;
+        const linkText = hasSelection ? selected : 'リンクテキスト';
+        const urlPlaceholder = 'URL';
+        const insertText = `[${linkText}](${urlPlaceholder})`;
+
+        document.execCommand('insertText', false, insertText);
+
+        // 選択あり → 後段の URL を選択（即ペースト/入力で URL に化ける）
+        // 選択なし → 前段の「リンクテキスト」を選択（先に表示文字列を編集）
+        const selStart = hasSelection
+          ? start + 1 + linkText.length + 2          // `[text](` の直後
+          : start + 1;                                // `[` の直後
+        const selEnd = hasSelection
+          ? selStart + urlPlaceholder.length
+          : selStart + linkText.length;
+
+        setTimeout(() => {
+          textarea.setSelectionRange(selStart, selEnd);
           textarea.scrollTop = scrollTop;
         }, 0);
       };
@@ -1210,8 +1270,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       };
 
       return (
-        <div 
-          className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 px-[2%] py-4 backdrop-blur-sm"
+        <div
+          className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 px-[2%] py-4 backdrop-blur-sm olive-modal-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) requestClose();
           }}
@@ -1272,11 +1332,21 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
               </div>
             </div>
           )}
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-[96vw] max-h-[95vh] flex flex-col overflow-hidden border border-gray-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-[96vw] max-h-[95vh] flex flex-col overflow-hidden border border-gray-200 olive-modal-drawer">
 
             <div className="bg-olive-50 border-b border-olive-200 px-3 md:px-6 py-2.5 md:py-4 flex items-center justify-between shrink-0 gap-2">
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
                 <span className="bg-olive-100 text-olive-800 text-[10px] md:text-xs font-bold px-1.5 md:px-2 py-1 rounded shadow-sm shrink-0">{isNew ? '新規' : formData.id}</span>
+                {!isNew && (
+                  <button
+                    type="button"
+                    onClick={handleCopyLink}
+                    title="この課題への共有リンクをコピー"
+                    className="text-olive-700 hover:text-olive-900 hover:bg-olive-100 rounded p-1 transition-colors shrink-0"
+                  >
+                    <LinkIcon size={14} />
+                  </button>
+                )}
                 <h2 className="text-base md:text-xl font-bold text-gray-800 truncate">
                   <span className="hidden sm:inline">{isNew ? '課題の追加' : '課題の編集'}</span>
                   <span className="sm:hidden">{isNew ? '追加' : '編集'}</span>
@@ -1383,6 +1453,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <button type="button" onClick={() => insertMarkdown('1. ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ListOrdered size={14}/> 番号付き</button>
                       <button type="button" onClick={() => insertMarkdown('- [ ] ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><CheckSquare size={14}/> チェック</button>
                       <button type="button" onClick={() => insertMarkdown('\n| タイトル1 | タイトル2 |\n|---|---|\n| 内容 | 内容 |\n')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><Grid size={14}/> 表</button>
+                      <button type="button" onClick={insertMarkdownLink} title="選択中の文字列をリンクに変換（URL 部分が自動選択されます）" className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><LinkIcon size={14}/> リンク</button>
                       <button type="button" onClick={() => insertMarkdown('![コメント](', 'URL)')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ImageIcon size={14}/> 画像リンク</button>
 
                       <button type="button" onClick={insertCurrentTemplate} className="p-1.5 text-olive-600 hover:bg-olive-100 rounded text-xs flex items-center gap-1 ml-auto font-bold transition-colors">

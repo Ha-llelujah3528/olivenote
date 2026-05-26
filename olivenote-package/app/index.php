@@ -329,6 +329,32 @@ if (!$isLoggedIn) {
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
+      /* ===== タスクモーダル開閉アニメーション（引き出し風） ===== */
+      /* 背景: ふわっとフェードイン */
+      @keyframes olive-modal-backdrop-in {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      /* 本体: 少し上から滑り降りつつ縦に伸びる「引き出しを引っ張り出す」イメージ */
+      @keyframes olive-modal-drawer-in {
+        0%   { opacity: 0; transform: translate3d(0, -28px, 0) scaleY(0.92) scaleX(0.97); }
+        60%  { opacity: 1; }
+        100% { opacity: 1; transform: translate3d(0, 0, 0)     scaleY(1)    scaleX(1); }
+      }
+      .olive-modal-backdrop {
+        animation: olive-modal-backdrop-in 180ms ease-out both;
+      }
+      .olive-modal-drawer {
+        transform-origin: top center;
+        animation: olive-modal-drawer-in 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        will-change: transform, opacity;
+      }
+      /* アクセシビリティ: モーション低減設定時はアニメ無効 */
+      @media (prefers-reduced-motion: reduce) {
+        .olive-modal-backdrop,
+        .olive-modal-drawer { animation: none !important; }
+      }
+
       /* Tailwind環境でMarkdownの見た目を綺麗にするための追加スタイル */
       .markdown-body h1 { font-size: 1.5em; font-weight: bold; border-bottom: 1px solid #eaecef; margin-top: 24px; padding-bottom: 8px; }
       .markdown-body h2 { font-size: 1.25em; font-weight: bold; border-bottom: 1px solid #eaecef; margin-top: 20px; padding-bottom: 6px; }

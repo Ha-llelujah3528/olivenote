@@ -302,6 +302,32 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
   );
 }
 
+// ============================================================
+// URL ディープリンク用ヘルパー（?task=TASK-XXXX）
+// - history.replaceState を採用（モーダル開閉で履歴を増やさない）
+// - popstate / 戻る進む対応は App コンポーネント側で行う
+// ============================================================
+const TASK_URL_PARAM = 'task';
+function readTaskFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get(TASK_URL_PARAM);
+    return id && id.trim() ? id.trim() : null;
+  } catch (e) {
+    return null;
+  }
+}
+function writeTaskToUrl(taskId) {
+  try {
+    const url = new URL(window.location.href);
+    if (taskId) url.searchParams.set(TASK_URL_PARAM, taskId);
+    else url.searchParams.delete(TASK_URL_PARAM);
+    window.history.replaceState(null, '', url.toString());
+  } catch (e) {
+    /* 古い環境では URL API が無い等。サイレントに無視 */
+  }
+}
+
 function App() {
   // ★ 起動時にOSを判定し、ランダムなTipsを1つ選ぶ
   const [loadingTip] = useState(() => {
@@ -429,6 +455,7 @@ function App() {
     if (targetTask) {
       setEditingTask(targetTask);
       setIsModalOpen(true);
+      writeTaskToUrl(targetTask.id);
     }
     setIsNotifOpen(false);
   };
@@ -469,11 +496,36 @@ function App() {
       loadedTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
       setTasks(loadedTasks);
 
+      // ★ URL ディープリンク復元: ?task=TASK-XXXX があれば該当タスクのモーダルを開く
+      const initialTaskId = readTaskFromUrl();
+      if (initialTaskId) {
+        const target = loadedTasks.find(t => t.id === initialTaskId);
+        if (target) {
+          setEditingTask(target);
+          setIsModalOpen(true);
+        } else {
+          // 存在しない ID は黙って除去（共有後に削除されたケースで毎回エラーを出さない）
+          writeTaskToUrl(null);
+        }
+      }
+
       setIsInitializing(false);
     }).catch(err => {
       console.error(err); setIsInitializing(false);
     });
   }, []);
+
+  // ★ ブラウザの戻る/進む（popstate）で URL の ?task= を拾ってモーダルを開閉
+  useEffect(() => {
+    const onPopState = () => {
+      const id = readTaskFromUrl();
+      if (!id) { setIsModalOpen(false); return; }
+      const target = tasks.find(t => t.id === id);
+      if (target) { setEditingTask(target); setIsModalOpen(true); }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [tasks]);
 
   useEffect(() => {
     if (isInitializing) return;
@@ -527,22 +579,24 @@ function App() {
     });
     
     if (closeModal) {
-      setIsModalOpen(false); 
+      closeTaskModal();
     }
 
     try {
       const dataForSave = { ...taskToSave };
-      if (isNew) delete dataForSave.id; 
+      if (isNew) delete dataForSave.id;
       delete dataForSave.updatedAt;
 
       const savedTask = await api.saveTask(dataForSave);
-      
+
       setTasks(prev => {
         return prev.map(t => t.id === tempId ? savedTask : t).sort((a, b) => (a.order || 0) - (b.order || 0));
       });
-      
+
       if (!closeModal) {
           setEditingTask(savedTask);
+          // 新規作成→保存で発番された ID を URL にも反映
+          if (savedTask?.id) writeTaskToUrl(savedTask.id);
       }
     } catch (e) {
       alert("保存に失敗しました: " + e.message);
@@ -563,7 +617,7 @@ function App() {
   const handleDeleteTask = async (taskId) => {
     await api.deleteTask(taskId);
     setTasks(prev => prev.filter(t => t.id !== taskId).map(t => t.parentId === taskId ? { ...t, parentId: '' } : t));
-    setIsModalOpen(false);
+    closeTaskModal();
     showToast('タスクをゴミ箱に移動しました');
   };
 
@@ -646,6 +700,13 @@ function App() {
   const handleOpenTask = (task) => {
     setEditingTask(task);
     setIsModalOpen(true);
+    writeTaskToUrl(task?.id ?? null); // 新規(null)では URL に載せない
+  };
+
+  // モーダルを閉じる経路を統一（URL からも task を除去）
+  const closeTaskModal = () => {
+    setIsModalOpen(false);
+    writeTaskToUrl(null);
   };
 
   const clearFilters = () => setFilters({
@@ -1399,7 +1460,7 @@ function App() {
       {isModalOpen && (
         <TaskModal
           task={editingTask} tasks={tasks} setTasks={setTasks} categories={categories} taskTypes={taskTypes}
-          members={members} currentUser={currentUser} onClose={() => setIsModalOpen(false)}
+          members={members} currentUser={currentUser} onClose={closeTaskModal}
           onSave={handleSaveTask} onAutoSave={handleAutoSave} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
           taskTemplates={taskTemplates}
           docTemplates={docTemplates}
