@@ -328,6 +328,63 @@ function writeTaskToUrl(taskId) {
   }
 }
 
+// ============================================================
+// SplitContainer — メイン/サブ担当の上下分割 + リサイザー（要件3）
+//   props:
+//     - ratio: 0.0〜1.0（上段の比率）
+//     - onRatioChange(newRatio): リサイズ完了時に呼ばれる
+//     - upper / lower: ReactNode（上段・下段の中身）
+// ============================================================
+function SplitContainer({ ratio = 0.5, onRatioChange, upper, lower }) {
+  const containerRef = useRef(null);
+  const [localRatio, setLocalRatio] = useState(ratio);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => { setLocalRatio(ratio); }, [ratio]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      let r = y / rect.height;
+      if (r < 0.15) r = 0.15;
+      if (r > 0.85) r = 0.85;
+      setLocalRatio(r);
+    };
+    const onUp = () => {
+      setIsDragging(false);
+      onRatioChange?.(localRatio);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isDragging, localRatio, onRatioChange]);
+
+  return (
+    <div ref={containerRef} className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
+      <div className="min-h-0 overflow-hidden flex flex-col" style={{ flexBasis: `${localRatio * 100}%`, flexGrow: 0, flexShrink: 0 }}>
+        {upper}
+      </div>
+      <div
+        onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); }}
+        className={`shrink-0 h-2 bg-gray-200 hover:bg-olive-300 active:bg-olive-400 cursor-row-resize flex items-center justify-center transition-colors ${isDragging ? 'bg-olive-400' : ''}`}
+        title="ドラッグして上下の比率を変更"
+      >
+        <div className="w-12 h-0.5 bg-gray-400 rounded"></div>
+      </div>
+      <div className="min-h-0 overflow-hidden flex flex-col" style={{ flexBasis: `${(1 - localRatio) * 100}%`, flexGrow: 0, flexShrink: 0 }}>
+        {lower}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   // ★ 起動時にOSを判定し、ランダムなTipsを1つ選ぶ
   const [loadingTip] = useState(() => {
@@ -370,14 +427,44 @@ function App() {
   
   const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
   const [isAssigneeMenuOpen, setIsAssigneeMenuOpen] = useState(false);
-  const defaultStatuses = ['todo', 'in-progress', 'waiting', 'review']; 
-  
+  // ★ 要件4: デフォルトはすべてのステータスを表示（クイックボタン「完了以外」で絞り込み可）
+  const defaultStatuses = STATUSES.map(s => s.id);
+  const statusesWithoutDone = STATUSES.filter(s => s.id !== 'done').map(s => s.id);
+
   // ★ 変更：filters に hasImplementationDate（実施日あり）を追加
-  const [filters, setFilters] = useState({ 
-    assigneeEmail: [], category: '', type: '', priority: '', 
+  const [filters, setFilters] = useState({
+    assigneeEmail: [], category: '', type: '', priority: '',
     dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
     hasImplementationDate: false
   });
+
+  // ★ ユーザー別表示設定（要件2/3/4/6）— サーバーDBに保存
+  const [userPrefs, setUserPrefs] = useState({});
+  // ★ フィルタープリセット一覧（要件5）
+  const [filterPresets, setFilterPresets] = useState([]);
+  const [isPresetMenuOpen, setIsPresetMenuOpen] = useState(false);
+
+  // savePref: 楽観的に state を更新 + debounce 500ms で API へ送信
+  const savePrefTimers = useRef({});
+  const savePref = useCallback((key, value) => {
+    setUserPrefs(prev => ({ ...prev, [key]: value }));
+    if (savePrefTimers.current[key]) clearTimeout(savePrefTimers.current[key]);
+    savePrefTimers.current[key] = setTimeout(() => {
+      api.saveUserPreference(key, value).catch(err => {
+        console.error('[savePref] failed:', key, err);
+      });
+    }, 500);
+  }, []);
+
+  // スマホ判定（要件3 でPCのみ分割表示にするため）
+  const [isPcViewport, setIsPcViewport] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth >= 768
+  );
+  useEffect(() => {
+    const onResize = () => setIsPcViewport(window.innerWidth >= 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
@@ -478,6 +565,20 @@ function App() {
       setCurrentUser(data.currentUser); setMembers(data.members); setTaskTypes(data.taskTypes); setDocs(data.docs || []);
       setDocFolderRootId(data.docFolderRootId || null);
       setTaskTemplates(data.taskTemplates || {});
+      // ★ ユーザー別表示設定とフィルタープリセット
+      const loadedPrefs = data.userPreferences || {};
+      setUserPrefs(loadedPrefs);
+      setFilterPresets(data.filterPresets || []);
+
+      // ★ 要件4: 初回ログイン時のみ「担当者=自分」を自動ON
+      if (!loadedPrefs['filters.initialized'] && data.currentUser?.email) {
+        setFilters(f => ({ ...f, assigneeEmail: [data.currentUser.email] }));
+        // 初回ONフラグを立てる（楽観更新+API送信）
+        setUserPrefs(p => ({ ...p, 'filters.initialized': true }));
+        api.saveUserPreference('filters.initialized', true).catch(err =>
+          console.error('[filters.initialized] save failed:', err)
+        );
+      }
       
       setDocTags(data.docTags || []); 
       setDocFileTags(data.docFileTags || {}); 
@@ -714,6 +815,55 @@ function App() {
     dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
     hasImplementationDate: false
   });
+
+  // ============================================================
+  // 要件5: フィルタープリセット操作
+  // ============================================================
+  const applyFilterPreset = (preset) => {
+    if (!preset) return;
+    const f = preset.filters || {};
+    setFilters({
+      assigneeEmail: f.assigneeEmail || [],
+      category:      f.category      || '',
+      type:          f.type          || '',
+      priority:      f.priority      || '',
+      dueDateFrom:   f.dueDateFrom   || '',
+      dueDateTo:     f.dueDateTo     || '',
+      statuses:      Array.isArray(f.statuses) ? f.statuses : defaultStatuses,
+      hasImplementationDate: !!f.hasImplementationDate,
+    });
+    if (typeof f.searchQuery === 'string') setSearchQuery(f.searchQuery);
+    setIsPresetMenuOpen(false);
+  };
+
+  const saveCurrentFilterAsPreset = async () => {
+    const name = window.prompt('プリセット名を入力してください', '');
+    if (!name || !name.trim()) return;
+    try {
+      const saved = await api.saveFilterPreset({
+        name: name.trim(),
+        filters: { ...filters, searchQuery },
+      });
+      setFilterPresets(prev => [...prev, saved]);
+      setIsPresetMenuOpen(false);
+      showToast('プリセットを保存しました');
+    } catch (e) {
+      console.error(e);
+      showToast('プリセットの保存に失敗しました', 'error');
+    }
+  };
+
+  const deleteFilterPreset = async (preset) => {
+    if (!window.confirm(`プリセット「${preset.name}」を削除しますか？`)) return;
+    try {
+      await api.deleteFilterPreset(preset.id);
+      setFilterPresets(prev => prev.filter(p => p.id !== preset.id));
+      showToast('プリセットを削除しました');
+    } catch (e) {
+      console.error(e);
+      showToast('プリセットの削除に失敗しました', 'error');
+    }
+  };
 
   // ============================================================
   // ガントチャートを A3 横向きで印刷（現在のフィルタ済みタスクが対象）
@@ -1149,6 +1299,7 @@ function App() {
 
         <div className="flex bg-olive-700 rounded-md overflow-x-auto [&::-webkit-scrollbar]:hidden w-full md:w-auto md:ml-6 md:mr-auto snap-x">
           <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Columns size={16} /> ボード</button>
+          <button onClick={() => setActiveTab('list')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'list' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><List size={16} /> 一覧</button>
           <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarDays size={16} /> ガント</button>
           <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarIcon size={16} /> カレンダー</button>
           <button onClick={() => setActiveTab('docs')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'docs' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><FileText size={16} /> ドキュメント</button>
@@ -1261,7 +1412,7 @@ function App() {
         </div>
       </header>
 
-      {(activeTab === 'board' || activeTab === 'gantt' || activeTab === 'calendar') && (
+      {(activeTab === 'board' || activeTab === 'gantt' || activeTab === 'calendar' || activeTab === 'list') && (
         <div className="bg-white border-b border-gray-200 relative shadow-[0_2px_4px_rgba(0,0,0,0.05)] z-30 shrink-0">
           {isFilterExpanded && (
             <div className="px-4 md:px-6 py-4 flex flex-wrap gap-3 md:gap-4 items-end">
@@ -1293,7 +1444,25 @@ function App() {
                 {isStatusMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setIsStatusMenuOpen(false)}></div>
-                    <div className="absolute left-0 top-full mt-1 w-full md:w-[180px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1">
+                    <div className="absolute left-0 top-full mt-1 w-full md:w-[200px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1">
+                      {/* ★ 要件4: クイックボタン */}
+                      <div className="flex gap-1 px-2 pt-1 pb-2 border-b border-gray-100">
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, statuses: defaultStatuses })}
+                          className="flex-1 text-[11px] px-2 py-1 rounded bg-gray-100 hover:bg-olive-100 text-gray-700 hover:text-olive-700 font-bold transition-colors"
+                        >全選択</button>
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, statuses: statusesWithoutDone })}
+                          className="flex-1 text-[11px] px-2 py-1 rounded bg-gray-100 hover:bg-olive-100 text-gray-700 hover:text-olive-700 font-bold transition-colors"
+                        >完了以外</button>
+                        <button
+                          type="button"
+                          onClick={() => setFilters({ ...filters, statuses: [] })}
+                          className="flex-1 text-[11px] px-2 py-1 rounded bg-gray-100 hover:bg-olive-100 text-gray-700 hover:text-olive-700 font-bold transition-colors"
+                        >クリア</button>
+                      </div>
                       {STATUSES.map(s => (
                         <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
                           <input
@@ -1417,6 +1586,83 @@ function App() {
                 </div>
               )}
 
+              {/* ★ 要件5: フィルタープリセット */}
+              <div className="w-[calc(50%-0.375rem)] md:w-44 relative pb-1">
+                <label className="block text-xs font-bold text-gray-500 mb-1">プリセット</label>
+                <button
+                  type="button"
+                  onClick={() => setIsPresetMenuOpen(!isPresetMenuOpen)}
+                  className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-olive-500 shadow-sm"
+                  title="保存済みフィルタープリセット"
+                >
+                  <span className="truncate flex items-center gap-1"><Bookmark size={13} className="text-olive-600 shrink-0"/>プリセット</span>
+                  <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                </button>
+                {isPresetMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsPresetMenuOpen(false)}></div>
+                    <div className="absolute left-0 top-full mt-1 w-full md:w-[260px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
+                      <button
+                        type="button"
+                        onClick={saveCurrentFilterAsPreset}
+                        className="w-full text-left px-3 py-2 text-sm font-bold text-olive-700 hover:bg-olive-50 border-b border-gray-100 flex items-center gap-2"
+                      ><Plus size={14}/>現在のフィルタを保存…</button>
+                      {filterPresets.length === 0 ? (
+                        <div className="px-3 py-3 text-xs text-gray-400 text-center">保存済みプリセットはありません</div>
+                      ) : (
+                        filterPresets.map(p => (
+                          <div key={p.id} className="flex items-center hover:bg-gray-50">
+                            <button
+                              type="button"
+                              onClick={() => applyFilterPreset(p)}
+                              className="flex-1 text-left px-3 py-2 text-sm truncate"
+                              title={p.name}
+                            >{p.name}</button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); deleteFilterPreset(p); }}
+                              className="px-2 py-2 text-gray-400 hover:text-red-600 transition-colors"
+                              title="削除"
+                            ><Trash2 size={14}/></button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* ★ 要件2: ボード簡略表示トグル（ボードのみ・PCのみ） */}
+              {activeTab === 'board' && isPcViewport && (
+                <div className="w-[calc(50%-0.375rem)] md:w-auto flex items-end pb-1">
+                  <button
+                    type="button"
+                    onClick={() => savePref('board.compactMode', !userPrefs['board.compactMode'])}
+                    className={`w-full md:w-auto border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1 ${userPrefs['board.compactMode'] ? 'bg-olive-600 text-white border-olive-600' : 'bg-white hover:bg-olive-50 text-olive-700 border-olive-200'}`}
+                    title="カードを簡略表示（タイトルと期限のみ）"
+                  >
+                    <Minimize2 size={14}/>簡略
+                  </button>
+                </div>
+              )}
+
+              {/* ★ 要件3: メイン/サブ担当の上下分割トグル（ボード・一覧のみ、PCのみ） */}
+              {(activeTab === 'board' || activeTab === 'list') && isPcViewport && (
+                <div className="w-[calc(50%-0.375rem)] md:w-auto flex items-end pb-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const key = activeTab === 'board' ? 'board.splitByAssignee' : 'list.splitByAssignee';
+                      savePref(key, !userPrefs[key]);
+                    }}
+                    className={`w-full md:w-auto border px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1 ${userPrefs[activeTab === 'board' ? 'board.splitByAssignee' : 'list.splitByAssignee'] ? 'bg-olive-600 text-white border-olive-600' : 'bg-white hover:bg-olive-50 text-olive-700 border-olive-200'}`}
+                    title="メイン担当（上段）／サブ担当（下段）に分割表示"
+                  >
+                    <Rows size={14}/>分割
+                  </button>
+                </div>
+              )}
+
               {/* クリアボタン */}
               {(activeFilterCount > 0 || searchQuery) && (
                  <div className="w-full md:w-auto pb-1 text-right md:text-left">
@@ -1450,7 +1696,67 @@ function App() {
       )}
 
       <main className="flex-1 overflow-hidden flex flex-col p-2 md:p-4 relative h-full">
-        {activeTab === 'board' && <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} />}
+        {/* ===== ボード ===== */}
+        {activeTab === 'board' && (() => {
+          const compact = !!userPrefs['board.compactMode'];
+          const split   = !!userPrefs['board.splitByAssignee'] && isPcViewport && currentUser?.email;
+          if (!split) {
+            return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} />;
+          }
+          const myEmail = currentUser.email;
+          const mainTasks = filteredTasks.filter(t => t.assigneeEmail === myEmail);
+          const subTasks  = filteredTasks.filter(t => t.assigneeEmail !== myEmail && (t.subAssignees || []).includes(myEmail));
+          return (
+            <SplitContainer
+              ratio={typeof userPrefs['board.splitRatio'] === 'number' ? userPrefs['board.splitRatio'] : 0.5}
+              onRatioChange={(r) => savePref('board.splitRatio', r)}
+              upper={
+                <div className="flex flex-col h-full min-h-0">
+                  <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>メイン担当 <span className="text-gray-400 font-normal">({mainTasks.length})</span></div>
+                  <BoardView tasks={mainTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} splitArea="main" />
+                </div>
+              }
+              lower={
+                <div className="flex flex-col h-full min-h-0">
+                  <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>サブ担当 <span className="text-gray-400 font-normal">({subTasks.length})</span></div>
+                  <BoardView tasks={subTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} splitArea="sub" hideColumnHeaders={true} />
+                </div>
+              }
+            />
+          );
+        })()}
+
+        {/* ===== 一覧 ===== */}
+        {activeTab === 'list' && (() => {
+          const visibleColumns = Array.isArray(userPrefs['list.visibleColumns']) && userPrefs['list.visibleColumns'].length > 0
+            ? userPrefs['list.visibleColumns']
+            : ['title','category','type','assigneeName','subAssignees','status','startDate','dueDate'];
+          const sort = userPrefs['list.sort'] || { column: 'dueDate', direction: 'asc' };
+          const split = !!userPrefs['list.splitByAssignee'] && isPcViewport && currentUser?.email;
+          const commonProps = {
+            members, categories, taskTypes,
+            onTaskClick: handleOpenTask,
+            sort,
+            onSortChange: (s) => savePref('list.sort', s),
+            visibleColumns,
+            onColumnsChange: (c) => savePref('list.visibleColumns', c),
+          };
+          if (!split) {
+            return <ListView tasks={filteredTasks} {...commonProps} />;
+          }
+          const myEmail = currentUser.email;
+          const mainTasks = filteredTasks.filter(t => t.assigneeEmail === myEmail);
+          const subTasks  = filteredTasks.filter(t => t.assigneeEmail !== myEmail && (t.subAssignees || []).includes(myEmail));
+          return (
+            <SplitContainer
+              ratio={typeof userPrefs['list.splitRatio'] === 'number' ? userPrefs['list.splitRatio'] : 0.5}
+              onRatioChange={(r) => savePref('list.splitRatio', r)}
+              upper={<ListView tasks={mainTasks} {...commonProps} splitArea="main" />}
+              lower={<ListView tasks={subTasks}  {...commonProps} splitArea="sub" />}
+            />
+          );
+        })()}
+
         {activeTab === 'gantt' && <GanttView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onSaveTask={handleSaveTask} onReorderTask={handleReorderTask} holidays={holidays} />}
         {activeTab === 'calendar' && <CalendarView tasks={filteredTasks} onOpenTask={handleOpenTask} holidays={holidays} taskTypes={taskTypes} members={members} />}
         {activeTab === 'docs' && <DocsView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}

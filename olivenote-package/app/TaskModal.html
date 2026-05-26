@@ -153,6 +153,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [formData, setFormData] = useState({
         id: '', title: '', description: '', status: 'todo', priority: 'medium',
         type: taskTypes[0] || '', category: categories[0]?.name || '', parentId: '',
+        cardColor: null, // ★ 要件1: カードカラー
         startDate: getTodayStr(), dueDate: getTodayStr(), assigneeEmail: currentUser?.email || '', assigneeName: currentUser?.name || '',
         subAssignees: [], // ★ サブ担当
         comments: [], likes: [], attachments: [], updatedAt: ''
@@ -734,10 +735,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       const isDirty = useMemo(() => {
         if (task) {
-          const fields = ['title', 'description', 'status', 'priority', 'type', 'category', 'parentId', 'startDate', 'dueDate', 'assigneeEmail'];
-          const isFieldsChanged = fields.some(f => task[f] !== formData[f]);
+          const fields = ['title', 'description', 'status', 'priority', 'type', 'category', 'cardColor', 'parentId', 'startDate', 'dueDate', 'assigneeEmail'];
+          const isFieldsChanged = fields.some(f => (task[f] ?? null) !== (formData[f] ?? null));
           const isSubAssigneesChanged = JSON.stringify(task.subAssignees || []) !== JSON.stringify(formData.subAssignees || []);
-          return isFieldsChanged || isSubAssigneesChanged;
+          // 添付ファイルの追加/削除も dirty 扱いにして自動保存トリガーに含める（id 列の比較で十分）
+          const taskAttachmentIds = (task.attachments || []).map(a => a.id).join(',');
+          const formAttachmentIds = (formData.attachments || []).map(a => a.id).join(',');
+          const isAttachmentsChanged = taskAttachmentIds !== formAttachmentIds;
+          return isFieldsChanged || isSubAssigneesChanged || isAttachmentsChanged;
         } else {
           const templateForCurrentType = taskTemplates ? (taskTemplates[formData.type] || '') : '';
           if (formData.title?.trim() !== '') return true;
@@ -1104,6 +1109,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const handleFileUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
+        // サーバ側上限 (api.php: 50MB) と一致させ、巨大ファイル選択時は即座に弾く
+        const tooBig = files.find(f => f.size > 50 * 1024 * 1024);
+        if (tooBig) {
+          setErrorMsg(`「${tooBig.name}」は50MBを超えるため添付できません。`);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
         setIsUploading(true);
         try {
           const newAttachments = [];
@@ -1114,7 +1126,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           }
           setFormData(prev => ({ ...prev, attachments: [...(prev.attachments || []), ...newAttachments] }));
         } catch (err) {
-          setErrorMsg('ファイルのアップロードに失敗しました。');
+          // サーバから返るエラー文（サイズ超過 / デコード失敗 / Drive APIエラー等）をそのまま表示する
+          const msg = err && err.message ? err.message : '不明なエラー';
+          setErrorMsg('ファイルのアップロードに失敗しました: ' + msg);
         } finally {
           setIsUploading(false);
           if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1217,6 +1231,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const handleCommentFileUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
+        const tooBig = files.find(f => f.size > 50 * 1024 * 1024);
+        if (tooBig) {
+          setErrorMsg(`「${tooBig.name}」は50MBを超えるため添付できません。`);
+          if (commentFileInputRef.current) commentFileInputRef.current.value = '';
+          return;
+        }
         setIsUploadingToComment(true);
         try {
           let uploadedUrls = [];
@@ -1235,7 +1255,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           const appendText = uploadedUrls.join('\n\n');
           setCommentText(prev => prev + (prev ? '\n\n' : '') + appendText);
         } catch (err) {
-          setErrorMsg('コメントへのファイル添付に失敗しました。');
+          const msg = err && err.message ? err.message : '不明なエラー';
+          setErrorMsg('コメントへのファイル添付に失敗しました: ' + msg);
         } finally {
           setIsUploadingToComment(false);
           if (commentFileInputRef.current) commentFileInputRef.current.value = '';
@@ -1630,6 +1651,31 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       <option value="">選択なし</option>
                       {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                     </select>
+                  </div>
+                  {/* ★ 要件1: カードカラー（ボードのみ反映） */}
+                  <div>
+                    <label className="block text-xs font-semibold text-olive-700 uppercase mb-1" title="ボードビューでカード左端の色として表示されます">カードカラー</label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={isDeletingTask}
+                        onClick={() => setFormData(prev => ({ ...prev, cardColor: null }))}
+                        className={`w-7 h-7 rounded-md border-2 flex items-center justify-center transition-all ${!formData.cardColor ? 'border-olive-600 ring-2 ring-olive-200' : 'border-gray-300 hover:border-gray-400'} bg-white text-gray-400 hover:text-gray-600 disabled:opacity-50`}
+                        title="色なし"
+                      ><X size={14}/></button>
+                      {CARD_COLORS.map(c => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          disabled={isDeletingTask}
+                          onClick={() => setFormData(prev => ({ ...prev, cardColor: c.id }))}
+                          className={`w-7 h-7 rounded-md border-2 transition-all ${formData.cardColor === c.id ? 'border-gray-800 ring-2 ring-gray-300 scale-110' : 'border-gray-300 hover:border-gray-500'} disabled:opacity-50`}
+                          style={{ background: c.swatch }}
+                          title={c.label}
+                          aria-label={c.label}
+                        ></button>
+                      ))}
+                    </div>
                   </div>
                   {/* 親課題 */}
                   <div className="relative">

@@ -1,0 +1,257 @@
+// ============================================================
+// ListView — 課題の一覧（表形式）ビュー（要件6）
+//   props:
+//     - tasks: フィルタ済みタスク配列
+//     - members, categories, taskTypes: 表示用マスタ
+//     - onTaskClick: 行クリック時にタスクモーダルを開くハンドラ
+//     - sort: { column, direction } / onSortChange(newSort)
+//     - visibleColumns: 表示する列の id 配列 / onColumnsChange(newCols)
+//     - splitArea: 'main' | 'sub' | null（分割描画されたときのラベル用）
+// ============================================================
+function ListView({
+  tasks, members, categories, taskTypes,
+  onTaskClick,
+  sort, onSortChange,
+  visibleColumns, onColumnsChange,
+  splitArea = null,
+}) {
+  // 列定義（id 順は固定、表示/非表示のみ切替可能）
+  const ALL_COLUMNS = [
+    { id: 'title',         label: '課題名',     width: 'min-w-[220px] w-[28%]' },
+    { id: 'category',      label: 'カテゴリ',    width: 'min-w-[100px] w-[10%]' },
+    { id: 'type',          label: '種別',       width: 'min-w-[100px] w-[10%]' },
+    { id: 'assigneeName',  label: '担当',       width: 'min-w-[100px] w-[10%]' },
+    { id: 'subAssignees',  label: 'サブ担当',    width: 'min-w-[120px] w-[12%]' },
+    { id: 'status',        label: 'ステータス',  width: 'min-w-[100px] w-[8%]'  },
+    { id: 'startDate',     label: '開始日',     width: 'min-w-[100px] w-[8%]'  },
+    { id: 'dueDate',       label: '期限日',     width: 'min-w-[100px] w-[8%]'  },
+  ];
+  const cols = ALL_COLUMNS.filter(c => visibleColumns.includes(c.id));
+
+  const [isColMenuOpen, setIsColMenuOpen] = useState(false);
+
+  // ソート適用
+  const sortedTasks = useMemo(() => {
+    const list = [...tasks];
+    const col = sort?.column;
+    const dir = sort?.direction === 'desc' ? -1 : 1;
+    if (!col) return list;
+    const memberNameByEmail = Object.fromEntries(members.map(m => [m.email, m.name]));
+    const statusIndex = Object.fromEntries(STATUSES.map((s, i) => [s.id, i]));
+    list.sort((a, b) => {
+      let va, vb;
+      switch (col) {
+        case 'title':
+          va = a.title || ''; vb = b.title || ''; break;
+        case 'category':
+          va = a.category || ''; vb = b.category || ''; break;
+        case 'type':
+          va = a.type || ''; vb = b.type || ''; break;
+        case 'assigneeName':
+          va = a.assigneeName || ''; vb = b.assigneeName || ''; break;
+        case 'subAssignees':
+          va = (a.subAssignees || []).map(e => memberNameByEmail[e] || e).join(',');
+          vb = (b.subAssignees || []).map(e => memberNameByEmail[e] || e).join(',');
+          break;
+        case 'status':
+          va = statusIndex[a.status] ?? 999; vb = statusIndex[b.status] ?? 999; break;
+        case 'startDate':
+          va = a.startDate || ''; vb = b.startDate || ''; break;
+        case 'dueDate':
+          va = a.dueDate || ''; vb = b.dueDate || ''; break;
+        default:
+          va = ''; vb = '';
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return list;
+  }, [tasks, sort, members]);
+
+  const handleHeaderClick = (colId) => {
+    if (!onSortChange) return;
+    if (sort?.column === colId) {
+      onSortChange({ column: colId, direction: sort.direction === 'asc' ? 'desc' : 'asc' });
+    } else {
+      onSortChange({ column: colId, direction: 'asc' });
+    }
+  };
+
+  const renderSortIcon = (colId) => {
+    if (sort?.column !== colId) return <ArrowUpDown size={11} className="text-gray-300 inline-block ml-1" />;
+    return sort.direction === 'asc'
+      ? <ArrowUp size={11} className="text-olive-600 inline-block ml-1" />
+      : <ArrowDown size={11} className="text-olive-600 inline-block ml-1" />;
+  };
+
+  const toggleColumn = (colId) => {
+    if (!onColumnsChange) return;
+    if (visibleColumns.includes(colId)) {
+      // 最低1列は残す
+      const next = visibleColumns.filter(c => c !== colId);
+      if (next.length === 0) return;
+      onColumnsChange(next);
+    } else {
+      // ALL_COLUMNS の順番を維持して挿入
+      const next = ALL_COLUMNS.filter(c => visibleColumns.includes(c.id) || c.id === colId).map(c => c.id);
+      onColumnsChange(next);
+    }
+  };
+
+  // 行レンダリング
+  const renderCell = (task, colId) => {
+    switch (colId) {
+      case 'title': {
+        const cardColor = getCardColor(task.cardColor);
+        const colorBar = cardColor ? cardColor.bar : 'bg-transparent';
+        return (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`shrink-0 w-1 h-5 rounded-sm ${colorBar}`}></span>
+            <span className="text-[10px] text-gray-400 font-mono shrink-0">{task.id}</span>
+            <span className="font-medium text-gray-800 truncate">{task.title}</span>
+          </div>
+        );
+      }
+      case 'category': {
+        const catObj = categories.find(c => c.name === task.category);
+        const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+        return task.category
+          ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-bold border ${catColor ? `${catColor.bg} ${catColor.border} ${catColor.text}` : 'bg-gray-100 text-gray-700 border-gray-200'}`}>{task.category}</span>
+          : <span className="text-gray-300 text-xs">—</span>;
+      }
+      case 'type':
+        return task.type
+          ? <span className="text-xs text-gray-700">{task.type}</span>
+          : <span className="text-gray-300 text-xs">—</span>;
+      case 'assigneeName': {
+        const m = members.find(mm => mm.email === task.assigneeEmail);
+        return (
+          <div className="flex items-center gap-1.5 truncate">
+            {m && <span className="text-sm shrink-0">{m.avatar}</span>}
+            <span className="text-xs text-gray-700 truncate">{task.assigneeName || '—'}</span>
+          </div>
+        );
+      }
+      case 'subAssignees': {
+        const subs = task.subAssignees || [];
+        if (subs.length === 0) return <span className="text-gray-300 text-xs">—</span>;
+        const names = subs.map(e => members.find(m => m.email === e)?.name || e);
+        return (
+          <span className="text-xs text-gray-700 truncate" title={names.join('、')}>
+            {names.length <= 2 ? names.join('、') : `${names.slice(0,2).join('、')} +${names.length - 2}`}
+          </span>
+        );
+      }
+      case 'status': {
+        const s = STATUSES.find(x => x.id === task.status) || STATUSES[0];
+        return <span className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded font-bold border ${s.bgColor} ${s.borderColor} ${s.textColor}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${s.barColor}`}></span>{s.label}
+        </span>;
+      }
+      case 'startDate':
+        return task.startDate
+          ? <span className="text-xs text-gray-700 font-mono">{task.startDate.replace(/^\d{4}-/, '').replace('-','/')}</span>
+          : <span className="text-gray-300 text-xs">—</span>;
+      case 'dueDate': {
+        if (!task.dueDate) return <span className="text-gray-300 text-xs">—</span>;
+        const diff = Math.ceil((new Date(task.dueDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24));
+        const overdue = diff < 0 && task.status !== 'done';
+        const soon = diff >= 0 && diff <= 3 && task.status !== 'done';
+        const cls = overdue ? 'text-red-600 font-bold' : soon ? 'text-yellow-700 font-bold' : 'text-gray-700';
+        return (
+          <span className={`inline-flex items-center gap-1 text-xs font-mono ${cls}`}>
+            {overdue && <Flame size={11} className="text-red-500 fill-red-500" />}
+            {task.dueDate.replace(/^\d{4}-/, '').replace('-','/')}
+          </span>
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* ツールバー */}
+      <div className="flex items-center justify-between gap-2 px-1 pb-2 shrink-0">
+        <div className="text-xs text-gray-600">
+          {splitArea && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-olive-50 border border-olive-200 text-olive-700 font-bold mr-2">
+              {splitArea === 'main' ? 'メイン担当' : 'サブ担当'}
+            </span>
+          )}
+          全 <span className="font-bold text-gray-800">{sortedTasks.length}</span> 件
+        </div>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setIsColMenuOpen(!isColMenuOpen)}
+            className="text-xs font-bold text-gray-700 hover:text-olive-700 bg-white border border-gray-300 rounded px-2 py-1 flex items-center gap-1 shadow-sm"
+            title="表示する列を選択"
+          ><Columns size={13}/>列</button>
+          {isColMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsColMenuOpen(false)}></div>
+              <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1">
+                {ALL_COLUMNS.map(c => (
+                  <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={visibleColumns.includes(c.id)}
+                      onChange={() => toggleColumn(c.id)}
+                      className="w-4 h-4 text-olive-600 rounded border-gray-300 focus:ring-olive-500"
+                    />
+                    <span className="text-gray-700">{c.label}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* テーブル本体 */}
+      <div className="flex-1 overflow-auto bg-white rounded-lg border border-gray-200 shadow-sm">
+        <table className="w-full text-sm border-collapse">
+          <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+            <tr>
+              {cols.map(c => (
+                <th
+                  key={c.id}
+                  onClick={() => handleHeaderClick(c.id)}
+                  className={`px-3 py-2 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wide cursor-pointer select-none hover:bg-gray-100 transition-colors ${c.width}`}
+                >
+                  {c.label}{renderSortIcon(c.id)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sortedTasks.length === 0 ? (
+              <tr>
+                <td colSpan={cols.length} className="px-3 py-10 text-center text-sm text-gray-400">
+                  該当する課題はありません
+                </td>
+              </tr>
+            ) : (
+              sortedTasks.map(task => (
+                <tr
+                  key={task.id}
+                  onClick={() => onTaskClick(task)}
+                  className="border-b border-gray-100 hover:bg-olive-50/50 cursor-pointer transition-colors"
+                >
+                  {cols.map(c => (
+                    <td key={c.id} className={`px-3 py-2 align-middle ${c.width}`}>
+                      {renderCell(task, c.id)}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

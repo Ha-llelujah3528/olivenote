@@ -516,7 +516,7 @@ if (!$isLoggedIn) {
   <div id="root" class="h-full"></div>
 
   <script type="text/babel" data-type="module">
-    import React, { useState, useMemo, useEffect, useRef } from 'react';
+    import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
     import { createRoot } from 'react-dom/client';
     import {
       Columns, CalendarDays, Plus, X, MessageSquare, AlignLeft, Calendar as CalendarIcon,
@@ -525,7 +525,8 @@ if (!$isLoggedIn) {
       FileText, ExternalLink, FilePlus, SaveAll, Tag, Copy,
       List, ListOrdered, Grid, Image as ImageIcon, Bell, Star, Sparkles, Wand2, Save, MessageCircle, Send, Bot,
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
-      UploadCloud, Check, Edit3, Table, Palette
+      UploadCloud, Check, Edit3, Table, Palette,
+      Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown
     } from 'lucide-react';
 
     // ===== テーマ定義（将来追加可能） =====
@@ -560,6 +561,24 @@ if (!$isLoggedIn) {
       { bg: 'bg-pink-100', text: 'text-pink-800', border: 'border-pink-200' }
     ];
     const DEFAULT_CAT_COLOR = { bg: 'bg-gray-100', text: 'text-gray-800', border: 'border-gray-200' };
+
+    // 課題カード用パステルカラー（要件1：ボードのみ反映）
+    // id が null/空のときは色なし（デフォルト表示）
+    //   bg     : ボードカードの背景（淡い色）
+    //   border : ボードカードの枠線
+    //   bar    : ListView などで使う細い色帯（互換用）
+    //   swatch : モーダルのカラーピッカー表示用
+    const CARD_COLORS = [
+      { id: 'red',    label: '赤',    bg: 'bg-red-100',    border: 'border-red-200',    bar: 'bg-red-400',    swatch: '#fecaca' },
+      { id: 'orange', label: '橙',    bg: 'bg-orange-100', border: 'border-orange-200', bar: 'bg-orange-400', swatch: '#fed7aa' },
+      { id: 'yellow', label: '黄',    bg: 'bg-yellow-100', border: 'border-yellow-200', bar: 'bg-yellow-400', swatch: '#fef08a' },
+      { id: 'green',  label: '緑',    bg: 'bg-green-100',  border: 'border-green-200',  bar: 'bg-green-400',  swatch: '#bbf7d0' },
+      { id: 'blue',   label: '青',    bg: 'bg-blue-100',   border: 'border-blue-200',   bar: 'bg-blue-400',   swatch: '#bfdbfe' },
+      { id: 'purple', label: '紫',    bg: 'bg-purple-100', border: 'border-purple-200', bar: 'bg-purple-400', swatch: '#e9d5ff' },
+      { id: 'gray',   label: 'グレー', bg: 'bg-gray-100',   border: 'border-gray-300',   bar: 'bg-gray-400',   swatch: '#e5e7eb' }
+    ];
+    const getCardColor = (id) => CARD_COLORS.find(c => c.id === id) || null;
+
     const AVATARS = ['👤', '🐶', '🐱', '🦊', '🐻', '🐼', '🐰', '🐯', '🐸', '🐷', '🦄', '🤖', '👻', '👾', '🚀'];
     const getTodayStr = () => new Date().toLocaleDateString('sv-SE');
     const DAYS_OF_WEEK = ['日', '月', '火', '水', '木', '金', '土'];
@@ -626,6 +645,14 @@ if (!$isLoggedIn) {
       generateAndAppendReleaseNote:(payload)                    => callApi('generateAndAppendReleaseNote', payload),
       generateAdvisorDoc:          (task, history, formatPrompt) => callApi('generateAdvisorDoc', { task, history, formatPrompt }),
       generateImage:               (task, prompt, aspectRatio)   => callApi('generateImage',      { task, prompt, aspectRatio }),
+
+      // ---- ユーザー別表示設定（要件2/3/4/6） ----
+      saveUserPreference:    (key, value)                          => callApi('saveUserPreference',  { key, value }),
+
+      // ---- フィルタープリセット（要件5） ----
+      listFilterPresets:     ()                                    => callApi('listFilterPresets'),
+      saveFilterPreset:      (preset)                              => callApi('saveFilterPreset',    preset),
+      deleteFilterPreset:    (id)                                  => callApi('deleteFilterPreset',  { id }),
     };
 
     const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -636,6 +663,7 @@ if (!$isLoggedIn) {
 
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>
+    <?php readfile(__DIR__ . '/ListView.html'); ?>
     <?php readfile(__DIR__ . '/TaskModal.html'); ?>
     <?php readfile(__DIR__ . '/TaskAutoGenerateModal.html'); ?>
     <?php readfile(__DIR__ . '/GanttView.html'); ?>

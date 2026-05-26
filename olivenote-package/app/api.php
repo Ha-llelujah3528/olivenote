@@ -613,6 +613,7 @@ function taskFromRow(array $row, array $comments = []): array {
         'priority'           => $row['priority'],
         'type'               => $row['type'] ?? '',
         'category'           => $row['category'] ?? '',
+        'cardColor'          => $row['card_color'] ?? null,
         'parentId'           => $row['parent_id'],
         'startDate'          => $row['start_date'],
         'dueDate'            => $row['due_date'],
@@ -743,6 +744,35 @@ try {
                 $docs[] = docFromRow($row);
             }
 
+            // User preferences（ログイン中ユーザーの表示設定 — 要件2/3/4/6）
+            $userPrefs = new stdClass();
+            $filterPresets = [];
+            if (!empty($currentUser['email'])) {
+                try {
+                    $stmt = $pdo->prepare("SELECT pref_key, pref_value FROM user_preferences WHERE user_email = ?");
+                    $stmt->execute([$currentUser['email']]);
+                    $prefsArr = [];
+                    while ($row = $stmt->fetch()) {
+                        $prefsArr[$row['pref_key']] = json_decode($row['pref_value'], true);
+                    }
+                    $userPrefs = (object)$prefsArr;
+
+                    $stmt = $pdo->prepare("SELECT id, name, filters, sort_order FROM filter_presets WHERE user_email = ? ORDER BY sort_order ASC, id ASC");
+                    $stmt->execute([$currentUser['email']]);
+                    while ($row = $stmt->fetch()) {
+                        $filterPresets[] = [
+                            'id'        => (int)$row['id'],
+                            'name'      => $row['name'],
+                            'filters'   => json_decode($row['filters'], true) ?: new stdClass(),
+                            'sortOrder' => (int)$row['sort_order'],
+                        ];
+                    }
+                } catch (Throwable $e) {
+                    // テーブル未作成（マイグレーション未適用）でも getInitialData は壊さない
+                    error_log('[getInitialData] user_preferences/filter_presets load failed: ' . $e->getMessage());
+                }
+            }
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -758,6 +788,8 @@ try {
                     'tasks'         => $tasks,
                     'docs'          => $docs,
                     'docFolderRootId' => DOC_FOLDER_ID,
+                    'userPreferences' => $userPrefs,
+                    'filterPresets'   => $filterPresets,
                 ],
             ]);
             break;
@@ -775,11 +807,11 @@ try {
 
             $pdo->prepare("
                 INSERT INTO tasks (
-                    id, title, description, status, priority, type, category, parent_id,
+                    id, title, description, status, priority, type, category, card_color, parent_id,
                     start_date, due_date, implementation_date, implementation_days,
                     assignee_email, assignee_name, sub_assignees, likes, attachments, sort_order
                 ) VALUES (
-                    :id, :title, :description, :status, :priority, :type, :category, :parent_id,
+                    :id, :title, :description, :status, :priority, :type, :category, :card_color, :parent_id,
                     :start_date, :due_date, :implementation_date, :implementation_days,
                     :assignee_email, :assignee_name, :sub_assignees, :likes, :attachments, :sort_order
                 ) ON DUPLICATE KEY UPDATE
@@ -789,6 +821,7 @@ try {
                     priority            = VALUES(priority),
                     type                = VALUES(type),
                     category            = VALUES(category),
+                    card_color          = VALUES(card_color),
                     parent_id           = VALUES(parent_id),
                     start_date          = VALUES(start_date),
                     due_date            = VALUES(due_date),
@@ -808,6 +841,7 @@ try {
                 ':priority'            => $task['priority'] ?? 'medium',
                 ':type'                => $task['type'] ?? '',
                 ':category'            => $task['category'] ?? '',
+                ':card_color'          => !empty($task['cardColor']) ? $task['cardColor'] : null,
                 ':parent_id'           => !empty($task['parentId']) ? $task['parentId'] : null,
                 ':start_date'          => !empty($task['startDate']) ? $task['startDate'] : null,
                 ':due_date'            => !empty($task['dueDate']) ? $task['dueDate'] : null,
@@ -2482,6 +2516,118 @@ PROMPT;
             }
             break;
 
+
+        // ============================================================
+        // saveUserPreference — ユーザー別表示設定の upsert（要件2/3/4/6）
+        // ============================================================
+        case 'saveUserPreference':
+            $email = $_SESSION['user_email'] ?? '';
+            $key   = $payload['key']   ?? '';
+            $value = $payload['value'] ?? null;
+            if (!$email || !$key) {
+                echo json_encode(['success' => false, 'error' => 'unauthorized or missing key']);
+                break;
+            }
+            if (strlen($key) > 64) {
+                echo json_encode(['success' => false, 'error' => 'pref_key too long']);
+                break;
+            }
+            $pdo->prepare("
+                INSERT INTO user_preferences (user_email, pref_key, pref_value)
+                VALUES (:email, :k, :v)
+                ON DUPLICATE KEY UPDATE pref_value = VALUES(pref_value)
+            ")->execute([
+                ':email' => $email,
+                ':k'     => $key,
+                ':v'     => json_encode($value, JSON_UNESCAPED_UNICODE),
+            ]);
+            echo json_encode(['success' => true, 'data' => null]);
+            break;
+
+        // ============================================================
+        // listFilterPresets — 自分のフィルタープリセット一覧（要件5）
+        // ============================================================
+        case 'listFilterPresets':
+            $email = $_SESSION['user_email'] ?? '';
+            if (!$email) {
+                echo json_encode(['success' => false, 'error' => 'unauthorized']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT id, name, filters, sort_order FROM filter_presets WHERE user_email = ? ORDER BY sort_order ASC, id ASC");
+            $stmt->execute([$email]);
+            $presets = [];
+            while ($row = $stmt->fetch()) {
+                $presets[] = [
+                    'id'        => (int)$row['id'],
+                    'name'      => $row['name'],
+                    'filters'   => json_decode($row['filters'], true) ?: new stdClass(),
+                    'sortOrder' => (int)$row['sort_order'],
+                ];
+            }
+            echo json_encode(['success' => true, 'data' => $presets]);
+            break;
+
+        // ============================================================
+        // saveFilterPreset — フィルタープリセットの新規作成 or 更新（要件5）
+        //   payload: { id?: number, name: string, filters: object, sortOrder?: number }
+        // ============================================================
+        case 'saveFilterPreset':
+            $email = $_SESSION['user_email'] ?? '';
+            if (!$email) {
+                echo json_encode(['success' => false, 'error' => 'unauthorized']);
+                break;
+            }
+            $id        = isset($payload['id']) ? (int)$payload['id'] : 0;
+            $name      = trim((string)($payload['name'] ?? ''));
+            $filters   = $payload['filters'] ?? [];
+            $sortOrder = (int)($payload['sortOrder'] ?? 0);
+            if ($name === '') {
+                echo json_encode(['success' => false, 'error' => 'name is required']);
+                break;
+            }
+            if (mb_strlen($name) > 120) {
+                $name = mb_substr($name, 0, 120);
+            }
+            $filtersJson = json_encode($filters, JSON_UNESCAPED_UNICODE);
+
+            if ($id > 0) {
+                // 自分のプリセットだけ更新可
+                $stmt = $pdo->prepare("UPDATE filter_presets SET name = ?, filters = ?, sort_order = ? WHERE id = ? AND user_email = ?");
+                $stmt->execute([$name, $filtersJson, $sortOrder, $id, $email]);
+                if ($stmt->rowCount() === 0) {
+                    // 該当なし → 新規扱いに落として作成
+                    $stmt = $pdo->prepare("INSERT INTO filter_presets (user_email, name, filters, sort_order) VALUES (?,?,?,?)");
+                    $stmt->execute([$email, $name, $filtersJson, $sortOrder]);
+                    $id = (int)$pdo->lastInsertId();
+                }
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO filter_presets (user_email, name, filters, sort_order) VALUES (?,?,?,?)");
+                $stmt->execute([$email, $name, $filtersJson, $sortOrder]);
+                $id = (int)$pdo->lastInsertId();
+            }
+
+            echo json_encode(['success' => true, 'data' => [
+                'id'        => $id,
+                'name'      => $name,
+                'filters'   => $filters,
+                'sortOrder' => $sortOrder,
+            ]]);
+            break;
+
+        // ============================================================
+        // deleteFilterPreset — 自分のプリセットを物理削除（要件5）
+        // ============================================================
+        case 'deleteFilterPreset':
+            $email = $_SESSION['user_email'] ?? '';
+            $id    = isset($payload['id']) ? (int)$payload['id'] : 0;
+            if (!$email || $id <= 0) {
+                echo json_encode(['success' => false, 'error' => 'unauthorized or invalid id']);
+                break;
+            }
+            $stmt = $pdo->prepare("DELETE FROM filter_presets WHERE id = ? AND user_email = ?");
+            $stmt->execute([$id, $email]);
+            echo json_encode(['success' => true, 'data' => ['deleted' => $stmt->rowCount()]]);
+            break;
 
         // ============================================================
         // logout — セッション破棄
