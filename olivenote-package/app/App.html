@@ -303,6 +303,42 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
 }
 
 // ============================================================
+// Floating UI ラッパー: ドロップダウン等の自動配置（flip / shift）
+// referenceRef = アンカー要素、floatingRef = 浮かせる要素、open = 開閉
+// 戻り値の style を浮かせる要素に渡すと autoUpdate で位置追従する
+// ============================================================
+function useFloatingDropdown({ referenceRef, floatingRef, open, placement = 'bottom-start', offsetPx = 4 }) {
+  const [style, setStyle] = useState({ position: 'absolute', top: 0, left: 0, visibility: 'hidden' });
+  useEffect(() => {
+    if (!open) return;
+    const ref = referenceRef.current;
+    const flo = floatingRef.current;
+    if (!ref || !flo || !window.FloatingUIDOM) return;
+    const { computePosition, autoUpdate, flip, shift, offset, size } = window.FloatingUIDOM;
+    const update = () => {
+      computePosition(ref, flo, {
+        placement,
+        middleware: [
+          offset(offsetPx),
+          flip({ fallbackPlacements: ['top-start', 'bottom-end', 'top-end'] }),
+          shift({ padding: 8 }),
+          size({
+            apply({ availableHeight, elements }) {
+              elements.floating.style.maxHeight = `${Math.max(160, availableHeight - 8)}px`;
+            },
+          }),
+        ],
+      }).then(({ x, y }) => {
+        setStyle({ position: 'absolute', top: 0, left: 0, transform: `translate(${Math.round(x)}px, ${Math.round(y)}px)`, visibility: 'visible' });
+      });
+    };
+    const cleanup = autoUpdate(ref, flo, update);
+    return cleanup;
+  }, [open, placement, offsetPx]);
+  return style;
+}
+
+// ============================================================
 // URL ディープリンク用ヘルパー（?task=TASK-XXXX）
 // - history.replaceState を採用（モーダル開閉で履歴を増やさない）
 // - popstate / 戻る進む対応は App コンポーネント側で行う
@@ -1703,9 +1739,19 @@ function App() {
           if (!split) {
             return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} />;
           }
-          const myEmail = currentUser.email;
-          const mainTasks = filteredTasks.filter(t => t.assigneeEmail === myEmail);
-          const subTasks  = filteredTasks.filter(t => t.assigneeEmail !== myEmail && (t.subAssignees || []).includes(myEmail));
+          // 分割表示は担当者フィルターに従う:
+          //   filter 空（すべて） → メイン: 担当者が割当てられた全タスク / サブ: サブ担当が割当てられた全タスク（メイン側と重複したものは除外）
+          //   filter 指定         → メイン: フィルター対象者がメイン担当 / サブ: フィルター対象者がサブ担当（メイン側と重複したものは除外）
+          const filterEmails = filters.assigneeEmail || [];
+          const isAll = filterEmails.length === 0;
+          const inMain = (t) => isAll ? !!t.assigneeEmail : filterEmails.includes(t.assigneeEmail);
+          const inSub  = (t) => {
+            const subs = t.subAssignees || [];
+            if (subs.length === 0) return false;
+            return isAll ? true : subs.some(s => filterEmails.includes(s));
+          };
+          const mainTasks = filteredTasks.filter(inMain);
+          const subTasks  = filteredTasks.filter(t => !inMain(t) && inSub(t));
           return (
             <SplitContainer
               ratio={typeof userPrefs['board.splitRatio'] === 'number' ? userPrefs['board.splitRatio'] : 0.5}
@@ -1744,9 +1790,17 @@ function App() {
           if (!split) {
             return <ListView tasks={filteredTasks} {...commonProps} />;
           }
-          const myEmail = currentUser.email;
-          const mainTasks = filteredTasks.filter(t => t.assigneeEmail === myEmail);
-          const subTasks  = filteredTasks.filter(t => t.assigneeEmail !== myEmail && (t.subAssignees || []).includes(myEmail));
+          // 一覧の分割表示もボードと同じく担当者フィルターに従う
+          const filterEmails = filters.assigneeEmail || [];
+          const isAll = filterEmails.length === 0;
+          const inMain = (t) => isAll ? !!t.assigneeEmail : filterEmails.includes(t.assigneeEmail);
+          const inSub  = (t) => {
+            const subs = t.subAssignees || [];
+            if (subs.length === 0) return false;
+            return isAll ? true : subs.some(s => filterEmails.includes(s));
+          };
+          const mainTasks = filteredTasks.filter(inMain);
+          const subTasks  = filteredTasks.filter(t => !inMain(t) && inSub(t));
           return (
             <SplitContainer
               ratio={typeof userPrefs['list.splitRatio'] === 'number' ? userPrefs['list.splitRatio'] : 0.5}
