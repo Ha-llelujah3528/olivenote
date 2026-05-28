@@ -373,6 +373,15 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [isParentMenuOpen, setIsParentMenuOpen] = useState(false);
       const [isSubAssigneeMenuOpen, setIsSubAssigneeMenuOpen] = useState(false);
       const [parentSearchQuery, setParentSearchQuery] = useState('');
+      const parentAnchorRef = useRef(null);
+      const parentFloatingRef = useRef(null);
+      const parentFloatingStyle = useFloatingDropdown({
+        referenceRef: parentAnchorRef,
+        floatingRef: parentFloatingRef,
+        open: isParentMenuOpen,
+        placement: 'bottom-start',
+        offsetPx: 4,
+      });
 
       // ==========================================
       // ★ 究極ハイブリッド版：AI・ドキュメント出力用のStateと処理
@@ -1678,9 +1687,10 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     </div>
                   </div>
                   {/* 親課題 */}
-                  <div className="relative">
+                  <div>
                     <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">親課題</label>
-                    <div 
+                    <div
+                      ref={parentAnchorRef}
                       onClick={() => !isDeletingTask && setIsParentMenuOpen(!isParentMenuOpen)}
                       className={`w-full border border-gray-300 rounded p-2 text-sm bg-white flex items-center justify-between shadow-sm transition-colors ${isDeletingTask ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-olive-400'}`}
                     >
@@ -1692,12 +1702,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     {isParentMenuOpen && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => { setIsParentMenuOpen(false); setParentSearchQuery(''); }}></div>
-                        <div className="absolute left-0 top-[calc(100%+4px)] w-full bg-white border border-gray-200 rounded-md shadow-xl z-50 flex flex-col overflow-hidden">
+                        <div
+                          ref={parentFloatingRef}
+                          style={{ ...parentFloatingStyle, width: parentAnchorRef.current ? parentAnchorRef.current.offsetWidth : 'auto', zIndex: 50 }}
+                          className="bg-white border border-gray-200 rounded-md shadow-xl flex flex-col overflow-hidden"
+                        >
                           <div className="p-2 border-b border-gray-100 bg-olive-50/50">
                             <div className="relative">
                               <Search className="absolute left-2.5 top-1.5 text-gray-400" size={14} />
-                              <input 
-                                type="text" placeholder="番号や件名で検索..." 
+                              <input
+                                type="text" placeholder="番号や件名で検索..."
                                 className="w-full pl-8 pr-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-olive-500"
                                 value={parentSearchQuery} onChange={e => setParentSearchQuery(e.target.value)} autoFocus
                               />

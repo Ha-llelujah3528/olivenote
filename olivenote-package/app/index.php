@@ -77,6 +77,9 @@ if (!auth_is_logged_in()) {
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Floating UI: ドロップダウン等の自動配置（flip / shift）。window.FloatingUIDOM として展開される -->
+  <script src="https://cdn.jsdelivr.net/npm/@floating-ui/core@1.6.8"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@floating-ui/dom@1.6.13"></script>
     <style>
       /* ===== タスクモーダル開閉アニメーション（引き出し風） ===== */
       /* 背景: ふわっとフェードイン */
@@ -125,6 +128,7 @@ if (!auth_is_logged_in()) {
       .markdown-body th { background-color: #f3f4f6; font-weight: bold; }
       .markdown-body img { max-width: 100%; height: auto; border-radius: 4px; }
       .markdown-body input[type="checkbox"] { margin-right: 6px; }
+      .markdown-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.5em; }
       .markdown-body a {
         color: #2563eb;
         text-decoration: underline;
