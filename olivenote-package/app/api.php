@@ -371,7 +371,7 @@ function ensureAiGeneratedDocsFolder(PDO $pdo, string $token): string {
 function collectDescendantIds(PDO $pdo, string $folderId): array {
     $ids   = [];
     $stack = [$folderId];
-    $stmt  = $pdo->prepare("SELECT id, mime_type FROM documents WHERE parent_id = ? AND deleted_at IS NULL");
+    $stmt  = $pdo->prepare("SELECT id, mime_type FROM files WHERE parent_id = ? AND deleted_at IS NULL");
     while (!empty($stack)) {
         $current = array_pop($stack);
         $stmt->execute([$current]);
@@ -752,6 +752,16 @@ function assignNextTaskId(PDO $pdo): string {
 }
 
 // ================================================================
+// Wiki 用 UUID v4 採番（フレームワーク非依存・ランダム）
+// ================================================================
+function generateWikiUuid(): string {
+    $data = random_bytes(16);
+    $data[6] = chr((ord($data[6]) & 0x0f) | 0x40); // version 4
+    $data[8] = chr((ord($data[8]) & 0x3f) | 0x80); // variant RFC 4122
+    return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+}
+
+// ================================================================
 // メインルーティング
 // ================================================================
 
@@ -810,7 +820,7 @@ try {
             }
 
             // Documents（削除されていないもの、最終更新の新しい順）
-            $stmt = $pdo->query("SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY last_updated DESC");
+            $stmt = $pdo->query("SELECT * FROM files WHERE deleted_at IS NULL ORDER BY last_updated DESC");
             $docs = [];
             while ($row = $stmt->fetch()) {
                 $docs[] = docFromRow($row);
@@ -1212,7 +1222,7 @@ try {
             $modified = !empty($file['modifiedTime']) ? date('Y-m-d H:i:s', strtotime($file['modifiedTime'])) : date('Y-m-d H:i:s');
             $mime     = 'application/vnd.google-apps.document';
 
-            $pdo->prepare("INSERT INTO documents (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
+            $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
                 ->execute([$file['id'], $file['name'], $url, $parentId, $mime, $modified]);
 
             echo json_encode(['success' => true, 'data' => [
@@ -1245,7 +1255,7 @@ try {
             $modified = !empty($folder['modifiedTime']) ? date('Y-m-d H:i:s', strtotime($folder['modifiedTime'])) : date('Y-m-d H:i:s');
             $mime     = 'application/vnd.google-apps.folder';
 
-            $pdo->prepare("INSERT INTO documents (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
+            $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
                 ->execute([$folder['id'], $folder['name'], $url, $parentId, $mime, $modified]);
 
             echo json_encode(['success' => true, 'data' => [
@@ -1278,7 +1288,7 @@ try {
             }
 
             // 対象の現状取得
-            $stmt = $pdo->prepare("SELECT parent_id, mime_type FROM documents WHERE id = ? AND deleted_at IS NULL");
+            $stmt = $pdo->prepare("SELECT parent_id, mime_type FROM files WHERE id = ? AND deleted_at IS NULL");
             $stmt->execute([$fileId]);
             $row = $stmt->fetch();
             if (!$row) {
@@ -1295,7 +1305,7 @@ try {
 
             // 移動先の親が有効か確認（ルート以外）
             if ($newParentId !== DOC_FOLDER_ID) {
-                $check = $pdo->prepare("SELECT mime_type, deleted_at FROM documents WHERE id = ?");
+                $check = $pdo->prepare("SELECT mime_type, deleted_at FROM files WHERE id = ?");
                 $check->execute([$newParentId]);
                 $parentRow = $check->fetch();
                 if (!$parentRow
@@ -1340,7 +1350,7 @@ try {
             curl_close($ch);
             if ($code !== 200) throw new Exception("Drive 移動エラー (HTTP {$code}): " . $res);
 
-            $pdo->prepare("UPDATE documents SET parent_id = ? WHERE id = ?")
+            $pdo->prepare("UPDATE files SET parent_id = ? WHERE id = ?")
                 ->execute([$newParentId, $fileId]);
 
             echo json_encode(['success' => true, 'data' => [
@@ -1360,7 +1370,7 @@ try {
             }
 
             // フォルダなら子孫もまとめてソフトデリート（Drive側はtrashで自動的にカスケード）
-            $stmt = $pdo->prepare("SELECT mime_type FROM documents WHERE id = ?");
+            $stmt = $pdo->prepare("SELECT mime_type FROM files WHERE id = ?");
             $stmt->execute([$fileId]);
             $row = $stmt->fetch();
             $isFolder = $row && ($row['mime_type'] ?? '') === 'application/vnd.google-apps.folder';
@@ -1371,7 +1381,7 @@ try {
             }
 
             $placeholders = implode(',', array_fill(0, count($idsToDelete), '?'));
-            $pdo->prepare("UPDATE documents SET deleted_at = NOW() WHERE id IN ({$placeholders})")
+            $pdo->prepare("UPDATE files SET deleted_at = NOW() WHERE id IN ({$placeholders})")
                 ->execute($idsToDelete);
 
             // Drive側のtrashは失敗してもDB側の削除は維持する（ベストエフォート）
@@ -1445,7 +1455,7 @@ try {
             }
 
             // 2) DB側の現状を取得（ソフトデリート行も含めて全件）
-            $stmt   = $pdo->query("SELECT id, name, url, parent_id, mime_type, last_updated, deleted_at FROM documents");
+            $stmt   = $pdo->query("SELECT id, name, url, parent_id, mime_type, last_updated, deleted_at FROM files");
             $dbDocs = [];
             while ($row = $stmt->fetch()) {
                 $dbDocs[$row['id']] = $row;
@@ -1456,9 +1466,9 @@ try {
 
             $pdo->beginTransaction();
             try {
-                $insStmt = $pdo->prepare("INSERT INTO documents (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)");
-                $updStmt = $pdo->prepare("UPDATE documents SET name = ?, url = ?, parent_id = ?, mime_type = ?, last_updated = ?, deleted_at = NULL WHERE id = ?");
-                $delStmt = $pdo->prepare("UPDATE documents SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL");
+                $insStmt = $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)");
+                $updStmt = $pdo->prepare("UPDATE files SET name = ?, url = ?, parent_id = ?, mime_type = ?, last_updated = ?, deleted_at = NULL WHERE id = ?");
+                $delStmt = $pdo->prepare("UPDATE files SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL");
 
                 foreach ($driveFiles as $id => $f) {
                     $name     = $f['name'] ?? '(無題)';
@@ -1823,7 +1833,7 @@ try {
             }
 
             // 4) DocsViewに表示するためdocumentsテーブルへ登録
-            $pdo->prepare("INSERT INTO documents (id, name, url, last_updated) VALUES (?, ?, ?, ?)")
+            $pdo->prepare("INSERT INTO files (id, name, url, last_updated) VALUES (?, ?, ?, ?)")
                 ->execute([$newId, $newName, $newUrl, $modified]);
 
             echo json_encode(['success' => true, 'data' => [
@@ -2865,6 +2875,357 @@ PROMPT;
             $stmt = $pdo->prepare("DELETE FROM filter_presets WHERE id = ? AND user_email = ?");
             $stmt->execute([$id, $email]);
             echo json_encode(['success' => true, 'data' => ['deleted' => $stmt->rowCount()]]);
+            break;
+
+        // ============================================================
+        // ============================================================
+        // Wiki (社内ドキュメント) API
+        //   - wiki_pages       : ページ本体（id=UUID, parent_id で階層）
+        //   - wiki_revisions   : 編集履歴（保存毎に revision_no を 1 ずつ増やす）
+        //   - permalink は wiki_pages.id を使うため title 変更・移動でも不変
+        // ============================================================
+
+        // listWikiPages — ツリー描画用にメタだけ返す（body_md は除外）
+        case 'listWikiPages':
+            $stmt = $pdo->query(
+                "SELECT id, title, parent_id, sort_order, created_by, updated_by, created_at, updated_at " .
+                "FROM wiki_pages WHERE deleted_at IS NULL " .
+                "ORDER BY parent_id IS NULL DESC, parent_id, sort_order ASC, created_at ASC"
+            );
+            $pages = [];
+            while ($row = $stmt->fetch()) {
+                $pages[] = [
+                    'id'        => $row['id'],
+                    'title'     => $row['title'],
+                    'parentId'  => $row['parent_id'],
+                    'sortOrder' => (float)$row['sort_order'],
+                    'createdBy' => $row['created_by'],
+                    'updatedBy' => $row['updated_by'],
+                    'createdAt' => $row['created_at'],
+                    'updatedAt' => $row['updated_at'],
+                ];
+            }
+            echo json_encode(['success' => true, 'data' => ['pages' => $pages]]);
+            break;
+
+        // getWikiPage — 本文込みで 1 ページ取得
+        case 'getWikiPage':
+            $id = $payload['id'] ?? '';
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+            $stmt = $pdo->prepare("SELECT * FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$id]);
+            $row = $stmt->fetch();
+            if (!$row) { echo json_encode(['success' => false, 'error' => 'not_found']); break; }
+            echo json_encode(['success' => true, 'data' => ['page' => [
+                'id'        => $row['id'],
+                'title'     => $row['title'],
+                'bodyMd'    => $row['body_md'] ?? '',
+                'parentId'  => $row['parent_id'],
+                'sortOrder' => (float)$row['sort_order'],
+                'createdBy' => $row['created_by'],
+                'updatedBy' => $row['updated_by'],
+                'createdAt' => $row['created_at'],
+                'updatedAt' => $row['updated_at'],
+            ]]]);
+            break;
+
+        // saveWikiPage — 新規/更新の UPSERT + revision 追加
+        //   - 新規: id を採番（UUID）、parent_id を payload で指定可
+        //   - 更新: 既存 id を payload に含める。body_md/title のどちらかが変わったら revision を 1 件追加
+        case 'saveWikiPage':
+            $editorEmail = $_SESSION['user_email'] ?? '';
+            $editorName  = '';
+            if ($editorEmail !== '') {
+                $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                $u->execute([$editorEmail]);
+                $editorName = (string)($u->fetchColumn() ?: '');
+            }
+            $title       = trim((string)($payload['title'] ?? ''));
+            $bodyMd      = (string)($payload['bodyMd'] ?? '');
+            $parentId    = isset($payload['parentId']) && $payload['parentId'] !== '' ? $payload['parentId'] : null;
+            $changeSum   = trim((string)($payload['changeSummary'] ?? ''));
+            $id          = (string)($payload['id'] ?? '');
+
+            // 親 page の存在チェック（parentId 指定時）— 削除済みは弾く
+            if ($parentId !== null) {
+                $chk = $pdo->prepare("SELECT 1 FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+                $chk->execute([$parentId]);
+                if (!$chk->fetchColumn()) {
+                    echo json_encode(['success' => false, 'error' => 'parent_not_found']);
+                    break;
+                }
+            }
+
+            $pdo->beginTransaction();
+            try {
+                if ($id === '') {
+                    // ----- 新規作成 -----
+                    $id = generateWikiUuid();
+                    // sort_order: 同じ parent_id の中で末尾に置く
+                    $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM wiki_pages WHERE " . ($parentId === null ? "parent_id IS NULL" : "parent_id = ?"));
+                    $maxStmt->execute($parentId === null ? [] : [$parentId]);
+                    $sortOrder = ((float)$maxStmt->fetchColumn()) + 1024.0;
+
+                    $ins = $pdo->prepare(
+                        "INSERT INTO wiki_pages (id, title, body_md, parent_id, sort_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    );
+                    $ins->execute([$id, $title === '' ? '(無題)' : $title, $bodyMd, $parentId, $sortOrder, $editorEmail, $editorEmail]);
+                    $revNo = 1;
+                } else {
+                    // ----- 更新 -----
+                    $existing = $pdo->prepare("SELECT title, body_md FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+                    $existing->execute([$id]);
+                    $cur = $existing->fetch();
+                    if (!$cur) { throw new Exception('not_found'); }
+
+                    $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ?");
+                    $upd->execute([$title === '' ? '(無題)' : $title, $bodyMd, $editorEmail, $id]);
+
+                    // revision_no は同じ page_id の中で連番
+                    $maxRev = $pdo->prepare("SELECT COALESCE(MAX(revision_no), 0) FROM wiki_revisions WHERE page_id = ?");
+                    $maxRev->execute([$id]);
+                    $revNo = ((int)$maxRev->fetchColumn()) + 1;
+
+                    // 変更が無ければ revision を追加しない（無駄なログ防止）
+                    if ($cur['title'] === ($title === '' ? '(無題)' : $title) && (string)$cur['body_md'] === $bodyMd) {
+                        $pdo->commit();
+                        echo json_encode(['success' => true, 'data' => ['id' => $id, 'revisionNo' => null, 'unchanged' => true]]);
+                        break;
+                    }
+                }
+
+                $insRev = $pdo->prepare(
+                    "INSERT INTO wiki_revisions (page_id, revision_no, title, body_md, editor_email, editor_name, change_summary) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                );
+                $insRev->execute([$id, $revNo, $title === '' ? '(無題)' : $title, $bodyMd, $editorEmail, $editorName, $changeSum]);
+
+                $pdo->commit();
+                echo json_encode(['success' => true, 'data' => ['id' => $id, 'revisionNo' => $revNo]]);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // getWikiRevisions — 履歴一覧（本文は含めず軽量）
+        case 'getWikiRevisions':
+            $pageId = $payload['pageId'] ?? '';
+            if ($pageId === '') { echo json_encode(['success' => false, 'error' => 'pageId is required']); break; }
+            $stmt = $pdo->prepare(
+                "SELECT id, revision_no, title, editor_email, editor_name, change_summary, created_at " .
+                "FROM wiki_revisions WHERE page_id = ? ORDER BY revision_no DESC"
+            );
+            $stmt->execute([$pageId]);
+            $revs = [];
+            while ($row = $stmt->fetch()) {
+                $revs[] = [
+                    'id'             => (int)$row['id'],
+                    'revisionNo'     => (int)$row['revision_no'],
+                    'title'          => $row['title'],
+                    'editorEmail'    => $row['editor_email'],
+                    'editorName'     => $row['editor_name'],
+                    'changeSummary'  => $row['change_summary'],
+                    'createdAt'      => $row['created_at'],
+                ];
+            }
+            echo json_encode(['success' => true, 'data' => ['revisions' => $revs]]);
+            break;
+
+        // getWikiRevisionDiff — 2 revision の本文を返す（フロントで jsdiff にかける）
+        //   どちらかが省略された場合は「現在 (wiki_pages 本体)」を相手にする
+        case 'getWikiRevisionDiff':
+            $pageId = $payload['pageId'] ?? '';
+            $revA   = isset($payload['revisionA']) ? (int)$payload['revisionA'] : 0;
+            $revB   = isset($payload['revisionB']) ? (int)$payload['revisionB'] : 0;
+            if ($pageId === '' || $revA <= 0 || $revB <= 0) {
+                echo json_encode(['success' => false, 'error' => 'pageId / revisionA / revisionB are required']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT revision_no, title, body_md FROM wiki_revisions WHERE page_id = ? AND revision_no IN (?, ?)");
+            $stmt->execute([$pageId, $revA, $revB]);
+            $byNo = [];
+            while ($row = $stmt->fetch()) {
+                $byNo[(int)$row['revision_no']] = [
+                    'title'  => $row['title'],
+                    'bodyMd' => $row['body_md'] ?? '',
+                ];
+            }
+            if (!isset($byNo[$revA]) || !isset($byNo[$revB])) {
+                echo json_encode(['success' => false, 'error' => 'revision_not_found']);
+                break;
+            }
+            echo json_encode(['success' => true, 'data' => [
+                'a' => ['revisionNo' => $revA] + $byNo[$revA],
+                'b' => ['revisionNo' => $revB] + $byNo[$revB],
+            ]]);
+            break;
+
+        // restoreWikiRevision — 指定 revision を現在版に巻き戻す（新 revision として記録）
+        case 'restoreWikiRevision':
+            $editorEmail = $_SESSION['user_email'] ?? '';
+            $editorName  = '';
+            if ($editorEmail !== '') {
+                $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                $u->execute([$editorEmail]);
+                $editorName = (string)($u->fetchColumn() ?: '');
+            }
+            $pageId      = $payload['pageId'] ?? '';
+            $revNoSrc    = isset($payload['revisionNo']) ? (int)$payload['revisionNo'] : 0;
+            if ($pageId === '' || $revNoSrc <= 0) {
+                echo json_encode(['success' => false, 'error' => 'pageId / revisionNo are required']);
+                break;
+            }
+            $pdo->beginTransaction();
+            try {
+                $src = $pdo->prepare("SELECT title, body_md FROM wiki_revisions WHERE page_id = ? AND revision_no = ?");
+                $src->execute([$pageId, $revNoSrc]);
+                $row = $src->fetch();
+                if (!$row) { throw new Exception('revision_not_found'); }
+
+                $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                $upd->execute([$row['title'], $row['body_md'], $editorEmail, $pageId]);
+                if ($upd->rowCount() === 0) { throw new Exception('page_not_found'); }
+
+                $maxRev = $pdo->prepare("SELECT COALESCE(MAX(revision_no), 0) FROM wiki_revisions WHERE page_id = ?");
+                $maxRev->execute([$pageId]);
+                $newRev = ((int)$maxRev->fetchColumn()) + 1;
+
+                $insRev = $pdo->prepare(
+                    "INSERT INTO wiki_revisions (page_id, revision_no, title, body_md, editor_email, editor_name, change_summary) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                );
+                $insRev->execute([$pageId, $newRev, $row['title'], $row['body_md'], $editorEmail, $editorName, 'restore from rev ' . $revNoSrc]);
+
+                $pdo->commit();
+                echo json_encode(['success' => true, 'data' => ['revisionNo' => $newRev]]);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // deleteWikiPage — ソフトデリート（子孫もまとめて）
+        case 'deleteWikiPage':
+            $id = $payload['id'] ?? '';
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+            $pdo->beginTransaction();
+            try {
+                // 子孫を BFS で集める
+                $toDelete = [$id];
+                $frontier = [$id];
+                $guard = 0;
+                while (!empty($frontier) && $guard++ < 1000) {
+                    $place = implode(',', array_fill(0, count($frontier), '?'));
+                    $stmt = $pdo->prepare("SELECT id FROM wiki_pages WHERE parent_id IN ($place) AND deleted_at IS NULL");
+                    $stmt->execute($frontier);
+                    $next = [];
+                    while ($row = $stmt->fetch()) {
+                        $toDelete[] = $row['id'];
+                        $next[] = $row['id'];
+                    }
+                    $frontier = $next;
+                }
+                $place = implode(',', array_fill(0, count($toDelete), '?'));
+                $upd = $pdo->prepare("UPDATE wiki_pages SET deleted_at = NOW() WHERE id IN ($place) AND deleted_at IS NULL");
+                $upd->execute($toDelete);
+                $pdo->commit();
+                echo json_encode(['success' => true, 'data' => ['affected' => $upd->rowCount()]]);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // duplicateWikiPage — 単一ページ複製（子孫は含めない）
+        //   - 新規 UUID 採番、title に「(コピー)」付与
+        //   - 同じ parent_id に末尾追加（sort_order = max+1024）
+        //   - 複製先に初期 revision 1 を記録
+        case 'duplicateWikiPage':
+            $editorEmail = $_SESSION['user_email'] ?? '';
+            $editorName  = '';
+            if ($editorEmail !== '') {
+                $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                $u->execute([$editorEmail]);
+                $editorName = (string)($u->fetchColumn() ?: '');
+            }
+            $srcId = $payload['id'] ?? '';
+            if ($srcId === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+
+            $src = $pdo->prepare("SELECT title, body_md, parent_id FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+            $src->execute([$srcId]);
+            $row = $src->fetch();
+            if (!$row) { echo json_encode(['success' => false, 'error' => 'source_not_found']); break; }
+
+            $newId    = generateWikiUuid();
+            $newTitle = ($row['title'] === '' ? '(無題)' : $row['title']) . ' (コピー)';
+            $parentId = $row['parent_id'];
+
+            $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM wiki_pages WHERE " . ($parentId === null ? "parent_id IS NULL" : "parent_id = ?") . " AND deleted_at IS NULL");
+            $maxStmt->execute($parentId === null ? [] : [$parentId]);
+            $sortOrder = ((float)$maxStmt->fetchColumn()) + 1024.0;
+
+            $pdo->beginTransaction();
+            try {
+                $ins = $pdo->prepare(
+                    "INSERT INTO wiki_pages (id, title, body_md, parent_id, sort_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                );
+                $ins->execute([$newId, $newTitle, $row['body_md'], $parentId, $sortOrder, $editorEmail, $editorEmail]);
+
+                $insRev = $pdo->prepare(
+                    "INSERT INTO wiki_revisions (page_id, revision_no, title, body_md, editor_email, editor_name, change_summary) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                );
+                $insRev->execute([$newId, 1, $newTitle, $row['body_md'], $editorEmail, $editorName, 'duplicated from ' . $srcId]);
+
+                $pdo->commit();
+                echo json_encode(['success' => true, 'data' => ['id' => $newId, 'title' => $newTitle]]);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // moveWikiPage — parent_id / sort_order を変更（D&D 用）
+        //   循環参照防止: 自分自身を子孫にする移動は弾く
+        case 'moveWikiPage':
+            $id        = $payload['id'] ?? '';
+            $parentId  = array_key_exists('parentId', $payload)
+                ? (($payload['parentId'] === null || $payload['parentId'] === '') ? null : (string)$payload['parentId'])
+                : null;
+            $sortOrder = isset($payload['sortOrder']) ? (float)$payload['sortOrder'] : null;
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+
+            // 親 page の存在チェック（saveWikiPage と整合）— 削除済みは弾く
+            if ($parentId !== null) {
+                $chk = $pdo->prepare("SELECT 1 FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+                $chk->execute([$parentId]);
+                if (!$chk->fetchColumn()) {
+                    echo json_encode(['success' => false, 'error' => 'parent_not_found']);
+                    break;
+                }
+            }
+
+            // 循環参照チェック: parentId が自分の子孫だったら拒否
+            if ($parentId !== null) {
+                if ($parentId === $id) { echo json_encode(['success' => false, 'error' => 'self_parent']); break; }
+                $cursor = $parentId;
+                $guard = 0;
+                while ($cursor !== null && $guard++ < 100) {
+                    if ($cursor === $id) { echo json_encode(['success' => false, 'error' => 'circular_reference']); break 2; }
+                    $stmt = $pdo->prepare("SELECT parent_id FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+                    $stmt->execute([$cursor]);
+                    $row = $stmt->fetch();
+                    if (!$row) break;
+                    $cursor = $row['parent_id'];
+                }
+            }
+
+            if ($sortOrder === null) {
+                $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM wiki_pages WHERE " . ($parentId === null ? "parent_id IS NULL" : "parent_id = ?") . " AND id <> ?");
+                $maxStmt->execute($parentId === null ? [$id] : [$parentId, $id]);
+                $sortOrder = ((float)$maxStmt->fetchColumn()) + 1024.0;
+            }
+            $upd = $pdo->prepare("UPDATE wiki_pages SET parent_id = ?, sort_order = ? WHERE id = ? AND deleted_at IS NULL");
+            $upd->execute([$parentId, $sortOrder, $id]);
+            echo json_encode(['success' => true, 'data' => ['affected' => $upd->rowCount(), 'sortOrder' => $sortOrder]]);
             break;
 
         default:

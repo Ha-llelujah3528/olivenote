@@ -89,6 +89,9 @@ if (!auth_is_logged_in()) {
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Wiki: 差分比較 (jsdiff) と PDF 出力 (html2pdf) — グローバルで Diff / html2pdf を提供 -->
+  <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.2/dist/html2pdf.bundle.min.js"></script>
   <!-- Floating UI: ドロップダウン等の自動配置（flip / shift）。window.FloatingUIDOM として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/@floating-ui/core@1.6.8"></script>
   <script src="https://cdn.jsdelivr.net/npm/@floating-ui/dom@1.6.13"></script>
@@ -438,7 +441,7 @@ if (!auth_is_logged_in()) {
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
       UploadCloud, Check, Edit3, Table, Palette,
       Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown,
-      History, ChevronLeft
+      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
@@ -1201,6 +1204,17 @@ if (!auth_is_logged_in()) {
       deleteDocument:             (fileId)                  => callApi('deleteDocument', { fileId }),
       syncDocumentsFromDrive:     ()                        => callApi('syncDocumentsFromDrive'),
 
+      // ---- Wiki ----
+      listWikiPages:        ()                                 => callApi('listWikiPages'),
+      getWikiPage:          (id)                               => callApi('getWikiPage', { id }),
+      saveWikiPage:         (payload)                          => callApi('saveWikiPage', payload),
+      getWikiRevisions:     (pageId)                           => callApi('getWikiRevisions', { pageId }),
+      getWikiRevisionDiff:  (pageId, revisionA, revisionB)     => callApi('getWikiRevisionDiff', { pageId, revisionA, revisionB }),
+      restoreWikiRevision:  (pageId, revisionNo)               => callApi('restoreWikiRevision', { pageId, revisionNo }),
+      deleteWikiPage:       (id)                               => callApi('deleteWikiPage', { id }),
+      moveWikiPage:         (id, parentId, sortOrder)          => callApi('moveWikiPage', { id, parentId, sortOrder }),
+      duplicateWikiPage:    (id)                                => callApi('duplicateWikiPage', { id }),
+
       // ---- AI仕様書（systemSpecForAI）取得 ----
       getSystemSpecForAI:          ()                            => callApi('getSystemSpecForAI'),
 
@@ -1235,7 +1249,8 @@ if (!auth_is_logged_in()) {
     <?php readfile(__DIR__ . '/TaskAutoGenerateModal.html'); ?>
     <?php readfile(__DIR__ . '/GanttView.html'); ?>
     <?php readfile(__DIR__ . '/CalendarView.html'); ?>
-    <?php readfile(__DIR__ . '/DocsView.html'); ?>
+    <?php readfile(__DIR__ . '/FilesView.html'); ?>
+    <?php readfile(__DIR__ . '/WikiView.html'); ?>
     <?php readfile(__DIR__ . '/SettingsView.html'); ?>
     <?php readfile(__DIR__ . '/MarkdownPreview.html'); ?>
     const root = createRoot(document.getElementById('root'));

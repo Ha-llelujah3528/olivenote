@@ -2,6 +2,24 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.2.0] - 2026-05-31
+
+### 新機能
+- **「ドキュメント」タブを社内 Wiki として刷新** — App ヘッダのタブを「ドキュメント (Wiki)」と「ファイル」に分離。Wiki 側は階層ツリー付きのページ管理（作成 / 編集 / 削除 / 複製 / 親子付け替え）に進化。本文は既存のリッチマークダウンエディタ（TipTap）を流用し、3 秒アイドルで自動保存、未保存のまま離脱しようとすると `beforeunload` で警告。各ページの permalink は `#/wiki/<uuid>` で固定され、移動・改題しても URL が壊れない
+- **Wiki 編集履歴 & 差分ビュー** — 保存ごとに自動でリビジョンを残し、履歴ドロワーから過去版の本文・差分（jsdiff によるハイライト表示）を確認・復元できる
+- **Wiki PDF 出力 & リンクコピー** — 件名 + 本文を整形した PDF を出力ボタン一発で生成（ベクター出力なので文字くっきり / 選択可）。リンクコピーは Wiki ページの permalink をワンクリックでクリップボードへ
+- **旧「ドキュメント」を「ファイル」に概念リネーム** — Google Drive ミラー機能は「ファイル」タブに改名し、アイコン・見出し・空状態メッセージを刷新。DB テーブルも `documents` → `files` に rename（マイグレーション 003）。データはそのまま引き継がれ、既存リンクへの影響なし
+
+### 改善
+- **Wiki ツリーのドラッグ&ドロップを根本作り直し** — HTML5 Drag and Drop API を全廃し Pointer Events ベースの自前実装に置換。React state の lag で「たまにしか掴めない」「ドロップが効かない」現象を解消。6px 以上動かして初めてドラッグ開始（未満はクリック扱い）で、誤ドラッグでページが開かない / 動かない問題も同時に解決。マウス・タッチ共通コードで動作
+- **Wiki PDF 出力エンジンを window.print 方式に置換** — html2canvas 系の「真っ白」「位置がずれる」問題を解消するため、隠し iframe + 印刷専用 CSS + `window.print()` に切替。ベクター出力で文字がくっきりし、選択 / コピーも可能に
+
+### データベース変更（要マイグレーション）
+- `003_rename_documents_to_files.sql` — `documents` テーブルを `files` にリネーム。`information_schema` で状態を確認した上で実行するので、複数回流しても安全
+- `004_create_wiki_tables.sql` — `wiki_pages`（本体）と `wiki_revisions`（編集履歴）を新規作成
+
+> 既存環境のアップグレード時は管理者画面の「🔄 システムアップデート」から自動適用される。手動運用する場合は `app/migrations/003_rename_documents_to_files.sql` → `004_create_wiki_tables.sql` の順に SQL を流す
+
 ## [1.1.1] - 2026-05-29
 
 ### 新機能

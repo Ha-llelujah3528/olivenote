@@ -1,0 +1,891 @@
+function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId, showToast }) {
+  // ============================================================
+  // WikiView — 社内 Wiki（階層 + revision + diff + 復元 + PDF）
+  //   - permalink は #/wiki/<uuid> (App.html の hashroute と同期)
+  //   - エディタは index.php で定義済の RichMarkdownEditor (TipTap) を流用
+  //   - 差分は jsdiff (グローバル Diff)、PDF はブラウザネイティブ印刷 (window.print + 隠し iframe)
+  //   - 階層 D&D は Pointer Events 自前実装（HTML5 Drag and Drop API は不採用）
+  // ============================================================
+
+  const [pages, setPages]             = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [selected, setSelected]       = useState(null);   // 詳細 (body_md 込み)
+  const [editTitle, setEditTitle]     = useState('');
+  const [editBody, setEditBody]       = useState('');
+  const [editorKey, setEditorKey]     = useState(0);      // 切替で TipTap を再マウント
+  const [isDirty, setIsDirty]         = useState(false);
+  const [isSaving, setIsSaving]       = useState(false);
+  const [lastSaved, setLastSaved]     = useState(null);
+  const [expanded, setExpanded]       = useState(() => new Set());
+
+  // 新規モード（id 未確定の draft）
+  const [isDraft, setIsDraft]             = useState(false);
+  const [draftParentId, setDraftParentId] = useState(null);
+
+  // 階層移動モーダル
+  const [moveModalOpen, setMoveModalOpen]       = useState(false);
+  const [moveTargetParentId, setMoveTargetParentId] = useState(null);
+
+  const [showHistory, setShowHistory] = useState(false);
+  const [revisions, setRevisions]     = useState([]);
+  const [diffSel, setDiffSel]         = useState({ a: null, b: null });
+  const [diffOpen, setDiffOpen]       = useState(false);
+  const [diffData, setDiffData]       = useState(null);
+
+  // ===== D&D（Pointer Events 自前実装）=====
+  //   HTML5 ネイティブ Drag and Drop API（draggable + onDragStart/Over/Drop）は
+  //   dragover の発火タイミングがブラウザ・速度依存で不安定、ゴースト画像が制御不能、
+  //   React の再レンダリングと drag セッションが衝突する等の問題で「たまにしかつかめない」
+  //   現象が解消できなかった。そこで pointerdown/move/up による完全自前制御に置換した。
+  //   - pointermove は同期発火なので判定タイミングが確実
+  //   - elementFromPoint で「いまカーソル下にあるノード」を直接特定（state lag 無関係）
+  //   - ゴーストは自前の浮遊要素（pointer-events:none）
+  //   - 依存ライブラリ不要
+  const [draggedId, setDraggedId]       = useState(null);   // ドラッグ中ノード（表示用：opacity 制御）
+  const [dropTargetId, setDropTargetId] = useState(null);   // ドロップ先ハイライト（page.id または '__root__'）
+  const [ghost, setGhost]               = useState(null);   // 浮遊ラベル { x, y, title } | null
+  // ドラッグセッション状態（同期参照用。pointermove/up の closure から最新値を読む）
+  const dragRef  = useRef({ active: false, started: false, pageId: null, title: '', startX: 0, startY: 0 });
+  // pointermove/up ハンドラから最新の pages / isDescendant を参照するための ref
+  const pagesRef = useRef(pages);
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+
+  // ===== 初期ロード =====
+  useEffect(() => { loadPages(); /* eslint-disable-next-line */ }, []);
+
+  // ===== hashroute → 開く =====
+  useEffect(() => {
+    if (!wikiTargetPageId) return;
+    if (selected && selected.id === wikiTargetPageId) return;
+    if (pages.length === 0) return;
+    if (pages.some(p => p.id === wikiTargetPageId)) openPage(wikiTargetPageId);
+    // eslint-disable-next-line
+  }, [wikiTargetPageId, pages.length]);
+
+  // ===== beforeunload guard =====
+  useEffect(() => {
+    if (!isDirty) return;
+    const h = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [isDirty]);
+
+  // ===== D&D: document レベルの pointermove / pointerup ドライバ =====
+  //   ドラッグはノードの onPointerDown で開始予約（dragRef.active = true）。
+  //   実際の「ドラッグ開始」は閾値を超えて動いた時点（それ未満はクリック扱い）。
+  //   listener は一度だけ登録し、最新の pages / コールバックは ref 経由で参照する
+  //   （[] 依存で張り替えないことで pointer セッション中の再登録ブレを防ぐ）。
+  useEffect(() => {
+    const DRAG_THRESHOLD = 6; // px。合計移動量がこれ未満ならクリック
+
+    // ghost は pointer-events:none なので elementFromPoint には写らない。
+    // 戻り値: page.id / '__root__' / undefined（無効領域）
+    function resolveTarget(x, y) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) return undefined;
+      const nodeEl = el.closest('[data-wiki-node]');
+      if (nodeEl) return nodeEl.getAttribute('data-wiki-node');
+      const rootEl = el.closest('[data-wiki-root]');
+      if (rootEl) return '__root__';
+      return undefined;
+    }
+
+    function endDrag() {
+      dragRef.current = { active: false, started: false, pageId: null, title: '', startX: 0, startY: 0 };
+      setGhost(null);
+      setDraggedId(null);
+      setDropTargetId(null);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+
+    function onMove(e) {
+      const st = dragRef.current;
+      if (!st.active) return;
+      if (!st.started) {
+        if (Math.abs(e.clientX - st.startX) + Math.abs(e.clientY - st.startY) < DRAG_THRESHOLD) return;
+        st.started = true;
+        setDraggedId(st.pageId);
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+      }
+      setGhost({ x: e.clientX, y: e.clientY, title: st.title });
+      const t = resolveTarget(e.clientX, e.clientY);
+      if (t === undefined) { setDropTargetId(null); return; }
+      if (t === '__root__') { setDropTargetId('__root__'); return; }
+      if (t === st.pageId || isDescendant(st.pageId, t)) { setDropTargetId(null); return; }
+      setDropTargetId(t);
+    }
+
+    function onUp(e) {
+      const st = dragRef.current;
+      if (!st.active) return;
+      const wasStarted = st.started;
+      const movedId = st.pageId;
+      if (!wasStarted) {
+        // 動かさず離した = クリック → ページを開く
+        endDrag();
+        cbRef.current.openPage && cbRef.current.openPage(movedId);
+        return;
+      }
+      const t = resolveTarget(e.clientX, e.clientY);
+      endDrag();
+      if (t === undefined) return;                       // 無効領域 → 何もしない
+      const targetId = t === '__root__' ? null : t;
+      cbRef.current.performMove && cbRef.current.performMove(movedId, targetId);
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', endDrag);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', endDrag);
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  // pointermove/up の [] closure から常に最新のコールバックを呼ぶための ref
+  const cbRef = useRef({});
+
+  // ===== Auto-save (3 秒 idle) =====
+  //  - 新規モード (draft) はユーザーが明示的に「登録」を押すまで永続化しない
+  useEffect(() => {
+    if (isDraft) return;
+    if (!isDirty || !selected) return;
+    const t = setTimeout(() => { handleSave(false); }, 3000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [isDirty, editTitle, editBody, isDraft]);
+
+  // ============================================================
+  // API ラッパ
+  // ============================================================
+  async function loadPages() {
+    setLoading(true);
+    try {
+      const data = await api.listWikiPages();
+      setPages(data.pages || []);
+    } catch (e) {
+      showToast && showToast('ページ一覧の取得に失敗しました', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function openPage(id) {
+    if (isDirty && !window.confirm('未保存の変更があります。破棄して別のページを開きますか？')) return;
+    try {
+      const data = await api.getWikiPage(id);
+      if (!data.page) return;
+      setIsDraft(false);
+      setDraftParentId(null);
+      setSelected(data.page);
+      setEditTitle(data.page.title || '');
+      setEditBody(data.page.bodyMd || '');
+      setEditorKey(k => k + 1);
+      setIsDirty(false);
+      setLastSaved(data.page.updatedAt || null);
+      const want = `#/wiki/${id}`;
+      if (window.location.hash !== want) {
+        window.history.replaceState(null, '', window.location.pathname + want);
+      }
+    } catch (e) {
+      showToast && showToast('ページの取得に失敗しました', 'error');
+    }
+  }
+
+  // prompt ベースで即作成（既存仕様）— 左ツリーの「+ 新規」/ ノードの「+」が呼ぶ
+  async function handleCreate(parentId) {
+    const title = window.prompt(parentId ? '子ページのタイトル' : '新しいページのタイトル', '新規ページ');
+    if (!title) return;
+    try {
+      const data = await api.saveWikiPage({ title, bodyMd: '', parentId: parentId || null });
+      await loadPages();
+      if (parentId) setExpanded(s => { const n = new Set(s); n.add(parentId); return n; });
+      await openPage(data.id);
+    } catch (e) {
+      showToast && showToast('ページ作成に失敗しました', 'error');
+    }
+  }
+
+  // 新規 draft モードに入る（保存は「登録」ボタンで実行）— 現在未使用（UI フロー再検討で塩漬け）
+  function handleNew(parentId) {
+    if (isDirty && !window.confirm('未保存の変更があります。破棄して新規作成しますか？')) return;
+    setSelected(null);
+    setIsDraft(true);
+    setDraftParentId(parentId || null);
+    setEditTitle('');
+    setEditBody('');
+    setEditorKey(k => k + 1);
+    setIsDirty(false);
+    setLastSaved(null);
+    // hashroute はリセット（保存時に新しい uuid で更新する）
+    if (window.location.hash.startsWith('#/wiki/')) {
+      window.history.replaceState(null, '', window.location.pathname + '#/wiki');
+    }
+  }
+
+  function handleCancel() {
+    if (isDirty && !window.confirm('未保存の変更を破棄しますか？')) return;
+    setIsDraft(false);
+    setDraftParentId(null);
+    setSelected(null);
+    setEditTitle('');
+    setEditBody('');
+    setIsDirty(false);
+    setLastSaved(null);
+    if (window.location.hash.startsWith('#/wiki/')) {
+      window.history.replaceState(null, '', window.location.pathname + '#/wiki');
+    }
+  }
+
+  async function handleSave(manual) {
+    if (isSaving) return;
+    if (!isDraft && !selected) return;
+    // 新規モードはタイトル空欄を許さない（既存は途中保存も許容）
+    if (isDraft && !editTitle.trim()) {
+      showToast && showToast('タイトルを入力してください', 'warn');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const payload = { title: editTitle, bodyMd: editBody };
+      if (isDraft) {
+        payload.parentId = draftParentId;
+      } else {
+        payload.id = selected.id;
+      }
+      const result = await api.saveWikiPage(payload);
+      setIsDirty(false);
+      const now = new Date();
+      const stamp = now.getFullYear() + '-' +
+        String(now.getMonth() + 1).padStart(2, '0') + '-' +
+        String(now.getDate()).padStart(2, '0') + ' ' +
+        String(now.getHours()).padStart(2, '0') + ':' +
+        String(now.getMinutes()).padStart(2, '0') + ':' +
+        String(now.getSeconds()).padStart(2, '0');
+      setLastSaved(stamp);
+      await loadPages();
+
+      // 新規登録 → 編集モードに切替
+      if (isDraft && result.id) {
+        if (draftParentId) {
+          setExpanded(s => { const n = new Set(s); n.add(draftParentId); return n; });
+        }
+        const data = await api.getWikiPage(result.id);
+        if (data.page) {
+          setSelected(data.page);
+          setIsDraft(false);
+          setDraftParentId(null);
+          const want = `#/wiki/${result.id}`;
+          if (window.location.hash !== want) {
+            window.history.replaceState(null, '', window.location.pathname + want);
+          }
+        }
+        if (manual) showToast && showToast('登録しました', 'success');
+      } else {
+        if (manual) showToast && showToast('保存しました', 'success');
+      }
+    } catch (e) {
+      showToast && showToast('保存に失敗しました: ' + (e.message || e), 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!selected) return;
+    if (!window.confirm(`「${selected.title || '(無題)'}」とその配下を削除しますか？\n復元はできません（DBログには残ります）`)) return;
+    try {
+      await api.deleteWikiPage(selected.id);
+      setSelected(null);
+      setEditTitle(''); setEditBody(''); setIsDirty(false);
+      setWikiTargetPageId && setWikiTargetPageId(null);
+      if (window.location.hash.startsWith('#/wiki/')) {
+        window.history.replaceState(null, '', window.location.pathname + '#/wiki');
+      }
+      await loadPages();
+      showToast && showToast('削除しました', 'success');
+    } catch (e) {
+      showToast && showToast('削除に失敗しました', 'error');
+    }
+  }
+
+  async function loadRevisions() {
+    if (!selected) return;
+    try {
+      const data = await api.getWikiRevisions(selected.id);
+      setRevisions(data.revisions || []);
+    } catch (e) {
+      showToast && showToast('履歴の取得に失敗しました', 'error');
+    }
+  }
+
+  async function openHistory() {
+    setShowHistory(true);
+    setDiffSel({ a: null, b: null });
+    await loadRevisions();
+  }
+
+  async function handleRestore(revisionNo) {
+    if (!selected) return;
+    if (!window.confirm(`Rev.${revisionNo} の内容に戻しますか？\n現在の内容は新しい revision として履歴に残ります。`)) return;
+    try {
+      await api.restoreWikiRevision(selected.id, revisionNo);
+      await openPage(selected.id);
+      await loadRevisions();
+      showToast && showToast(`Rev.${revisionNo} の内容に復元しました`, 'success');
+    } catch (e) {
+      showToast && showToast('復元に失敗しました', 'error');
+    }
+  }
+
+  async function openDiff() {
+    const { a, b } = diffSel;
+    if (!a || !b) { showToast && showToast('A と B の 2 revision を選択してください', 'warn'); return; }
+    if (a === b)   { showToast && showToast('同じ revision は比較できません', 'warn'); return; }
+    try {
+      const data = await api.getWikiRevisionDiff(selected.id, a, b);
+      setDiffData(data);
+      setDiffOpen(true);
+    } catch (e) {
+      showToast && showToast('差分取得に失敗しました', 'error');
+    }
+  }
+
+  function handleCopyLink() {
+    if (!selected) return;
+    const base = window.location.origin + window.location.pathname;
+    const link = `${base}#/wiki/${selected.id}`;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link)
+        .then(() => showToast && showToast('リンクをコピーしました', 'success'))
+        .catch(() => showToast && showToast('コピーに失敗しました', 'error'));
+    } else {
+      window.prompt('リンクを手動でコピーしてください', link);
+    }
+  }
+
+  // 複製: 単一ページのみ（子孫は含めない）
+  async function handleDuplicate() {
+    if (!selected) return;
+    if (isDirty && !window.confirm('未保存の変更があります。先に保存しますか？（キャンセルで複製を中止）')) return;
+    if (isDirty) { await handleSave(false); }
+    try {
+      const result = await api.duplicateWikiPage(selected.id);
+      await loadPages();
+      if (result.id) await openPage(result.id);
+      showToast && showToast('複製しました', 'success');
+    } catch (e) {
+      showToast && showToast('複製に失敗しました: ' + (e.message || e), 'error');
+    }
+  }
+
+  function openMoveModal() {
+    if (!selected) return;
+    setMoveTargetParentId(selected.parentId || null);
+    setMoveModalOpen(true);
+  }
+
+  async function applyMove() {
+    if (!selected) return;
+    const newParent = moveTargetParentId;
+    if ((selected.parentId || null) === (newParent || null)) {
+      setMoveModalOpen(false);
+      return;
+    }
+    try {
+      await api.moveWikiPage(selected.id, newParent, null);
+      await loadPages();
+      await openPage(selected.id);
+      setMoveModalOpen(false);
+      if (newParent) setExpanded(s => { const n = new Set(s); n.add(newParent); return n; });
+      showToast && showToast('移動しました', 'success');
+    } catch (e) {
+      const msg = (e && e.message) || '';
+      if (msg.indexOf('circular_reference') >= 0 || msg.indexOf('self_parent') >= 0) {
+        showToast && showToast('自分自身の子孫には移動できません', 'error');
+      } else if (msg.indexOf('parent_not_found') >= 0) {
+        showToast && showToast('移動先の親が見つかりません', 'error');
+      } else {
+        showToast && showToast('移動に失敗しました', 'error');
+      }
+    }
+  }
+
+  // 移動先の親候補（自分自身と子孫を除外、階層インデント付き）
+  function buildMoveOptions() {
+    const excludeId = selected ? selected.id : null;
+    const result = [];
+    const walk = (parentId, depth) => {
+      const kids = pages.filter(p => (p.parentId || null) === parentId)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      for (const k of kids) {
+        if (k.id === excludeId) continue;
+        if (excludeId && isDescendant(excludeId, k.id)) continue;
+        result.push({ id: k.id, title: k.title || '(無題)', depth });
+        walk(k.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return result;
+  }
+
+  // PDF 出力 = ブラウザネイティブ印刷（window.print()）方式。
+  //   旧実装の html2canvas（html2pdf.js）はページを「画像化」するため、CSS の
+  //   レイアウト解釈が本家ブラウザとズレてレイアウト崩れ・位置ズレ・文字ボケが
+  //   恒常的に発生していた。これを完全に廃止。
+  //   代わりに、件名+本文を整形した HTML を「隠し iframe」に流し込み、その iframe
+  //   だけを window.print() で印刷する。ユーザーは印刷ダイアログで「PDF に保存」を選ぶ。
+  //   - ベクター出力なので文字がくっきり・選択可能
+  //   - レイアウトは @page / 印刷用 CSS で完全制御
+  //   - メイン画面（編集 UI・ツールバー）は一切印刷対象に含まれない（iframe 隔離）
+  function handleExportPdf() {
+    if (!selected) return;
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let bodyHtml = '';
+    if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+      try {
+        bodyHtml = window.marked.parse(editBody || '');
+      } catch (_) {
+        bodyHtml = `<pre>${esc(editBody || '')}</pre>`;
+      }
+    } else {
+      bodyHtml = `<pre>${esc(editBody || '')}</pre>`;
+    }
+
+    const printCss = `
+      @page { size: A4; margin: 18mm 16mm; }
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", Roboto, sans-serif;
+        font-size: 11pt; line-height: 1.75; color: #1f2937; word-break: break-word;
+      }
+      h1.doc-title {
+        font-size: 18pt; font-weight: bold; margin: 0 0 16px;
+        border-bottom: 2px solid #d1d5db; padding-bottom: 8px; color: #111827;
+      }
+      .doc-body h1 { font-size: 15pt; font-weight: bold; margin: 16px 0 7px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+      .doc-body h2 { font-size: 13pt; font-weight: bold; margin: 14px 0 6px; border-bottom: 1px solid #e5e7eb; padding-bottom: 3px; }
+      .doc-body h3 { font-size: 12pt; font-weight: bold; margin: 12px 0 5px; }
+      .doc-body h4 { font-size: 11pt; font-weight: bold; margin: 10px 0 4px; }
+      .doc-body p { margin: 0 0 9px; }
+      .doc-body ul, .doc-body ol { margin: 0 0 9px; padding-left: 22px; }
+      .doc-body li { margin: 2px 0; }
+      .doc-body blockquote { border-left: 3px solid #d1d5db; padding: 2px 12px; color: #4b5563; margin: 0 0 9px; }
+      .doc-body code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-family: Consolas, Menlo, monospace; font-size: 10pt; }
+      .doc-body pre { background: #f9fafb; border: 1px solid #e5e7eb; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+      .doc-body pre code { background: transparent; padding: 0; }
+      .doc-body hr { border: 0; border-top: 1px solid #e5e7eb; margin: 14px 0; }
+      .doc-body a { color: #0369a1; text-decoration: underline; }
+      .doc-body img { max-width: 100%; height: auto; }
+      .doc-body table { border-collapse: collapse; width: 100%; margin: 0 0 10px; font-size: 10pt; }
+      .doc-body th, .doc-body td { border: 1px solid #d1d5db; padding: 4px 8px; text-align: left; }
+      .doc-body th { background: #f3f4f6; font-weight: bold; }
+      .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 { page-break-after: avoid; }
+      .doc-body table, .doc-body pre, .doc-body blockquote { page-break-inside: avoid; }
+    `;
+
+    const printDoc =
+      `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">` +
+      `<title>${esc(editTitle || 'wiki')}</title>` +
+      `<style>${printCss}</style></head><body>` +
+      `<h1 class="doc-title">${esc(editTitle || '(無題)')}</h1>` +
+      `<div class="doc-body">${bodyHtml}</div>` +
+      `</body></html>`;
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+    document.body.appendChild(iframe);
+
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      // 印刷ダイアログが閉じきる前に消すと一部ブラウザで失敗するため少し遅延
+      setTimeout(() => { try { document.body.removeChild(iframe); } catch (_) {} }, 500);
+    };
+
+    iframe.onload = () => {
+      try {
+        const w = iframe.contentWindow;
+        const d = iframe.contentDocument;
+        // 画像があればロード完了を待ってから印刷（途中印刷で画像欠けを防ぐ）
+        const imgs = Array.from((d && d.images) || []);
+        const pending = imgs.filter(im => !im.complete);
+        const ready = Promise.all(pending.map(im => new Promise(res => { im.onload = im.onerror = res; })));
+        ready.then(() => {
+          w.focus();
+          w.onafterprint = cleanup;
+          w.print();
+          // afterprint が発火しないブラウザ向けフォールバック
+          setTimeout(cleanup, 60000);
+        });
+      } catch (err) {
+        console.error('PDF(print) failed', err);
+        showToast && showToast('PDF 出力に失敗しました: ' + (err && err.message || err), 'error');
+        cleanup();
+      }
+    };
+
+    // srcdoc に流し込むと onload が発火する
+    iframe.srcdoc = printDoc;
+  }
+
+  // ============================================================
+  // D&D（左ツリー: 移動）
+  // ============================================================
+  //   pagesRef.current を参照する理由: pointermove/up の [] closure からも
+  //   常に最新のツリー構造で子孫判定できるようにするため。
+  function isDescendant(ancestorId, candidateId) {
+    if (!ancestorId) return false;
+    const all = pagesRef.current;
+    const stack = [ancestorId];
+    const guard = new Set();
+    while (stack.length) {
+      const cur = stack.pop();
+      if (guard.has(cur)) continue;
+      guard.add(cur);
+      const kids = all.filter(p => p.parentId === cur);
+      for (const k of kids) {
+        if (k.id === candidateId) return true;
+        stack.push(k.id);
+      }
+    }
+    return false;
+  }
+
+  // 実際の移動 API 呼び出し（pointerup 経由）。targetId=null でルートへ。
+  async function performMove(movedId, targetId) {
+    if (!movedId) return;
+    if (movedId === targetId) return;
+    const all = pagesRef.current;
+    const movedPage = all.find(p => p.id === movedId);
+    // 既に同じ親なら no-op（無駄な API 呼び出しを避ける）
+    if (movedPage && (movedPage.parentId || null) === (targetId || null)) return;
+    if (targetId && isDescendant(movedId, targetId)) {
+      showToast && showToast('自分自身の子孫には移動できません', 'error');
+      return;
+    }
+    try {
+      await api.moveWikiPage(movedId, targetId, null);
+      await loadPages();
+      if (targetId) setExpanded(s => { const n = new Set(s); n.add(targetId); return n; });
+      showToast && showToast(targetId ? '移動しました' : 'ルートに移動しました', 'success');
+    } catch (e) {
+      showToast && showToast('移動に失敗しました', 'error');
+    }
+  }
+
+  // pointermove/up の [] closure から最新コールバックを呼べるよう、毎レンダリングで更新
+  cbRef.current.openPage    = openPage;
+  cbRef.current.performMove = performMove;
+
+  // ============================================================
+  // 階層ツリー描画
+  //   PageNode を「コンポーネント」ではなく「JSX を返す関数」にしている理由:
+  //   WikiView 内に function PageNode を定義すると、親の state 更新（=
+  //   draggedId / dropTargetId の更新）のたびに PageNode の関数参照が
+  //   変わり、React は型変更とみなしてサブツリー全体を unmount/remount する。
+  //   するとドラッグソースの DOM 要素が消えてブラウザの drag セッションが
+  //   即死し、root 以外への drop が一切効かなくなる（root はこの関数の
+  //   外側にあるので生き残る）。renderPageNode として直接 JSX を返せば、
+  //   要素 identity は key + 構造で決まり、remount は起きない。
+  // ============================================================
+  function renderPageNode(page, depth) {
+    const children = pages.filter(p => p.parentId === page.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const isOpen = expanded.has(page.id);
+    const isSelected = selected && selected.id === page.id;
+    return (
+      <div key={page.id}>
+        <div
+          data-wiki-node={page.id}
+          onPointerDown={e => {
+            if (e.button !== 0) return;  // 左ボタンのみ
+            // ドラッグ開始を予約（実際の開始は閾値超え時）。クリック判定も pointerup で行う。
+            dragRef.current = {
+              active: true, started: false, pageId: page.id,
+              title: page.title || '(無題)',
+              startX: e.clientX, startY: e.clientY,
+            };
+          }}
+          className={`flex items-center gap-1 py-1 pr-1 rounded text-sm group transition-all select-none ${
+            draggedId ? 'cursor-grabbing' : 'cursor-grab'
+          } ${draggedId === page.id ? 'opacity-40' : ''} ${
+            isSelected ? 'bg-olive-100 text-olive-900' : 'hover:bg-gray-100 text-gray-700'
+          } ${dropTargetId === page.id ? 'ring-2 ring-olive-500 bg-olive-50 shadow-sm' : ''}`}
+          style={{ paddingLeft: `${4 + depth * 14}px`, touchAction: 'none' }}
+          title={page.title || '(無題)'}
+        >
+          {/*
+            展開ボタン / +ボタンは onPointerDown を stopPropagation して
+            「行のドラッグ開始予約」を発火させない。これらは純粋なクリック操作。
+            SVG / 文字 span は pointerEvents:none で行の pointerdown を素通しさせる。
+          */}
+          {children.length > 0 ? (
+            <button
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); setExpanded(s => { const n = new Set(s); if (n.has(page.id)) n.delete(page.id); else n.add(page.id); return n; }); }}
+              className="shrink-0 w-4 h-4 flex items-center justify-center text-gray-500"
+            >
+              {isOpen ? <ChevronDown size={12} style={{ pointerEvents: 'none' }}/> : <ChevronRight size={12} style={{ pointerEvents: 'none' }}/>}
+            </button>
+          ) : (
+            <span className="shrink-0 w-4" style={{ pointerEvents: 'none' }}/>
+          )}
+          <BookOpen size={12} className="shrink-0 text-olive-500" style={{ pointerEvents: 'none' }}/>
+          <span className="truncate flex-1" style={{ pointerEvents: 'none' }}>{page.title || '(無題)'}</span>
+          <button
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); handleCreate(page.id); }}
+            className="opacity-0 group-hover:opacity-100 shrink-0 text-gray-400 hover:text-olive-700 px-1"
+            title="子ページを追加"
+          ><Plus size={12} style={{ pointerEvents: 'none' }}/></button>
+        </div>
+        {isOpen && children.map(c => renderPageNode(c, depth + 1))}
+      </div>
+    );
+  }
+
+  const rootPages = pages.filter(p => !p.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
+
+  // ============================================================
+  // 差分レンダラ (jsdiff の diffLines を行単位で着色)
+  // ============================================================
+  function renderDiffHtml(a, b) {
+    if (typeof window.Diff === 'undefined') return '<div style="color:#ef4444">jsdiff が読み込まれていません</div>';
+    const parts = window.Diff.diffLines(a || '', b || '');
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return parts.map(p => {
+      const text = esc(p.value);
+      if (p.added)   return `<div style="background:#dcfce7;border-left:3px solid #22c55e;padding:2px 8px;">+ ${text}</div>`;
+      if (p.removed) return `<div style="background:#fee2e2;border-left:3px solid #ef4444;padding:2px 8px;text-decoration:line-through;">- ${text}</div>`;
+      return `<div style="color:#6b7280;padding:2px 8px;">  ${text}</div>`;
+    }).join('');
+  }
+
+  // ============================================================
+  // JSX
+  // ============================================================
+  return (
+    <div className="flex-1 bg-white border border-gray-200 rounded-lg flex overflow-hidden shadow-sm">
+      {/* ===== Left tree ===== */}
+      <aside className="w-72 border-r border-gray-200 flex flex-col bg-gray-50 shrink-0">
+        <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-white">
+          <h3 className="font-bold text-sm flex items-center gap-1.5"><BookOpen size={16}/> ドキュメント</h3>
+          <button
+            onClick={() => handleCreate(null)}
+            className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-2 py-1 flex items-center gap-1"
+          ><Plus size={12}/>新規</button>
+        </div>
+        <div
+          data-wiki-root="1"
+          className={`flex-1 overflow-y-auto p-2 transition-colors ${
+            draggedId ? 'border-2 border-dashed border-olive-300' : 'border-2 border-transparent'
+          } ${dropTargetId === '__root__' ? 'bg-olive-100 border-olive-500' : ''}`}
+        >
+          {draggedId && (
+            <div className="text-[10px] text-olive-600 font-bold text-center mb-1 py-0.5 bg-olive-50 rounded">
+              ↓ ここにドロップでルートへ移動
+            </div>
+          )}
+          {loading ? (
+            <div className="text-center text-xs text-gray-400 py-6">読み込み中...</div>
+          ) : rootPages.length === 0 ? (
+            <div className="text-center text-xs text-gray-400 py-6">ページがありません<br/>右上の「新規」で作成</div>
+          ) : (
+            rootPages.map(p => renderPageNode(p, 0))
+          )}
+        </div>
+      </aside>
+
+      {/* ===== Right pane ===== */}
+      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {selected ? (
+          <>
+            {/* Toolbar */}
+            <div className="border-b border-gray-200 p-2 flex flex-wrap items-center gap-2 bg-white shrink-0">
+              <button
+                onClick={() => handleSave(true)}
+                disabled={!isDirty || isSaving}
+                className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-3 py-1.5 flex items-center gap-1 disabled:opacity-50"
+              >
+                {isSaving ? <Loader2 size={12} className="animate-spin"/> : <Save size={12}/>} 保存
+              </button>
+              <div className="text-[11px] text-gray-500">
+                {isSaving ? '保存中…' : isDirty ? '未保存の変更あり' : lastSaved ? `保存済 (${lastSaved})` : ''}
+              </div>
+              <div className="ml-auto flex items-center gap-1">
+                <button onClick={handleDuplicate} title="このページを複製" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><Copy size={12}/>複製</button>
+                <button onClick={openMoveModal} title="階層を移動" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><CornerDownRight size={12}/>移動</button>
+                <button onClick={openHistory} title="編集履歴" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><History size={12}/>履歴</button>
+                <button onClick={handleCopyLink} title="このページへのリンクをコピー" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><LinkIcon size={12}/>リンク</button>
+                <button onClick={handleExportPdf} title="PDF として保存" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><FileDown size={12}/>PDF</button>
+                <button onClick={handleDelete} title="削除" className="border border-red-300 hover:bg-red-50 text-red-600 text-xs rounded px-2 py-1.5 flex items-center gap-1"><Trash2 size={12}/></button>
+              </div>
+            </div>
+            {/* Editor */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6">
+              <div id="wiki-print-target">
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={e => { setEditTitle(e.target.value); setIsDirty(true); }}
+                  placeholder="タイトル"
+                  className="w-full text-2xl font-bold mb-3 border-b border-gray-200 focus:border-olive-500 focus:outline-none py-1 bg-transparent"
+                />
+                <div className="text-xs text-gray-500 mb-4">
+                  最終更新: {selected.updatedBy || '?'}（{selected.updatedAt || '?'}）
+                </div>
+                <RichMarkdownEditor
+                  key={editorKey}
+                  value={editBody}
+                  onChange={(md) => { setEditBody(md); setIsDirty(true); }}
+                  placeholder={'本文を入力...\n`# ` で見出し、`- ` でリスト、`[ ] ` でチェックボックス'}
+                  minHeight="400px"
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-sm p-6">
+            <div className="text-center">
+              <BookOpen size={48} className="mx-auto mb-3 text-gray-300"/>
+              左のツリーからページを選択するか、<br/>「新規」ボタンで作成してください。
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* ===== History drawer ===== */}
+      {showHistory && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setShowHistory(false)}/>
+          <aside className="fixed right-0 top-0 bottom-0 w-full md:w-96 bg-white border-l border-gray-200 z-50 shadow-2xl flex flex-col">
+            <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <h3 className="font-bold text-sm flex items-center gap-1.5"><History size={14}/> 編集履歴</h3>
+              <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-700"><XCircle size={18}/></button>
+            </div>
+            <div className="p-2 border-b border-gray-200 bg-white text-xs flex items-center gap-2">
+              <span className="text-gray-500">比較:</span>
+              <span className="bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-bold">A: {diffSel.a ?? '-'}</span>
+              <span className="bg-green-100 text-green-700 rounded px-1.5 py-0.5 font-bold">B: {diffSel.b ?? '-'}</span>
+              <button
+                onClick={openDiff}
+                disabled={!diffSel.a || !diffSel.b}
+                className="ml-auto bg-olive-600 hover:bg-olive-700 disabled:opacity-50 text-white text-[11px] font-bold rounded px-2 py-1 flex items-center gap-1"
+              ><GitBranch size={10}/>差分表示</button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {revisions.length === 0 ? (
+                <div className="text-center text-xs text-gray-400 py-8">履歴がありません</div>
+              ) : revisions.map(r => (
+                <div key={r.id} className="border-b border-gray-100 p-2 text-xs hover:bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-800">Rev.{r.revisionNo}</span>
+                    <span className="text-gray-500 truncate">{r.title}</span>
+                  </div>
+                  <div className="text-gray-500 mt-0.5">
+                    {r.editorName || r.editorEmail || '?'} — {r.createdAt}
+                  </div>
+                  {r.changeSummary && <div className="text-gray-600 italic mt-0.5">「{r.changeSummary}」</div>}
+                  <div className="flex items-center gap-1 mt-1.5">
+                    <button
+                      onClick={() => setDiffSel(s => ({ ...s, a: r.revisionNo }))}
+                      className={`border rounded px-1.5 py-0.5 transition-colors ${diffSel.a === r.revisionNo ? 'border-blue-500 bg-blue-100 text-blue-800 font-bold' : 'border-blue-300 text-blue-700 hover:bg-blue-50'}`}
+                    >A</button>
+                    <button
+                      onClick={() => setDiffSel(s => ({ ...s, b: r.revisionNo }))}
+                      className={`border rounded px-1.5 py-0.5 transition-colors ${diffSel.b === r.revisionNo ? 'border-green-500 bg-green-100 text-green-800 font-bold' : 'border-green-300 text-green-700 hover:bg-green-50'}`}
+                    >B</button>
+                    <button
+                      onClick={() => handleRestore(r.revisionNo)}
+                      className="ml-auto bg-amber-100 hover:bg-amber-200 text-amber-800 rounded px-2 py-0.5 flex items-center gap-1"
+                    ><RotateCcw size={10}/>復元</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </aside>
+        </>
+      )}
+
+      {/* ===== Move modal ===== */}
+      {moveModalOpen && selected && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-[55]" onClick={() => setMoveModalOpen(false)}/>
+          <div className="fixed inset-x-4 top-1/2 -translate-y-1/2 md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[480px] bg-white rounded-lg shadow-2xl z-[55] flex flex-col max-h-[80vh]">
+            <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50 rounded-t-lg">
+              <h3 className="font-bold text-sm flex items-center gap-1.5"><CornerDownRight size={14}/> ページを移動</h3>
+              <button onClick={() => setMoveModalOpen(false)} className="text-gray-400 hover:text-gray-700"><XCircle size={18}/></button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">対象ページ</div>
+                <div className="font-bold text-sm text-gray-800 truncate">{selected.title || '(無題)'}</div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">新しい親（格納先）</label>
+                <select
+                  value={moveTargetParentId || ''}
+                  onChange={e => setMoveTargetParentId(e.target.value || null)}
+                  className="w-full border border-gray-300 rounded px-2 py-2 text-sm focus:ring-2 focus:ring-olive-500 focus:outline-none"
+                >
+                  <option value="">(ルート)</option>
+                  {buildMoveOptions().map(o => (
+                    <option key={o.id} value={o.id}>
+                      {'　'.repeat(o.depth)}{o.title}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-[11px] text-gray-400 mt-1">自分自身と子孫は除外されています</div>
+              </div>
+            </div>
+            <div className="border-t border-gray-200 p-3 flex items-center justify-end gap-2 bg-gray-50 rounded-b-lg">
+              <button onClick={() => setMoveModalOpen(false)} className="border border-gray-300 hover:bg-gray-100 text-gray-700 text-xs font-bold rounded px-3 py-1.5">キャンセル</button>
+              <button onClick={applyMove} className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-3 py-1.5 flex items-center gap-1"><CornerDownRight size={12}/>移動</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ===== Diff modal ===== */}
+      {diffOpen && diffData && (
+        <>
+          <div className="fixed inset-0 bg-black/50 z-[60]" onClick={() => setDiffOpen(false)}/>
+          <div className="fixed inset-4 md:inset-8 bg-white rounded-lg shadow-2xl z-[60] flex flex-col">
+            <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">
+                <GitBranch size={14}/> Rev.{diffData.a.revisionNo}
+                <ChevronRight size={12} className="text-gray-400"/>
+                Rev.{diffData.b.revisionNo}
+              </h3>
+              <button onClick={() => setDiffOpen(false)} className="text-gray-400 hover:text-gray-700"><XCircle size={18}/></button>
+            </div>
+            <div
+              className="flex-1 overflow-y-auto font-mono text-xs whitespace-pre-wrap leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: renderDiffHtml(diffData.a.bodyMd || '', diffData.b.bodyMd || '') }}
+            />
+          </div>
+        </>
+      )}
+
+      {/* ===== Drag ghost（カーソル追従の浮遊ラベル。pointer-events:none で elementFromPoint に写らない）===== */}
+      {ghost && (
+        <div
+          className="fixed z-[80] pointer-events-none bg-olive-600 text-white text-xs font-bold rounded px-2 py-1 shadow-lg flex items-center gap-1 max-w-[220px]"
+          style={{ left: ghost.x + 12, top: ghost.y + 8 }}
+        >
+          <BookOpen size={12} className="shrink-0"/>
+          <span className="truncate">{ghost.title}</span>
+        </div>
+      )}
+    </div>
+  );
+}
