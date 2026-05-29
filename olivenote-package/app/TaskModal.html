@@ -334,6 +334,44 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       // ★ 追加：AIアドバイザー（タスク専用壁打ち相手）
       // ==========================================
       const [isAdvisorOpen, setIsAdvisorOpen] = useState(false);
+      // ★ Sprint 2-E: 右ペインのタブ切替（'comments' | 'history' | 'ai'）
+      // デスクトップでは常時表示、モバイルでは isAdvisorOpen で表示制御
+      const [rightPaneTab, setRightPaneTab] = useState('comments');
+      // ★ Sprint 2-E (PC のみ): 右ペインの最小化／幅
+      // デフォルトは最小化。幅は localStorage に保存して再開時に復元する。
+      const [isRightPaneCollapsed, setIsRightPaneCollapsed] = useState(true);
+      const [rightPaneWidth, setRightPaneWidth] = useState(() => {
+        try {
+          const saved = parseInt(localStorage.getItem('olivenote_taskmodal_right_pane_width') || '', 10);
+          if (Number.isFinite(saved)) return Math.max(280, Math.min(800, saved));
+        } catch (e) {}
+        return 384; // lg:w-96 相当
+      });
+      useEffect(() => {
+        try { localStorage.setItem('olivenote_taskmodal_right_pane_width', String(rightPaneWidth)); } catch (e) {}
+      }, [rightPaneWidth]);
+      // 右ペインのドラッグリサイズ（PC のみ）
+      const startRightPaneResize = (e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = rightPaneWidth;
+        const handleMouseMove = (ev) => {
+          // ドラッグ左方向で幅が広がる（境界線が画面の右端側にある）
+          const delta = startX - ev.clientX;
+          const newWidth = Math.max(280, Math.min(800, startWidth + delta));
+          setRightPaneWidth(newWidth);
+        };
+        const handleMouseUp = () => {
+          window.removeEventListener('mousemove', handleMouseMove);
+          window.removeEventListener('mouseup', handleMouseUp);
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      };
       const [advisorMessages, setAdvisorMessages] = useState([
         { role: 'model', text: 'この課題について何かお困りですか？\n進め方や内容の整理など、何でも相談してください！' }
       ]);
@@ -638,9 +676,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       useEffect(() => {
         if (!formData.comments || formData.comments.length === 0 || isNew) return;
-        
+
+        // 自分が書いたコメントでも自分自身をメンションしているケースがあるため、
+        // 「自分の readBy に自分が入っているか」だけで判定する（旧コードの author 除外は廃止）。
         const unreadIds = formData.comments
-          .filter(c => c.authorEmail !== currentUserId && (!c.readBy || !c.readBy.includes(currentUserId)))
+          .filter(c => !c.readBy || !c.readBy.includes(currentUserId))
           .map(c => c.id);
 
         if (unreadIds.length > 0) {
@@ -1023,16 +1063,18 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       const handleAddCommentLocal = async () => {
         if (!commentText?.trim()) return;
-        const newComment = { 
-          id: 'comment_' + Date.now().toString(), 
-          taskId: formData.id, 
-          authorEmail: currentUser.email, 
-          authorName: currentUser.name, 
-          text: commentText, 
-          createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), 
-          likes: [] 
+        const newComment = {
+          id: 'comment_' + Date.now().toString(),
+          taskId: formData.id,
+          authorEmail: currentUser.email,
+          authorName: currentUser.name,
+          text: commentText,
+          createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          likes: [],
+          // 投稿者自身は当然「既読」状態として登録（自分宛メンションでも未読のままにならないように）
+          readBy: currentUser?.email ? [currentUser.email] : []
         };
-        
+
         const mentionedMembers = members.filter(m => commentText.includes(`@${m.name}`));
         for (const targetUser of mentionedMembers) {
           api.createNotification(
@@ -1206,6 +1248,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }).join(', ');
       };
 
+      // ★ Sprint 2-E: コメント／履歴 振り分け
+      // 履歴は generateAndSaveHistoryComment で生成された `comment_hist_*` のみ。
+      // AI 系の `comment_ai_gather_*` / `*_sys` / 画像生成 / Doc生成 は ユーザー目線では
+      // 「コメント」タブに残す（手で書いた発言と並べて読みたいため）。
+      const allCommentItems = formData.comments || [];
+      const historyItems = allCommentItems.filter(c => (c.id || '').startsWith('comment_hist_'));
+      const commentItems = allCommentItems.filter(c => !(c.id || '').startsWith('comment_hist_'));
+
       return (
         <div
           className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 px-[2%] py-4 backdrop-blur-sm olive-modal-backdrop"
@@ -1300,12 +1350,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                     <span>{formData.likes.length > 0 ? formData.likes.length : <span className="hidden sm:inline">いいね</span>}</span>
                   </button>
                 )}
+                {/* ★ Sprint 2-E: モバイル専用の右ペイン展開ボタン（PC は右ペイン側の最小化トグルを使う） */}
                 <button
-                  onClick={() => setIsAdvisorOpen(!isAdvisorOpen)}
-                  className={`flex items-center gap-1 md:gap-1.5 px-2 md:px-3 py-1.5 rounded-full text-xs md:text-sm font-bold transition-colors shadow-sm ${isAdvisorOpen ? 'bg-olive-600 text-white' : 'bg-olive-50 border border-olive-200 text-olive-700 hover:bg-olive-100'}`}
+                  onClick={() => setIsAdvisorOpen(true)}
+                  className="md:hidden flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-bold transition-colors shadow-sm bg-olive-50 border border-olive-200 text-olive-700 hover:bg-olive-100"
+                  title="コメント／履歴／AI ペインを開く"
                 >
-                  <Bot size={16} className={isAdvisorOpen ? 'text-white' : 'text-olive-600'} />
-                  <span className="hidden sm:inline">AIに相談</span>
+                  <MessageSquare size={16} className="text-olive-600" />
                 </button>
                 {!isNew && saveStatus !== 'idle' && (
                   <span className="text-xs flex items-center gap-1 mr-1 shrink-0">
@@ -1676,233 +1727,360 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 </div>
               )}
 
-              {/* 5. コメント */}
-              {!isNew && (
-                <div className="border-t border-gray-200 pt-8 mt-2">
-                  <h3 className="font-bold text-gray-800 mb-5 flex items-center gap-2 text-lg"><MessageSquare size={20}/> コメント ({formData.comments.length})</h3>
-                  
-                  {/* コメント入力エリアを上に配置 */}
-                  <div className="flex flex-col gap-3 bg-olive-50/50 p-3 md:p-5 rounded-xl border border-olive-200 shadow-inner mb-8">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-2xl">{currentUser?.avatar}</span>
-                      <span className="text-sm font-bold text-gray-700">{currentUser?.name} としてコメントを残す</span>
-                    </div>
-                    {/* メンション用のメンバー選択ボタン */}
-                    <div className="mb-2">
-                      <span className="text-xs font-bold text-gray-500 mr-2 flex items-center gap-1 mb-1">
-                        <Bell size={12} /> メンション（通知）
+              {/* ★ Sprint 2-E: コメント／履歴セクションは右ペインのタブ（コメント／履歴／AI）へ移設 */}
+            </div>
+
+            {/* ========================================== */}
+            {/* ★ Sprint 2-E: 右ペイン（コメント / 履歴 / AI壁打ち の 3 タブ） */}
+            {/* デスクトップ: 常時表示（最小化／幅ドラッグ調整可） / モバイル: isAdvisorOpen で開閉 */}
+            {/* ========================================== */}
+            {/* リサイザ（PC かつ展開時のみ） */}
+            {!isRightPaneCollapsed && !isAdvisorOpen && (
+              <div
+                onMouseDown={startRightPaneResize}
+                className="hidden md:block w-1 bg-olive-200 hover:bg-olive-500 active:bg-olive-600 cursor-col-resize shrink-0 transition-colors"
+                title="ドラッグで幅を変更"
+              />
+            )}
+            <div
+              className={`border-l border-olive-200 bg-white md:bg-olive-50 flex-col shrink-0 absolute md:relative right-0 inset-0 md:inset-y-0 md:right-0 z-30 shadow-2xl md:shadow-none ${isAdvisorOpen ? 'w-full flex animate-in slide-in-from-right-8 duration-300' : 'hidden md:flex'}`}
+              style={isAdvisorOpen ? undefined : { width: isRightPaneCollapsed ? '40px' : `${rightPaneWidth}px` }}
+            >
+              {isRightPaneCollapsed && !isAdvisorOpen ? (
+                /* 最小化された縦ストリップ（PC のみ）。アイコンをクリックすると展開＋タブ切替 */
+                <div className="hidden md:flex flex-col items-center py-2 gap-1.5 h-full bg-olive-50">
+                  <button
+                    onClick={() => setIsRightPaneCollapsed(false)}
+                    title="ペインを展開"
+                    className="p-1.5 text-gray-500 hover:text-olive-700 hover:bg-olive-100 rounded transition-colors"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <div className="w-6 border-t border-olive-200 my-0.5"></div>
+                  <button
+                    onClick={() => { setRightPaneTab('comments'); setIsRightPaneCollapsed(false); }}
+                    title="コメント"
+                    className={`p-1.5 rounded transition-colors relative ${rightPaneTab === 'comments' ? 'text-olive-800 bg-white shadow-sm' : 'text-gray-500 hover:text-olive-700 hover:bg-olive-100'}`}
+                  >
+                    <MessageSquare size={16} />
+                    {!isNew && commentItems.length > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-olive-600 text-white text-[8px] rounded-full min-w-[14px] h-[14px] px-0.5 flex items-center justify-center font-bold">
+                        {commentItems.length > 99 ? '99+' : commentItems.length}
                       </span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {members.map(member => (
-                          <button
-                            key={member.email}
-                            type="button"
-                            onClick={() => {
-                              const textarea = commentTextareaRef.current;
-                              if (textarea) {
-                                const start = textarea.selectionStart;
-                                const before = commentText.substring(0, start);
-                                const after = commentText.substring(start);
-                                setCommentText(before + `@${member.name} ` + after);
-                                setTimeout(() => {
-                                  textarea.focus();
-                                  textarea.setSelectionRange(start + member.name.length + 2, start + member.name.length + 2);
-                                }, 0);
-                              } else {
-                                setCommentText(prev => prev + `@${member.name} `);
-                              }
-                            }}
-                            className="text-[10px] bg-olive-50 text-olive-700 border border-olive-200 px-2 py-1 rounded-full hover:bg-olive-100 transition-colors flex items-center gap-1"
-                          >
-                            <span className="text-xs">{member.avatar}</span> @{member.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => { setRightPaneTab('history'); setIsRightPaneCollapsed(false); }}
+                    title="履歴"
+                    className={`p-1.5 rounded transition-colors relative ${rightPaneTab === 'history' ? 'text-olive-800 bg-white shadow-sm' : 'text-gray-500 hover:text-olive-700 hover:bg-olive-100'}`}
+                  >
+                    <History size={16} />
+                    {!isNew && historyItems.length > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-gray-400 text-white text-[8px] rounded-full min-w-[14px] h-[14px] px-0.5 flex items-center justify-center font-bold">
+                        {historyItems.length > 99 ? '99+' : historyItems.length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => { setRightPaneTab('ai'); setIsRightPaneCollapsed(false); }}
+                    title="AI壁打ち"
+                    className={`p-1.5 rounded transition-colors ${rightPaneTab === 'ai' ? 'text-olive-800 bg-white shadow-sm' : 'text-gray-500 hover:text-olive-700 hover:bg-olive-100'}`}
+                  >
+                    <Bot size={16} />
+                  </button>
+                </div>
+              ) : (
+                <>
+              {/* タブバー */}
+              <div className="flex items-stretch border-b border-olive-200 bg-olive-50 shrink-0">
+                {/* PC のみ：最小化ボタン */}
+                <button
+                  onClick={() => setIsRightPaneCollapsed(true)}
+                  className="hidden md:flex items-center px-2 text-gray-500 hover:text-olive-700 hover:bg-olive-100 transition-colors border-r border-olive-200"
+                  title="最小化"
+                >
+                  <Minimize2 size={14}/>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightPaneTab('comments')}
+                  className={`flex-1 px-2 py-2.5 text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1 ${rightPaneTab === 'comments' ? 'text-olive-800 border-b-2 border-olive-600 bg-white' : 'text-gray-500 border-b-2 border-transparent hover:text-olive-700 hover:bg-olive-100'}`}
+                  title="コメント"
+                >
+                  <MessageSquare size={14} /> コメント{!isNew && commentItems.length > 0 && <span className="text-[10px] font-normal">({commentItems.length})</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightPaneTab('history')}
+                  className={`flex-1 px-2 py-2.5 text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1 ${rightPaneTab === 'history' ? 'text-olive-800 border-b-2 border-olive-600 bg-white' : 'text-gray-500 border-b-2 border-transparent hover:text-olive-700 hover:bg-olive-100'}`}
+                  title="更新履歴"
+                >
+                  <History size={14} /> 履歴{!isNew && historyItems.length > 0 && <span className="text-[10px] font-normal">({historyItems.length})</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightPaneTab('ai')}
+                  className={`flex-1 px-2 py-2.5 text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1 ${rightPaneTab === 'ai' ? 'text-olive-800 border-b-2 border-olive-600 bg-white' : 'text-gray-500 border-b-2 border-transparent hover:text-olive-700 hover:bg-olive-100'}`}
+                  title="AI壁打ち"
+                >
+                  <Bot size={14} /> AI
+                </button>
+                {/* モバイル用クローズ */}
+                <button onClick={() => setIsAdvisorOpen(false)} className="md:hidden px-2 text-gray-500 hover:text-gray-800 hover:bg-olive-100 transition-colors" title="閉じる">
+                  <X size={18}/>
+                </button>
+              </div>
 
-                    {/* サジェスト機能付きのコメントテキストエリア */}
-                    <div className="relative">
-                      <textarea 
-                        ref={commentTextareaRef}
-                        className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white shadow-sm resize-y min-h-[100px]" 
-                        placeholder="進捗や連絡事項、メモなどを入力...（「@」でメンション）" 
-                        value={commentText} 
-                        disabled={isDeletingTask} 
-                        onChange={handleCommentChange} 
-                        onKeyDown={handleCommentKeyDown} 
-                      />
-                      
-                      {commentMention.state.active && (
-                        <div
-                          className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
-                          style={{
-                            top: commentMention.state.caret.top + commentMention.state.caret.height + 4,
-                            left: commentMention.state.caret.left
-                          }}
-                        >
-                          <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
-                            TabキーかEnterキーで選択
-                          </div>
-                          <ul className="max-h-48 overflow-y-auto">
-                            {commentMention.state.members.map((m, idx) => (
-                              <li
-                                key={m.email}
-                                ref={(el) => {
-                                  if (el && idx === commentMention.state.selectedIndex) {
-                                    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                                  }
-                                }}
-                                onClick={() => commentMention.insertMention(commentTextareaRef, commentText, setCommentText, m)}
-                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
-                              >
-                                <span>{m.avatar}</span> {m.name}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex justify-between items-center mt-2">
-                      <div className="flex items-center gap-3">
-                        <input type="file" ref={commentFileInputRef} onChange={handleCommentFileUpload} multiple disabled={isDeletingTask || isUploadingToComment} className="hidden" id="comment-file-upload" />
-                        <label htmlFor="comment-file-upload" className={`cursor-pointer bg-white hover:bg-gray-50 text-gray-600 text-xs font-bold py-1.5 px-3 rounded-full border border-gray-300 transition-colors shadow-sm flex items-center gap-1.5 ${isDeletingTask || isUploadingToComment ? 'opacity-50 pointer-events-none' : ''}`}>
-                          {isUploadingToComment ? <Loader2 size={14} className="animate-spin text-olive-600" /> : <Paperclip size={14} className="text-gray-500" />}
-                          {isUploadingToComment ? 'アップロード中...' : 'ファイルを添付'}
-                        </label>
-                      </div>
-                      <button className="bg-olive-600 text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-olive-700 shadow-sm disabled:opacity-50 transition-colors flex items-center gap-2" disabled={!commentText?.trim() || isDeletingTask} onClick={handleAddCommentLocal}>
-                        <MessageSquare size={16} /> 送信する
-                      </button>
-                    </div>
+              {/* ===== コメントタブ ===== */}
+              {rightPaneTab === 'comments' && (
+                isNew ? (
+                  <div className="flex-1 flex items-center justify-center p-6 text-center text-sm text-gray-400">
+                    課題を作成するとコメントを残せます。
                   </div>
+                ) : (
+                  <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4 bg-white">
+                    {/* コメント入力エリア */}
+                    <div className="flex flex-col gap-3 bg-olive-50/50 p-3 rounded-xl border border-olive-200 shadow-inner">
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">{currentUser?.avatar}</span>
+                        <span className="text-xs font-bold text-gray-700 truncate">{currentUser?.name} としてコメントを残す</span>
+                      </div>
+                      {/* メンション用のメンバー選択ボタン */}
+                      <div>
+                        <span className="text-[11px] font-bold text-gray-500 flex items-center gap-1 mb-1">
+                          <Bell size={11} /> メンション（通知）
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {members.map(member => (
+                            <button
+                              key={member.email}
+                              type="button"
+                              onClick={() => {
+                                const textarea = commentTextareaRef.current;
+                                if (textarea) {
+                                  const start = textarea.selectionStart;
+                                  const before = commentText.substring(0, start);
+                                  const after = commentText.substring(start);
+                                  setCommentText(before + `@${member.name} ` + after);
+                                  setTimeout(() => {
+                                    textarea.focus();
+                                    textarea.setSelectionRange(start + member.name.length + 2, start + member.name.length + 2);
+                                  }, 0);
+                                } else {
+                                  setCommentText(prev => prev + `@${member.name} `);
+                                }
+                              }}
+                              className="text-[10px] bg-olive-50 text-olive-700 border border-olive-200 px-2 py-1 rounded-full hover:bg-olive-100 transition-colors flex items-center gap-1"
+                            >
+                              <span className="text-xs">{member.avatar}</span> @{member.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* サジェスト機能付きのコメントテキストエリア */}
+                      <div className="relative">
+                        <textarea
+                          ref={commentTextareaRef}
+                          className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white shadow-sm resize-y min-h-[80px]"
+                          placeholder="進捗や連絡事項、メモなどを入力...（「@」でメンション）"
+                          value={commentText}
+                          disabled={isDeletingTask}
+                          onChange={handleCommentChange}
+                          onKeyDown={handleCommentKeyDown}
+                        />
+                        {commentMention.state.active && (
+                          <div
+                            className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
+                            style={{
+                              top: commentMention.state.caret.top + commentMention.state.caret.height + 4,
+                              left: commentMention.state.caret.left
+                            }}
+                          >
+                            <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
+                              TabキーかEnterキーで選択
+                            </div>
+                            <ul className="max-h-48 overflow-y-auto">
+                              {commentMention.state.members.map((m, idx) => (
+                                <li
+                                  key={m.email}
+                                  ref={(el) => {
+                                    if (el && idx === commentMention.state.selectedIndex) {
+                                      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                                    }
+                                  }}
+                                  onClick={() => commentMention.insertMention(commentTextareaRef, commentText, setCommentText, m)}
+                                  className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                                >
+                                  <span>{m.avatar}</span> {m.name}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex justify-between items-center gap-2">
+                        <input type="file" ref={commentFileInputRef} onChange={handleCommentFileUpload} multiple disabled={isDeletingTask || isUploadingToComment} className="hidden" id="comment-file-upload" />
+                        <label htmlFor="comment-file-upload" className={`cursor-pointer bg-white hover:bg-gray-50 text-gray-600 text-[11px] font-bold py-1.5 px-2 rounded-full border border-gray-300 transition-colors shadow-sm flex items-center gap-1 ${isDeletingTask || isUploadingToComment ? 'opacity-50 pointer-events-none' : ''}`}>
+                          {isUploadingToComment ? <Loader2 size={12} className="animate-spin text-olive-600" /> : <Paperclip size={12} className="text-gray-500" />}
+                          {isUploadingToComment ? 'アップロード中...' : 'ファイル添付'}
+                        </label>
+                        <button className="bg-olive-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-olive-700 shadow-sm disabled:opacity-50 transition-colors flex items-center gap-1.5" disabled={!commentText?.trim() || isDeletingTask} onClick={handleAddCommentLocal}>
+                          <MessageSquare size={14} /> 送信
+                        </button>
+                      </div>
+                    </div>
 
-                  {/* コメント履歴 */}
-                  <div className="space-y-4">
-                    {formData.comments.slice().reverse().map(c => { 
-                      const authorName = c.authorName || c.author;
-                      const cMember = members.find(m => m.email === c.authorEmail || m.name === authorName);
-                      const isDeleting = deleteCommentId === c.id;
-                      const isEditing = editingCommentId === c.id; 
+                    {/* コメントリスト（履歴は除外） */}
+                    <div className="space-y-3">
+                      {commentItems.slice().reverse().map(c => {
+                        const authorName = c.authorName || c.author;
+                        const cMember = members.find(m => m.email === c.authorEmail || m.name === authorName);
+                        const isDeleting = deleteCommentId === c.id;
+                        const isEditing = editingCommentId === c.id;
+                        const isMyComment = c.authorEmail === currentUserId || authorName === currentUser?.name;
 
-                      const isMyComment = c.authorEmail === currentUserId || authorName === currentUser?.name;
-
-                      return (
-                        <div key={c.id} className={`bg-white rounded-lg p-4 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-olive-400 shadow-md ring-1 ring-olive-400' : 'border-gray-200 hover:border-gray-300'}`}>
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center gap-3">
-                              <span className="text-2xl bg-gray-100 rounded-full w-10 h-10 flex items-center justify-center shadow-inner">{cMember ? cMember.avatar : '👤'}</span>
-                              <div className="flex flex-col">
-                                <span className="font-bold text-sm text-gray-800">{authorName} {c.updatedAt && <span className="text-[10px] text-gray-400 font-normal ml-1">(編集済み)</span>}</span>
-                                <span className="text-[10px] text-gray-400">{c.createdAt}</span>
+                        return (
+                          <div key={c.id} className={`bg-white rounded-lg p-3 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-olive-400 shadow-md ring-1 ring-olive-400' : 'border-gray-200 hover:border-gray-300'}`}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-xl bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center shadow-inner shrink-0">{cMember ? cMember.avatar : '👤'}</span>
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-bold text-xs text-gray-800 truncate">{authorName} {c.updatedAt && <span className="text-[10px] text-gray-400 font-normal ml-1">(編集済み)</span>}</span>
+                                  <span className="text-[10px] text-gray-400">{c.createdAt}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 relative shrink-0">
+                                {isDeleting ? (
+                                  <div className="absolute right-0 top-0 bg-white border border-red-200 shadow-lg rounded-lg p-2 flex flex-col items-end gap-2 z-10 min-w-[130px]">
+                                    <span className="text-[11px] font-bold text-red-600 w-full text-center">削除しますか？</span>
+                                    <div className="flex gap-1 w-full">
+                                      <button onClick={() => setDeleteCommentId(null)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-[11px] font-bold py-1 rounded transition-colors">戻る</button>
+                                      <button onClick={() => executeDeleteComment(c.id)} className="flex-1 bg-red-500 hover:bg-red-600 text-white text-[11px] font-bold py-1 rounded shadow-sm transition-colors">削除</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  !isEditing && isMyComment && (
+                                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+                                      <button onClick={() => startEditComment(c)} className="text-gray-300 hover:text-olive-500 p-1 rounded hover:bg-olive-50 transition-colors" title="編集"><Edit size={12}/></button>
+                                      <button onClick={() => setDeleteCommentId(c.id)} className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50 transition-colors" title="削除"><Trash2 size={12}/></button>
+                                    </div>
+                                  )
+                                )}
                               </div>
                             </div>
-                            <div className="flex items-center gap-3 relative">
-                              {isDeleting ? (
-                                <div className="absolute right-0 top-0 bg-white border border-red-200 shadow-lg rounded-lg p-3 flex flex-col items-end gap-2 z-10 min-w-[150px]">
-                                  <span className="text-xs font-bold text-red-600 w-full text-center mb-1">このコメントを削除しますか？</span>
-                                  <div className="flex gap-2 w-full">
-                                    <button onClick={() => setDeleteCommentId(null)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold py-1.5 rounded transition-colors">戻る</button>
-                                    <button onClick={() => executeDeleteComment(c.id)} className="flex-1 bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-1.5 rounded shadow-sm transition-colors">削除</button>
+
+                            {/* 表示の切り替え（プレビュー or 編集テキストエリア） */}
+                            <div className={`${isDeleting ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
+                              {isEditing ? (
+                                <div className="flex flex-col gap-2 mt-1">
+                                  <textarea
+                                    className="w-full border border-olive-300 rounded-lg p-2 text-xs focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white resize-y min-h-[80px]"
+                                    value={editingCommentText}
+                                    onChange={(e) => setEditingCommentText(e.target.value)}
+                                    autoFocus
+                                  />
+                                  <div className="flex justify-end gap-2">
+                                    <button onClick={cancelEditComment} className="px-2.5 py-1 text-[11px] font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">キャンセル</button>
+                                    <button onClick={() => saveEditComment(c.id)} className="px-2.5 py-1 text-[11px] font-bold text-white bg-olive-600 rounded hover:bg-olive-700 transition-colors" disabled={!editingCommentText?.trim()}>保存</button>
                                   </div>
                                 </div>
                               ) : (
-                                !isEditing && isMyComment && ( 
-                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                                    <button onClick={() => startEditComment(c)} className="text-gray-300 hover:text-olive-500 p-1.5 rounded hover:bg-olive-50 transition-colors" title="編集"><Edit size={14}/></button>
-                                    <button onClick={() => setDeleteCommentId(c.id)} className="text-gray-300 hover:text-red-500 p-1.5 rounded hover:bg-red-50 transition-colors" title="削除"><Trash2 size={14}/></button>
-                                  </div>
-                                )
+                                <MarkdownPreview text={c.text || ''} />
                               )}
                             </div>
-                          </div>
 
-                          {/* 表示の切り替え（プレビュー or 編集テキストエリア） */}
-                          <div className={`ml-13 ${isDeleting ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
-                            {isEditing ? (
-                              <div className="flex flex-col gap-2 mt-1">
-                                <textarea 
-                                  className="w-full border border-olive-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white resize-y min-h-[100px]" 
-                                  value={editingCommentText} 
-                                  onChange={(e) => setEditingCommentText(e.target.value)}
-                                  autoFocus
-                                />
-                                <div className="flex justify-end gap-2">
-                                  <button onClick={cancelEditComment} className="px-3 py-1.5 text-xs font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">キャンセル</button>
-                                  <button onClick={() => saveEditComment(c.id)} className="px-3 py-1.5 text-xs font-bold text-white bg-olive-600 rounded hover:bg-olive-700 transition-colors" disabled={!editingCommentText?.trim()}>保存</button>
-                                </div>
-                              </div>
-                            ) : (
-                              <MarkdownPreview text={c.text || ''} />
-                            )}
-                          </div>
-                          
-                          {/* メンションされたメンバーの既読/未読アイコン表示 */}
-                          {!isEditing && (
-                            <div className="absolute bottom-3 right-16 flex items-center gap-1.5 transition-opacity">
-                              {(() => {
-                                const text = c.text || '';
-                                const mentionedMembers = members.filter(m => text.includes(`@${m.name}`));
-
-                                if (mentionedMembers.length === 0) return null;
-
-                                return (
-                                  <div className="flex items-center gap-1">
-                                    <div className="flex -space-x-3">
+                            {/* メンションされたメンバーの既読/未読アイコン + いいねボタン */}
+                            {!isEditing && (() => {
+                              const text = c.text || '';
+                              const mentionedMembers = members.filter(m => text.includes(`@${m.name}`));
+                              return (
+                                <div className="flex items-center justify-end gap-2 mt-2">
+                                  {mentionedMembers.length > 0 && (
+                                    <div className="flex -space-x-2">
                                       {mentionedMembers.map((member, idx) => {
                                         const isRead = c.readBy && c.readBy.includes(member.email);
-
                                         return (
                                           <span
                                             key={idx}
                                             title={`${member.name} (${isRead ? '既読' : '未読'})`}
-                                            className={`w-10 h-10 rounded-full bg-gray-100 border-[3px] border-white flex items-center justify-center text-xl shadow-sm cursor-help z-10 hover:z-20 hover:scale-110 transition-all ${isRead ? 'opacity-100' : 'opacity-40 grayscale-[50%]'}`}
+                                            className={`w-7 h-7 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center text-sm shadow-sm cursor-help z-10 hover:z-20 hover:scale-110 transition-all ${isRead ? 'opacity-100' : 'opacity-40 grayscale-[50%]'}`}
                                           >
                                             {member.avatar}
                                           </span>
                                         );
                                       })}
                                     </div>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          )}
-
-                          {!isEditing && (
-                            <button 
-                              onClick={() => handleLikeCommentLocal(c.id)} 
-                              disabled={isDeleting || isDeletingTask} 
-                              title={getLikeNames(c.likes)}
-                              className={`absolute bottom-3 right-4 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full transition-colors border ${c.likes?.includes(currentUserId) ? 'text-olive-700 bg-olive-50 border-olive-200 shadow-sm' : 'text-gray-400 border-transparent hover:bg-gray-100 hover:text-gray-600'} ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                              <ThumbsUp size={14} className={c.likes?.includes(currentUserId) ? 'fill-olive-600' : ''}/>
-                              {c.likes?.length > 0 && <span>{c.likes.length}</span>}
-                            </button>
-                          )}
+                                  )}
+                                  <button
+                                    onClick={() => handleLikeCommentLocal(c.id)}
+                                    disabled={isDeleting || isDeletingTask}
+                                    title={getLikeNames(c.likes)}
+                                    className={`flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full transition-colors border ${c.likes?.includes(currentUserId) ? 'text-olive-700 bg-olive-50 border-olive-200 shadow-sm' : 'text-gray-400 border-transparent hover:bg-gray-100 hover:text-gray-600'} ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                  >
+                                    <ThumbsUp size={12} className={c.likes?.includes(currentUserId) ? 'fill-olive-600' : ''}/>
+                                    {c.likes?.length > 0 && <span>{c.likes.length}</span>}
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        );
+                      })}
+                      {commentItems.length === 0 && (
+                        <div className="text-center py-8 text-gray-400 text-xs bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                          まだコメントはありません
                         </div>
-                      );
-                    })}
-                    {formData.comments.length === 0 && (
-                      <div className="text-center py-8 text-gray-400 text-sm bg-gray-50 rounded-lg border border-dashed border-gray-300">
-                        まだコメントはありません
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
+                )
               )}
-            </div>
 
-            {/* ========================================== */}
-            {/* ★ 追加：AIアドバイザー チャットパネル（右側にスライドイン） */}
-            {/* ========================================== */}
-            {isAdvisorOpen && (
-              <div className="w-full md:w-80 lg:w-96 border-l border-olive-200 bg-white md:bg-olive-50 flex flex-col shrink-0 absolute md:relative right-0 inset-0 md:inset-y-0 md:right-0 z-30 shadow-2xl md:shadow-none animate-in slide-in-from-right-8 duration-300">
-                 {/* ヘッダー */}
-                 <div className="p-3 bg-olive-800 text-white flex items-center justify-between shrink-0">
+              {/* ===== 履歴タブ ===== */}
+              {rightPaneTab === 'history' && (
+                isNew ? (
+                  <div className="flex-1 flex items-center justify-center p-6 text-center text-sm text-gray-400">
+                    課題を作成すると更新履歴が記録されます。
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-y-auto p-3 bg-white">
+                    <div className="space-y-2">
+                      {historyItems.slice().reverse().map(h => {
+                        const authorName = h.authorName || h.author || 'System';
+                        const hMember = members.find(m => m.email === h.authorEmail || m.name === authorName);
+                        return (
+                          <div key={h.id} className="bg-olive-50/40 border border-olive-200 rounded-lg p-2.5 shadow-sm">
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span className="text-lg bg-white rounded-full w-7 h-7 flex items-center justify-center shadow-inner shrink-0">{hMember ? hMember.avatar : '📝'}</span>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-[11px] font-bold text-gray-700 truncate">{authorName}</span>
+                                <span className="text-[10px] text-gray-400">{h.createdAt}</span>
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-700">
+                              <MarkdownPreview text={h.text || ''} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {historyItems.length === 0 && (
+                        <div className="text-center py-8 text-gray-400 text-xs bg-gray-50 rounded-lg border border-dashed border-gray-300">
+                          まだ更新履歴はありません
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              )}
+
+              {/* ===== AI壁打ちタブ ===== */}
+              {rightPaneTab === 'ai' && (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* サブヘッダー（ドキュメント化／画像生成ボタン） */}
+                  <div className="px-3 py-2 bg-olive-800 text-white flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-2">
-                      <Bot size={16} />
-                      <span className="font-bold text-sm">タスクアドバイザー</span>
+                      <Bot size={14} />
+                      <span className="font-bold text-xs">タスクアドバイザー</span>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -1919,12 +2097,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       >
                         <ImageIcon size={12} /> 画像生成
                       </button>
-                      <button onClick={() => setIsAdvisorOpen(false)} className="text-olive-200 hover:text-white transition-colors bg-transparent p-1"><X size={18}/></button>
                     </div>
-                 </div>
-                 
-                 {/* メッセージエリア */}
-                 <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4">
+                  </div>
+
+                  {/* メッセージエリア */}
+                  <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4 bg-olive-50/30">
                     {advisorMessages.map((msg, idx) => (
                       <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         {msg.role === 'model' && (
@@ -1944,7 +2121,6 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         )}
                       </div>
                     ))}
-                    
                     {isAdvisorTyping && (
                       <div className="flex justify-start">
                         <div className="w-7 h-7 rounded-full bg-white border border-olive-200 flex items-center justify-center mr-2 shrink-0">
@@ -1958,98 +2134,98 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       </div>
                     )}
                     <div ref={advisorMessagesEndRef} />
-                 </div>
-                 
-                 {/* ★ 画像生成フォーム（ヘッダのボタンで開閉） */}
-                 {isGenImageOpen && (
-                   <div className="border-t border-olive-200 bg-white p-3 shrink-0">
-                     <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
-                       <ImageIcon size={12} /> AI 画像生成 (Imagen)
-                     </div>
-                     <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
-                       プロンプトを元に画像を生成し、「AI生成」フォルダに保存してコメント欄に貼り付けます。
-                     </p>
-                     <textarea
-                       value={imagePrompt}
-                       onChange={(e) => setImagePrompt(e.target.value)}
-                       placeholder="例：オリーブ畑の俯瞰イラスト、淡い水彩風 / シンプルなアイコン、青系の配色"
-                       disabled={isGeneratingImage}
-                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
-                       rows={3}
-                     />
-                     <div className="flex items-center justify-between gap-2 mt-2">
-                       <label className="text-[11px] text-gray-600 flex items-center gap-1">
-                         アスペクト比:
-                         <select
-                           value={imageAspect}
-                           onChange={(e) => setImageAspect(e.target.value)}
-                           disabled={isGeneratingImage}
-                           className="text-xs border border-gray-200 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 disabled:bg-gray-50"
-                         >
-                           <option value="1:1">1:1 (正方形)</option>
-                           <option value="16:9">16:9 (横長)</option>
-                           <option value="9:16">9:16 (縦長)</option>
-                           <option value="4:3">4:3</option>
-                           <option value="3:4">3:4</option>
-                         </select>
-                       </label>
-                       <div className="flex gap-2">
-                         <button
-                           onClick={() => { setIsGenImageOpen(false); setImagePrompt(''); }}
-                           disabled={isGeneratingImage}
-                           className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
-                         >キャンセル</button>
-                         <button
-                           onClick={handleGenerateImage}
-                           disabled={isGeneratingImage || !imagePrompt.trim()}
-                           className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
-                         >
-                           {isGeneratingImage && <Loader2 size={12} className="animate-spin" />}
-                           {isGeneratingImage ? '生成中...' : '生成して登録'}
-                         </button>
-                       </div>
-                     </div>
-                   </div>
-                 )}
+                  </div>
 
-                 {/* ★ ドキュメント化フォーム（ヘッダのボタンで開閉） */}
-                 {isGenAdvisorDocOpen && (
-                   <div className="border-t border-olive-200 bg-white p-3 shrink-0">
-                     <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
-                       <FileText size={12} /> Google Doc にまとめる
-                     </div>
-                     <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
-                       会話履歴と課題情報を元に、指定した形式で Google Doc を「AI生成」フォルダ内に作成し、リンクをコメント欄に追加します。
-                     </p>
-                     <textarea
-                       value={advisorDocFormat}
-                       onChange={(e) => setAdvisorDocFormat(e.target.value)}
-                       placeholder="例：議事録形式 / 要件定義書として / 進捗報告書として、観点A・Bを盛り込む 等"
-                       disabled={isGeneratingAdvisorDoc}
-                       className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
-                       rows={3}
-                     />
-                     <div className="flex justify-end gap-2 mt-2">
-                       <button
-                         onClick={() => { setIsGenAdvisorDocOpen(false); setAdvisorDocFormat(''); }}
-                         disabled={isGeneratingAdvisorDoc}
-                         className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
-                       >キャンセル</button>
-                       <button
-                         onClick={handleGenerateAdvisorDoc}
-                         disabled={isGeneratingAdvisorDoc || !advisorDocFormat.trim()}
-                         className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
-                       >
-                         {isGeneratingAdvisorDoc && <Loader2 size={12} className="animate-spin" />}
-                         {isGeneratingAdvisorDoc ? '生成中...' : '生成して登録'}
-                       </button>
-                     </div>
-                   </div>
-                 )}
+                  {/* 画像生成フォーム */}
+                  {isGenImageOpen && (
+                    <div className="border-t border-olive-200 bg-white p-3 shrink-0">
+                      <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
+                        <ImageIcon size={12} /> AI 画像生成 (Imagen)
+                      </div>
+                      <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
+                        プロンプトを元に画像を生成し、「AI生成」フォルダに保存してコメント欄に貼り付けます。
+                      </p>
+                      <textarea
+                        value={imagePrompt}
+                        onChange={(e) => setImagePrompt(e.target.value)}
+                        placeholder="例：オリーブ畑の俯瞰イラスト、淡い水彩風 / シンプルなアイコン、青系の配色"
+                        disabled={isGeneratingImage}
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
+                        rows={3}
+                      />
+                      <div className="flex items-center justify-between gap-2 mt-2">
+                        <label className="text-[11px] text-gray-600 flex items-center gap-1">
+                          アスペクト比:
+                          <select
+                            value={imageAspect}
+                            onChange={(e) => setImageAspect(e.target.value)}
+                            disabled={isGeneratingImage}
+                            className="text-xs border border-gray-200 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 disabled:bg-gray-50"
+                          >
+                            <option value="1:1">1:1 (正方形)</option>
+                            <option value="16:9">16:9 (横長)</option>
+                            <option value="9:16">9:16 (縦長)</option>
+                            <option value="4:3">4:3</option>
+                            <option value="3:4">3:4</option>
+                          </select>
+                        </label>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => { setIsGenImageOpen(false); setImagePrompt(''); }}
+                            disabled={isGeneratingImage}
+                            className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
+                          >キャンセル</button>
+                          <button
+                            onClick={handleGenerateImage}
+                            disabled={isGeneratingImage || !imagePrompt.trim()}
+                            className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
+                          >
+                            {isGeneratingImage && <Loader2 size={12} className="animate-spin" />}
+                            {isGeneratingImage ? '生成中...' : '生成して登録'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-                 {/* 入力エリア */}
-                 <div className="p-3 bg-white border-t border-olive-200 shrink-0">
-                   <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
+                  {/* ドキュメント化フォーム */}
+                  {isGenAdvisorDocOpen && (
+                    <div className="border-t border-olive-200 bg-white p-3 shrink-0">
+                      <div className="text-xs font-bold text-olive-700 mb-1.5 flex items-center gap-1">
+                        <FileText size={12} /> Google Doc にまとめる
+                      </div>
+                      <p className="text-[11px] text-gray-500 mb-1.5 leading-relaxed">
+                        会話履歴と課題情報を元に、指定した形式で Google Doc を「AI生成」フォルダ内に作成し、リンクをコメント欄に追加します。
+                      </p>
+                      <textarea
+                        value={advisorDocFormat}
+                        onChange={(e) => setAdvisorDocFormat(e.target.value)}
+                        placeholder="例：議事録形式 / 要件定義書として / 進捗報告書として、観点A・Bを盛り込む 等"
+                        disabled={isGeneratingAdvisorDoc}
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 resize-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 outline-none disabled:bg-gray-50"
+                        rows={3}
+                      />
+                      <div className="flex justify-end gap-2 mt-2">
+                        <button
+                          onClick={() => { setIsGenAdvisorDocOpen(false); setAdvisorDocFormat(''); }}
+                          disabled={isGeneratingAdvisorDoc}
+                          className="text-xs px-3 py-1.5 bg-white text-gray-600 border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-50"
+                        >キャンセル</button>
+                        <button
+                          onClick={handleGenerateAdvisorDoc}
+                          disabled={isGeneratingAdvisorDoc || !advisorDocFormat.trim()}
+                          className="text-xs px-3 py-1.5 bg-olive-600 text-white rounded font-bold hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
+                        >
+                          {isGeneratingAdvisorDoc && <Loader2 size={12} className="animate-spin" />}
+                          {isGeneratingAdvisorDoc ? '生成中...' : '生成して登録'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 入力エリア */}
+                  <div className="p-3 bg-white border-t border-olive-200 shrink-0">
+                    <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
                       <textarea
                         value={advisorInput}
                         onChange={(e) => setAdvisorInput(e.target.value)}
@@ -2065,10 +2241,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       >
                         <Send size={16} />
                       </button>
-                   </div>
-                 </div>
-              </div>
-            )}
+                    </div>
+                  </div>
+                </div>
+              )}
+                </>
+              )}
+            </div>
           </div>
 
             <div className="bg-olive-50 border-t border-olive-200 px-3 md:px-6 py-3 md:py-4 flex flex-col-reverse sm:flex-row sm:justify-between sm:items-center gap-2 md:gap-3 shrink-0">
