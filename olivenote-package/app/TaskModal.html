@@ -135,7 +135,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
-      const textareaRef = useRef(null);
+      const richEditorRef = useRef(null);
       const fileInputRef = useRef(null);
       
       const [errorMsg, setErrorMsg] = useState('');
@@ -154,69 +154,10 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         id: '', title: '', description: '', status: 'todo', priority: 'medium',
         type: taskTypes[0] || '', category: categories[0]?.name || '', parentId: '',
         cardColor: null, // ★ 要件1: カードカラー
-        startDate: getTodayStr(), dueDate: getTodayStr(), assigneeEmail: currentUser?.email || '', assigneeName: currentUser?.name || '',
+        startDate: '', dueDate: '', assigneeEmail: currentUser?.email || '', assigneeName: currentUser?.name || '',
         subAssignees: [], // ★ サブ担当
         comments: [], likes: [], attachments: [], updatedAt: ''
       });
-
-      const insertMarkdown = (prefix, suffix = '') => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-
-        const scrollTop = textarea.scrollTop;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-
-        textarea.focus();
-        textarea.setSelectionRange(start, end);
-
-        const selected = textarea.value.substring(start, end);
-        const insertText = prefix + selected + suffix;
-
-        document.execCommand('insertText', false, insertText);
-
-        const newCursorPos = selected ? start + prefix.length + selected.length : start + prefix.length;
-        setTimeout(() => {
-          textarea.setSelectionRange(newCursorPos, newCursorPos);
-          textarea.scrollTop = scrollTop;
-        }, 0);
-      };
-
-      // マークダウンリンク挿入: 選択中テキスト → [selected](URL) として URL 部分を選択状態にする
-      // 何も選択していなければ [リンクテキスト](URL) を挿入し、「リンクテキスト」を選択状態にする
-      const insertMarkdownLink = () => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-
-        const scrollTop = textarea.scrollTop;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-
-        textarea.focus();
-        textarea.setSelectionRange(start, end);
-
-        const selected = textarea.value.substring(start, end);
-        const hasSelection = selected.length > 0;
-        const linkText = hasSelection ? selected : 'リンクテキスト';
-        const urlPlaceholder = 'URL';
-        const insertText = `[${linkText}](${urlPlaceholder})`;
-
-        document.execCommand('insertText', false, insertText);
-
-        // 選択あり → 後段の URL を選択（即ペースト/入力で URL に化ける）
-        // 選択なし → 前段の「リンクテキスト」を選択（先に表示文字列を編集）
-        const selStart = hasSelection
-          ? start + 1 + linkText.length + 2          // `[text](` の直後
-          : start + 1;                                // `[` の直後
-        const selEnd = hasSelection
-          ? selStart + urlPlaceholder.length
-          : selStart + linkText.length;
-
-        setTimeout(() => {
-          textarea.setSelectionRange(selStart, selEnd);
-          textarea.scrollTop = scrollTop;
-        }, 0);
-      };
 
       // ============================================================
       // タスクの基本情報を A4 印刷用に新規ウィンドウへ書き出し
@@ -347,27 +288,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           return;
         }
         
-        const isStartOfLine = textareaRef.current && textareaRef.current.selectionStart === 0;
-        const prefix = isStartOfLine ? template : '\n\n' + template;
-        
-        insertMarkdown(prefix, '');
-      };
-
-      const handleCheckboxChange = (checkboxIndex, isChecked) => {
-        let currentIndex = 0;
-        const currentText = formData.description || '';
-        
-        const newText = currentText.replace(/([*+-]\s+\[)([ xX])(\])/g, (match, prefix, state, suffix) => {
-          if (currentIndex === checkboxIndex) {
-            currentIndex++;
-            const char = isChecked ? 'x' : ' ';
-            return prefix + char + suffix;
-          }
-          currentIndex++;
-          return match;
-        });
-        
-        setFormData(prev => ({ ...prev, description: newText }));
+        // Toast UI Editor 本体に直接テンプレートを差し込む（末尾に追記）。
+        // フォーカス位置に関わらず WYSIWYG / Markdown どちらのモードでも動く。
+        if (richEditorRef.current?.insertTemplate) {
+          richEditorRef.current.insertTemplate(template);
+        } else {
+          // ref がまだ初期化されていない極稀ケース：value 経由で直接差し込み
+          setFormData(prev => ({
+            ...prev,
+            description: (prev.description ? prev.description.replace(/\n*$/, '\n\n') : '') + template
+          }));
+        }
       };
 
       const [isParentMenuOpen, setIsParentMenuOpen] = useState(false);
@@ -647,7 +578,10 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       useEffect(() => {
         const handleUndo = (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-            const activeTag = document.activeElement?.tagName?.toLowerCase();
+            const active = document.activeElement;
+            // TipTap (ProseMirror) エディタ内部での Ctrl+Z はエディタ独自の undo に任せる
+            if (active?.closest && active.closest('.olive-rich-md-editor')) return;
+            const activeTag = active?.tagName?.toLowerCase();
             if (activeTag === 'input' || activeTag === 'textarea') {
               e.preventDefault();
               if (undoStack.current.length > 0) {
@@ -674,6 +608,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
           setFormData(prev => ({
             ...prev,
+            startDate: getTodayStr(),
+            dueDate: getTodayStr(),
             assigneeEmail: currentUser?.email || '',
             assigneeName: currentUser?.name || '',
             category: defaultCat,
@@ -682,7 +618,6 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           }));
         }
         setErrorMsg(''); setShowDeleteConfirm(false); setDeleteCommentId(null); setPendingNavigateTask(null); setShowDraftBanner(false); setIsDeletingTask(false);
-        setEditorMode(task ? 'preview' : 'write');
 
         // 既存タスクは自動保存に任せるため、古い draft は削除しバナーも出さない
         if (task) {
@@ -725,13 +660,10 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [commentText, setCommentText] = useState('');
       const commentTextareaRef = useRef(null);
       const commentMention = useMentionSuggest(members);
-      const descMention = useMentionSuggest(members);
       const [editingCommentId, setEditingCommentId] = useState(null);
       const [editingCommentText, setEditingCommentText] = useState('');
       const [isUploadingToComment, setIsUploadingToComment] = useState(false);
       const commentFileInputRef = useRef(null);
-
-      const [editorMode, setEditorMode] = useState(isNew ? 'write' : 'preview');
 
       const handleCommentChange = (e) => {
         setCommentText(e.target.value);
@@ -942,98 +874,18 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         });
       };
 
-      const handleKeyDown = (e) => {
-        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-
-        const textarea = e.target;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const value = formData.description || '';
-
-        if (e.key === 'Tab') {
-          e.preventDefault(); 
-
-          const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-          let lineEnd = value.indexOf('\n', end);
-          if (lineEnd === -1) lineEnd = value.length;
-
-          const selectedLinesText = value.substring(lineStart, lineEnd);
-          const lines = selectedLinesText.split('\n');
-
-          if (e.shiftKey) {
-            const unindentedLines = lines.map(line => line.replace(/^(\t| {1,2})/, ''));
-            const newText = unindentedLines.join('\n');
-            
-            const newValue = value.substring(0, lineStart) + newText + value.substring(lineEnd);
-            setFormData(prev => ({ ...prev, description: newValue }));
-            
-            setTimeout(() => {
-              const firstLineDiff = lines[0].length - unindentedLines[0].length;
-              const totalDiff = selectedLinesText.length - newText.length;
-              textarea.selectionStart = Math.max(lineStart, start - firstLineDiff);
-              textarea.selectionEnd = Math.max(lineStart, end - totalDiff);
-            }, 0);
-
-          } else {
-            const indentedLines = lines.map(line => '\t' + line);
-            const newText = indentedLines.join('\n');
-            
-            const newValue = value.substring(0, lineStart) + newText + value.substring(lineEnd);
-            setFormData(prev => ({ ...prev, description: newValue }));
-            
-            setTimeout(() => {
-              textarea.selectionStart = start + 1;
-              textarea.selectionEnd = end + lines.length;
-            }, 0);
-          }
-          return; 
-        }
-
-        if (e.key === 'Enter') {
-          const lastNewline = value.lastIndexOf('\n', start - 1);
-          const currentLine = value.substring(lastNewline + 1, start);
-          
-          const listMatch = currentLine.match(/^(\s*(?:[-*]\s+\[[ xX]\]|[-*]|\d+\.)\s+)(.*)$/);
-          
-          if (listMatch) {
-            e.preventDefault(); 
-            const scrollTop = textarea.scrollTop; 
-            
-            let prefix = listMatch[1]; 
-            const content = listMatch[2]; 
-            
-            if (content?.trim() === '') {
-              const newValue = value.substring(0, lastNewline + 1) + value.substring(start);
-              setFormData(prev => ({ ...prev, description: newValue }));
-              setTimeout(() => {
-                textarea.selectionStart = textarea.selectionEnd = lastNewline + 1;
-                textarea.scrollTop = scrollTop;
-              }, 0);
-            } else {
-              prefix = prefix.replace(/\[[xX]\]/, '[ ]');
-              prefix = prefix.replace(/^(\s*)(\d+)(\.\s+)/, (match, space, num, dot) => `${space}${parseInt(num) + 1}${dot}`);
-              
-              const newValue = value.substring(0, start) + '\n' + prefix + value.substring(start);
-              setFormData(prev => ({ ...prev, description: newValue }));
-              
-              setTimeout(() => {
-                const newPos = start + 1 + prefix.length;
-                textarea.selectionStart = textarea.selectionEnd = newPos;
-                textarea.scrollTop = scrollTop;
-              }, 0);
-            }
-          }
-        }
-      };
-
       const handleSave = async () => {
         setErrorMsg('');
         if (!formData.title?.trim()) return setErrorMsg('件名を入力してください。');
         if (formData.startDate > formData.dueDate) return setErrorMsg('開始日は期限日より前である必要があります。');
         if (formData.parentId) {
-          if (formData.id && tasks.some(t => t.parentId === formData.id)) return setErrorMsg('この課題にはすでに子課題が設定されています。（階層は2段階まで）');
+          if (formData.id && formData.parentId === formData.id) return setErrorMsg('親に自分自身は指定できません。');
           const selectedParent = tasks.find(t => t.id === formData.parentId);
-          if (selectedParent && selectedParent.parentId) return setErrorMsg('選択した親課題はすでに子課題です。孫課題は作成できません。（階層は2段階まで）');
+          if (!selectedParent) return setErrorMsg('選択した親課題が見つかりません。');
+          if (myDescendantIds.has(formData.parentId)) return setErrorMsg('親に自分の子孫は指定できません。');
+          if (parentDepth(selectedParent) + mySubtreeDepth > 3) {
+            return setErrorMsg('階層が3段を超えるため、この親課題は選べません。（最大3階層）');
+          }
         }
 
         const descText = formData.description || '';
@@ -1285,11 +1137,66 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       };
 
       const parentOptions = tasks.filter(t => t.id !== formData.id);
-      const filteredParentOptions = parentOptions.filter(t => 
-        t.id?.toLowerCase().includes(parentSearchQuery?.toLowerCase()) || 
+      const filteredParentOptions = parentOptions.filter(t =>
+        t.id?.toLowerCase().includes(parentSearchQuery?.toLowerCase()) ||
         (t.title || '')?.toLowerCase().includes(parentSearchQuery?.toLowerCase())
       );
       const childTasks = formData.id ? tasks.filter(t => t.parentId === formData.id) : [];
+
+      // ---- 3階層バリデーション用ヘルパー（孫まで OK、ひ孫 NG / 循環参照防止） ----
+      const taskMap = new Map(tasks.map(t => [t.id, t]));
+      // 候補タスクの祖先方向の深さ（自身を 1 とする）
+      const parentDepth = (t) => {
+        let d = 0;
+        let cur = t;
+        for (let i = 0; cur && i < 10; i++) {
+          d++;
+          cur = cur.parentId ? taskMap.get(cur.parentId) : null;
+        }
+        return d;
+      };
+      // 自分（formData）からの子孫の最大深さ（自分を 1 とする）
+      const mySubtreeDepth = (() => {
+        if (!formData.id) return 1;
+        let depth = 1;
+        let frontier = new Set([formData.id]);
+        for (let i = 0; i < 10; i++) {
+          const children = tasks.filter(t => t.parentId && frontier.has(t.parentId));
+          if (children.length === 0) break;
+          depth++;
+          frontier = new Set(children.map(c => c.id));
+        }
+        return depth;
+      })();
+      // 自分の子孫 ID 集合（循環参照防止用）
+      const myDescendantIds = (() => {
+        const result = new Set();
+        if (!formData.id) return result;
+        let frontier = new Set([formData.id]);
+        for (let i = 0; i < 10; i++) {
+          const children = tasks.filter(t => t.parentId && frontier.has(t.parentId));
+          if (children.length === 0) break;
+          children.forEach(c => result.add(c.id));
+          frontier = new Set(children.map(c => c.id));
+        }
+        return result;
+      })();
+      // 自分の祖先方向の深さ（自分を 1 とする）— 子課題追加可否の判定に使う
+      const myDepthFromRoot = (() => {
+        let d = 1;
+        let cur = formData.parentId ? taskMap.get(formData.parentId) : null;
+        for (let i = 0; cur && i < 10; i++) {
+          d++;
+          cur = cur.parentId ? taskMap.get(cur.parentId) : null;
+        }
+        return d;
+      })();
+      const canAddChildTask = myDepthFromRoot < 3;
+      // 親候補ごとの選択不可判定（バックエンド validateTaskParentHierarchy と同じロジック）
+      const isParentDisabled = (t) => {
+        if (myDescendantIds.has(t.id)) return true;
+        return parentDepth(t) + mySubtreeDepth > 3;
+      };
 
       const getLikeNames = (likesList) => {
         if (!likesList || likesList.length === 0) return 'いいね';
@@ -1466,86 +1373,27 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 <input type="text" name="title" value={formData.title} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded-lg p-2.5 text-lg md:text-xl font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-olive-500 disabled:opacity-50 shadow-sm" placeholder="課題のタイトルを入力" />
               </div>
 
-              {/* 2. 詳細 */}
+              {/* 2. 詳細（Toast UI Editor: WYSIWYG ベース。右上のボタンで MD 表示に切替可） */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-sm font-semibold text-olive-900 flex items-center gap-1"><AlignLeft size={16} /> 詳細</label>
-                  <div className="flex bg-gray-100 rounded p-0.5 border border-gray-200">
-                    <button onClick={() => setEditorMode('write')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'write' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-olive-600' : 'text-gray-500 hover:text-gray-700'}`}><Edit size={14}/> 編集</button>
-                    <button onClick={() => setEditorMode('preview')} className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded ${editorMode === 'preview' ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.1)] text-olive-600' : 'text-gray-500 hover:text-gray-700'}`}><Eye size={14}/> プレビュー</button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={insertCurrentTemplate}
+                    disabled={isDeletingTask}
+                    className="text-xs px-2.5 py-1 rounded border border-olive-300 bg-olive-50 text-olive-800 hover:bg-olive-100 flex items-center gap-1 font-bold disabled:opacity-50"
+                  >
+                    <FilePlus size={14}/> テンプレート挿入
+                  </button>
                 </div>
-                
-                {editorMode === 'write' ? (
-                  <div className="flex flex-col">
-                    <div className="flex flex-wrap gap-1 p-1.5 bg-gray-50 border border-gray-300 border-b-0 rounded-t-lg">
-                      <button type="button" onClick={() => insertMarkdown('- ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><List size={14}/> 箇条書き</button>
-                      <button type="button" onClick={() => insertMarkdown('1. ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ListOrdered size={14}/> 番号付き</button>
-                      <button type="button" onClick={() => insertMarkdown('- [ ] ')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><CheckSquare size={14}/> チェック</button>
-                      <button type="button" onClick={() => insertMarkdown('\n| タイトル1 | タイトル2 |\n|---|---|\n| 内容 | 内容 |\n')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><Grid size={14}/> 表</button>
-                      <button type="button" onClick={insertMarkdownLink} title="選択中の文字列をリンクに変換（URL 部分が自動選択されます）" className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><LinkIcon size={14}/> リンク</button>
-                      <button type="button" onClick={() => insertMarkdown('![コメント](', 'URL)')} className="p-1.5 text-gray-600 hover:bg-gray-200 rounded text-xs flex items-center gap-1"><ImageIcon size={14}/> 画像リンク</button>
-
-                      <button type="button" onClick={insertCurrentTemplate} className="p-1.5 text-olive-600 hover:bg-olive-100 rounded text-xs flex items-center gap-1 ml-auto font-bold transition-colors">
-                        <FilePlus size={14}/> テンプレート挿入
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <textarea
-                        ref={textareaRef}
-                        name="description"
-                        value={formData.description}
-                        onChange={(e) => {
-                          handleChange(e);
-                          descMention.detectMention(textareaRef, e.target.value, e.target.selectionStart);
-                        }}
-                        onKeyDown={(e) => {
-                          const setDesc = (newText) => setFormData(prev => ({ ...prev, description: newText }));
-                          if (descMention.handleKeyDown(e, textareaRef, formData.description, setDesc)) return;
-                          handleKeyDown(e);
-                        }}
-                        disabled={isDeletingTask}
-                        rows="10"
-                        placeholder="課題の詳細をマークダウンで記入...（「@」でメンション）"
-                        className="w-full border border-gray-300 rounded-b-lg rounded-t-none p-3 md:p-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-olive-500 font-mono disabled:opacity-50 shadow-sm resize-y min-h-[200px]"
-                      />
-                      {descMention.state.active && (
-                        <div
-                          className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
-                          style={{
-                            top: descMention.state.caret.top + descMention.state.caret.height + 4,
-                            left: descMention.state.caret.left
-                          }}
-                        >
-                          <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
-                            TabキーかEnterキーで選択
-                          </div>
-                          <ul className="max-h-48 overflow-y-auto">
-                            {descMention.state.members.map((m, idx) => (
-                              <li
-                                key={m.email}
-                                ref={(el) => {
-                                  if (el && idx === descMention.state.selectedIndex) {
-                                    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                                  }
-                                }}
-                                onClick={() => descMention.insertMention(textareaRef, formData.description, (newText) => setFormData(prev => ({ ...prev, description: newText })), m)}
-                                className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === descMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
-                              >
-                                <span>{m.avatar}</span> {m.name}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="w-full border border-gray-200 bg-gray-50 rounded-lg p-4 md:p-6 min-h-[200px] shadow-inner prose prose-sm max-w-none">
-                    <MarkdownPreview text={formData.description} onCheckboxChange={handleCheckboxChange} />
-                    {!formData.description && <span className="text-gray-400 text-sm">プレビューする内容がありません</span>}
-                  </div>
-                )}
+                <RichMarkdownEditor
+                  ref={richEditorRef}
+                  value={formData.description || ''}
+                  onChange={(md) => setFormData(prev => ({ ...prev, description: md }))}
+                  disabled={isDeletingTask}
+                  placeholder="課題の詳細をマークダウンで記入..."
+                  minHeight="240px"
+                />
               </div>
               
               {/* 3. 添付ファイル */}
@@ -1722,12 +1570,24 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             {filteredParentOptions.length === 0 ? (
                               <li className="px-3 py-4 text-sm text-center text-gray-400">見つかりません</li>
                             ) : (
-                              filteredParentOptions.map(t => (
-                                <li key={t.id} className={`px-3 py-2 text-sm hover:bg-olive-50 cursor-pointer truncate flex items-center ${formData.parentId === t.id ? 'bg-olive-100 text-olive-800 font-bold' : 'text-gray-700'}`} onClick={() => { setFormData(prev => ({ ...prev, parentId: t.id })); setIsParentMenuOpen(false); setParentSearchQuery(''); }} title={`${t.id} : ${t.title}`}>
-                                  <span className="font-mono text-[10px] text-gray-400 mr-2 shrink-0">{t.id}</span>
-                                  <span className="truncate">{t.title}</span>
-                                </li>
-                              ))
+                              filteredParentOptions.map(t => {
+                                const disabled = isParentDisabled(t);
+                                const baseCls = 'px-3 py-2 text-sm truncate flex items-center';
+                                const cls = disabled
+                                  ? `${baseCls} text-gray-300 bg-gray-50 cursor-not-allowed`
+                                  : `${baseCls} cursor-pointer hover:bg-olive-50 ${formData.parentId === t.id ? 'bg-olive-100 text-olive-800 font-bold' : 'text-gray-700'}`;
+                                return (
+                                  <li
+                                    key={t.id}
+                                    className={cls}
+                                    onClick={disabled ? undefined : () => { setFormData(prev => ({ ...prev, parentId: t.id })); setIsParentMenuOpen(false); setParentSearchQuery(''); }}
+                                    title={disabled ? '階層が3段を超えるか自分の子孫のため選択できません' : `${t.id} : ${t.title}`}
+                                  >
+                                    <span className={`font-mono text-[10px] mr-2 shrink-0 ${disabled ? 'text-gray-300' : 'text-gray-400'}`}>{t.id}</span>
+                                    <span className="truncate">{t.title}</span>
+                                  </li>
+                                );
+                              })
                             )}
                           </ul>
                         </div>
@@ -1737,20 +1597,35 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   {/* 開始日 */}
                   <div>
                     <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">開始日</label>
-                    <input type="date" name="startDate" value={formData.startDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm" />
+                    <SmartDateInput
+                      name="startDate"
+                      value={formData.startDate}
+                      onChange={handleChange}
+                      disabled={isDeletingTask}
+                      ariaLabel="開始日"
+                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm"
+                    />
                   </div>
                   {/* 期限日 */}
                   <div>
                     <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">期限日</label>
-                    <input type="date" name="dueDate" value={formData.dueDate} onChange={handleChange} disabled={isDeletingTask} className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm" />
+                    <SmartDateInput
+                      name="dueDate"
+                      value={formData.dueDate}
+                      onChange={handleChange}
+                      disabled={isDeletingTask}
+                      ariaLabel="期限日"
+                      className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none disabled:opacity-50 shadow-sm"
+                    />
                   </div>
                   {/* ★ 実施日と実施日数 */}
                   <div>
                     <label className="block text-xs font-semibold text-olive-700 uppercase mb-1">実施日</label>
-                    <input
-                      type="date"
+                    <SmartDateInput
+                      name="implementationDate"
                       value={formData.implementationDate || ''}
                       onChange={(e) => setFormData({...formData, implementationDate: e.target.value})}
+                      ariaLabel="実施日"
                       className="w-full border border-gray-300 rounded p-2 text-sm bg-white focus:ring-2 focus:ring-olive-500 outline-none shadow-sm"
                     />
                   </div>
@@ -1767,16 +1642,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 </div>
               </div>
 
-              {/* 子課題一覧（保存済み かつ 自身が親（=parentIdなし）の場合のみ） */}
-              {!isNew && !formData.parentId && (
+              {/* 子課題一覧（保存済み かつ「すでに子課題がある」または「自分が孫深さ未満で追加可能」） */}
+              {!isNew && (childTasks.length > 0 || canAddChildTask) && (
                 <div className="border border-olive-200 bg-olive-50/50 rounded-lg p-3 md:p-5 shadow-sm">
                   <div className="flex items-center justify-between mb-3 gap-2">
                     <h3 className="text-sm font-bold text-olive-800 flex items-center gap-2"><LinkIcon size={16}/> 子課題一覧 ({childTasks.length})</h3>
                     <button
                       onClick={handleAddChild}
-                      disabled={isSaving || isDeletingTask}
-                      title="この課題の子課題として新規作成"
-                      className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50"
+                      disabled={isSaving || isDeletingTask || !canAddChildTask}
+                      title={canAddChildTask ? "この課題の子課題として新規作成" : "孫課題（深さ3）にはこれ以上子課題を追加できません"}
+                      className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Plus size={14}/> 子課題を追加
                     </button>

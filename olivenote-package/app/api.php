@@ -71,6 +71,71 @@ function getGoogleAccessToken(
     return $json['access_token'];
 }
 
+/**
+ * description 内のインライン Base64 画像を AI 入力前に取り除く。
+ *
+ * フロント (RichMarkdownEditor) は画像挿入時に
+ *   [![alt](data:image/...;base64,xxxx)](https://drive.google.com/file/d/{id}/view)
+ * という形でリンク付きの base64 画像を埋め込む。これをそのまま AI に送ると
+ * 数MB の base64 文字列でトークンが浪費されるため、AI 系エンドポイントの
+ * 入力サニタイズとして使う。
+ *
+ *   [![alt](data:...)](href)   → [画像: alt](href)
+ *   ![alt](data:...)           → [画像: alt]
+ *
+ * alt が空なら "画像" 固定。href はそのまま残すので AI は「画像が貼られている」
+ * 事実と Drive 上のリンクを認識できる。
+ */
+function stripBase64Images(string $md): string {
+    if ($md === '') return $md;
+    if (strpos($md, 'data:image/') === false) return $md;
+
+    // PCRE のバックトラック爆発を避けるため、文字クラスを厳密に絞る:
+    //   - MIME サブタイプ: [a-zA-Z0-9.+-]+
+    //   - base64 本体    : [A-Za-z0-9+/=]+   ← ) を含まないため貪欲でも安全
+    // それでも数MB の base64 を扱うので、念のため pcre.backtrack_limit を一時的に引き上げる。
+    // preg_* が NULL を返した場合は元文字列を返してフェイルセーフ。
+
+    $oldBacktrack = ini_get('pcre.backtrack_limit');
+    $oldRecursion = ini_get('pcre.recursion_limit');
+    // 50MB の base64 を想定して大きめに（一時設定、関数抜けで戻す）
+    ini_set('pcre.backtrack_limit', '100000000');
+    ini_set('pcre.recursion_limit', '100000000');
+
+    try {
+        // リンク付き画像: [![alt](data:image/...;base64,...)](href)
+        $r1 = preg_replace_callback(
+            '/\[!\[([^\]]*)\]\(data:image\/[a-zA-Z0-9.+\-]+;base64,[A-Za-z0-9+\/=]+\)\]\(([^)]+)\)/',
+            function ($m) {
+                $alt = trim($m[1]) !== '' ? trim($m[1]) : '画像';
+                return '[画像: ' . $alt . '](' . $m[2] . ')';
+            },
+            $md
+        );
+        if ($r1 !== null && preg_last_error() === PREG_NO_ERROR) {
+            $md = $r1;
+        }
+
+        // リンクなし画像: ![alt](data:image/...;base64,...)
+        $r2 = preg_replace_callback(
+            '/!\[([^\]]*)\]\(data:image\/[a-zA-Z0-9.+\-]+;base64,[A-Za-z0-9+\/=]+\)/',
+            function ($m) {
+                $alt = trim($m[1]) !== '' ? trim($m[1]) : '画像';
+                return '[画像: ' . $alt . ']';
+            },
+            $md
+        );
+        if ($r2 !== null && preg_last_error() === PREG_NO_ERROR) {
+            $md = $r2;
+        }
+    } finally {
+        ini_set('pcre.backtrack_limit', $oldBacktrack);
+        ini_set('pcre.recursion_limit', $oldRecursion);
+    }
+
+    return $md;
+}
+
 function uploadFileToDrive(string $name, string $mimeType, string $binary, string $folderId, string $token): array {
     $meta     = json_encode(['name' => $name, 'parents' => [$folderId]]);
     $boundary = 'olivenote_' . uniqid();
@@ -168,6 +233,66 @@ function createGoogleDoc(string $title, string $folderId, string $token): array 
         throw new Exception('Drive APIエラー (createDoc): ' . $res);
     }
     return $json;
+}
+
+/**
+ * タスクの親子階層バリデーション。
+ * - 最大3階層（親→子→孫）まで許可
+ * - 親候補チェーンに自分が含まれる場合（循環参照）は NG
+ * - 自分の子孫の最大深さと親候補の階層深さの合計が 3 を超えれば NG
+ *
+ * @return string|null NG 理由（日本語）。OK の場合は null
+ */
+function validateTaskParentHierarchy(PDO $pdo, ?string $taskId, ?string $parentId): ?string {
+    if ($parentId === null || $parentId === '') return null;
+    if ($taskId !== null && $taskId === $parentId) {
+        return '親に自分自身は指定できません。';
+    }
+
+    // (1) 親候補自身は生きていることを必須
+    $liveStmt = $pdo->prepare("SELECT parent_id FROM tasks WHERE id = ? AND deleted_at IS NULL");
+    $liveStmt->execute([$parentId]);
+    $first = $liveStmt->fetch();
+    if (!$first) {
+        return '選択した親課題が見つかりません。';
+    }
+
+    // (2) 祖先チェーンを辿って深さを取得（親候補自身を 1 とする）。
+    //     削除済みも含めてカウントすることで「祖父が削除済みで深さが浅く見える」抜けを防ぐ。
+    $anyStmt = $pdo->prepare("SELECT parent_id FROM tasks WHERE id = ?");
+    $parentDepth = 1;
+    $cur = $first['parent_id'] ?: null;
+    for ($i = 0; $i < 10 && $cur !== null && $cur !== ''; $i++) {
+        // 循環参照: 親候補の祖先チェーンに自分自身が含まれていれば NG
+        if ($taskId !== null && $cur === $taskId) {
+            return '親に自分の子孫を指定することはできません。';
+        }
+        $parentDepth++;
+        $anyStmt->execute([$cur]);
+        $row = $anyStmt->fetch();
+        if (!$row) break;
+        $cur = $row['parent_id'] ?: null;
+    }
+
+    // (2) 自分の subtree の最大深さ（自分自身を 1 とする）
+    $subtreeDepth = 1;
+    if ($taskId !== null) {
+        $frontier = [$taskId];
+        for ($d = 0; $d < 10; $d++) {
+            $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+            $cstmt = $pdo->prepare("SELECT id FROM tasks WHERE parent_id IN ($placeholders) AND deleted_at IS NULL");
+            $cstmt->execute($frontier);
+            $children = $cstmt->fetchAll(PDO::FETCH_COLUMN);
+            if (!$children) break;
+            $subtreeDepth++;
+            $frontier = $children;
+        }
+    }
+
+    if ($parentDepth + $subtreeDepth > 3) {
+        return '階層が3段を超えるため、この親課題は選べません。（最大3階層）';
+    }
+    return null;
 }
 
 function createDriveFolder(string $title, string $parentId, string $token): array {
@@ -750,6 +875,17 @@ try {
 
             if ($isNew) {
                 $task['id'] = assignNextTaskId($pdo);
+            }
+
+            // 親子階層バリデーション（最大3階層、循環参照防止）
+            $hierErr = validateTaskParentHierarchy(
+                $pdo,
+                $isNew ? null : $task['id'],
+                !empty($task['parentId']) ? $task['parentId'] : null
+            );
+            if ($hierErr !== null) {
+                echo json_encode(['success' => false, 'error' => $hierErr]);
+                break;
             }
 
             $pdo->prepare("
@@ -1386,6 +1522,214 @@ try {
             break;
 
         // ============================================================
+        // findOrphanAttachments — ATTACHMENT_FOLDER_ID 配下で
+        //   tasks.description / tasks.attachments / comments.text の
+        //   いずれからも参照されていないファイルを抽出（dry-run 専用、削除はしない）
+        //   - 管理者のみ実行可
+        //   - description / comments の参照は Drive ファイル ID の正規表現抽出
+        //     （file/d/{id} / lh3.googleusercontent.com/d/{id} / uc?id={id} すべて見る）
+        // ============================================================
+        case 'findOrphanAttachments':
+            requireAdmin($pdo);
+
+            $token = getGoogleAccessToken('https://www.googleapis.com/auth/drive.readonly');
+
+            // 1) ATTACHMENT_FOLDER_ID 配下を全列挙（trashed=false のみ）
+            $driveFiles = [];
+            $pageToken  = null;
+            do {
+                $params = [
+                    'q'                         => "'" . ATTACHMENT_FOLDER_ID . "' in parents and trashed=false",
+                    'fields'                    => 'nextPageToken,files(id,name,size,mimeType,createdTime,modifiedTime,webViewLink,thumbnailLink)',
+                    'pageSize'                  => '1000',
+                    'supportsAllDrives'         => 'true',
+                    'includeItemsFromAllDrives' => 'true',
+                ];
+                if ($pageToken) $params['pageToken'] = $pageToken;
+                $url = 'https://www.googleapis.com/drive/v3/files?' . http_build_query($params);
+                $ch  = curl_init($url);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$token}"],
+                ]);
+                $res  = curl_exec($ch);
+                $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                if ($code !== 200) throw new Exception("Drive 一覧取得エラー (HTTP {$code}): " . $res);
+                $json = json_decode($res, true);
+                foreach ($json['files'] ?? [] as $f) {
+                    $driveFiles[$f['id']] = $f;
+                }
+                $pageToken = $json['nextPageToken'] ?? null;
+            } while ($pageToken);
+
+            // 2) DB の生存テキスト・JSON すべてから Drive ファイル ID を集約
+            //    deleted_at が set されている課題も「論理削除のため復元される可能性」を考慮して含める
+            $referencedIds = [];
+            $patterns      = [
+                '#drive\.google\.com/file/d/([a-zA-Z0-9_-]{15,})#',
+                '#lh3\.googleusercontent\.com/d/([a-zA-Z0-9_-]{15,})#',
+                '#drive\.google\.com/uc\?id=([a-zA-Z0-9_-]{15,})#',
+                '#drive\.google\.com/thumbnail\?id=([a-zA-Z0-9_-]{15,})#',
+            ];
+            $collectFromText = function (string $txt) use (&$referencedIds, $patterns) {
+                if ($txt === '') return;
+                foreach ($patterns as $p) {
+                    if (preg_match_all($p, $txt, $m)) {
+                        foreach ($m[1] as $id) $referencedIds[$id] = true;
+                    }
+                }
+            };
+
+            // tasks.description（ソフトデリート分も含む）
+            $stmt = $pdo->query("SELECT description FROM tasks WHERE description IS NOT NULL AND description <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $collectFromText((string)($row['description'] ?? ''));
+            }
+
+            // tasks.attachments（JSON 配列 [{id, name, url}, ...]）
+            $stmt = $pdo->query("SELECT attachments FROM tasks WHERE attachments IS NOT NULL AND attachments <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $arr = json_decode((string)$row['attachments'], true);
+                if (is_array($arr)) {
+                    foreach ($arr as $a) {
+                        if (is_array($a) && !empty($a['id'])) {
+                            $referencedIds[(string)$a['id']] = true;
+                        }
+                        // 念のため url からも抽出
+                        if (is_array($a) && !empty($a['url'])) {
+                            $collectFromText((string)$a['url']);
+                        }
+                    }
+                }
+            }
+
+            // comments.text
+            $stmt = $pdo->query("SELECT text FROM comments WHERE text IS NOT NULL AND text <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $collectFromText((string)($row['text'] ?? ''));
+            }
+
+            // 3) 孤児抽出
+            $orphans   = [];
+            $totalSize = 0;
+            foreach ($driveFiles as $id => $f) {
+                if (!isset($referencedIds[$id])) {
+                    $size      = isset($f['size']) ? (int)$f['size'] : 0;
+                    $totalSize += $size;
+                    $orphans[] = [
+                        'id'            => $id,
+                        'name'          => $f['name']         ?? '(無題)',
+                        'size'          => $size,
+                        'mimeType'      => $f['mimeType']     ?? '',
+                        'createdTime'   => $f['createdTime']  ?? '',
+                        'modifiedTime' => $f['modifiedTime'] ?? '',
+                        'webViewLink'   => $f['webViewLink']  ?? '',
+                        'thumbnailLink' => $f['thumbnailLink'] ?? '',
+                    ];
+                }
+            }
+
+            // 新しい順にソート（ユーザーがざっと見て安心して削除判断できるように）
+            usort($orphans, function ($a, $b) {
+                return strcmp($b['modifiedTime'], $a['modifiedTime']);
+            });
+
+            echo json_encode(['success' => true, 'data' => [
+                'driveTotal'           => count($driveFiles),
+                'referencedTotal'      => count($referencedIds),
+                'orphanCount'          => count($orphans),
+                'orphanTotalSizeBytes' => $totalSize,
+                'orphans'              => $orphans,
+            ]]);
+            break;
+
+        // ============================================================
+        // trashOrphanAttachments — クライアントから渡された ID 群を
+        //   再度孤児判定でフィルタしてから Drive ゴミ箱へ移動（trashed=true）
+        //   - 管理者のみ
+        //   - dry-run と execute の間に DB に新しい参照が増えた場合への safeguard として
+        //     execute 直前に再スキャンを実施し、参照に出現するようになった ID は除外する
+        //   - 30 日以内なら Google Drive ゴミ箱から復元可能（完全削除はしない）
+        // ============================================================
+        case 'trashOrphanAttachments':
+            requireAdmin($pdo);
+
+            $rawIds = $payload['ids'] ?? [];
+            if (!is_array($rawIds) || count($rawIds) === 0) {
+                echo json_encode(['success' => false, 'error' => '削除対象 ID が指定されていません']);
+                break;
+            }
+            // 文字列化して unique 化
+            $requestedIds = [];
+            foreach ($rawIds as $rid) {
+                $rid = (string)$rid;
+                if ($rid !== '') $requestedIds[$rid] = true;
+            }
+            if (count($requestedIds) === 0) {
+                echo json_encode(['success' => false, 'error' => '削除対象 ID が空です']);
+                break;
+            }
+
+            // ---- safeguard: 直前にもう一度参照スキャンを走らせて、現役参照に出現した ID は除外 ----
+            $referencedNow = [];
+            $patterns      = [
+                '#drive\.google\.com/file/d/([a-zA-Z0-9_-]{15,})#',
+                '#lh3\.googleusercontent\.com/d/([a-zA-Z0-9_-]{15,})#',
+                '#drive\.google\.com/uc\?id=([a-zA-Z0-9_-]{15,})#',
+                '#drive\.google\.com/thumbnail\?id=([a-zA-Z0-9_-]{15,})#',
+            ];
+            $collect = function (string $txt) use (&$referencedNow, $patterns) {
+                if ($txt === '') return;
+                foreach ($patterns as $p) {
+                    if (preg_match_all($p, $txt, $m)) {
+                        foreach ($m[1] as $id) $referencedNow[$id] = true;
+                    }
+                }
+            };
+            $stmt = $pdo->query("SELECT description FROM tasks WHERE description IS NOT NULL AND description <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $collect((string)$row['description']);
+            $stmt = $pdo->query("SELECT attachments FROM tasks WHERE attachments IS NOT NULL AND attachments <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $arr = json_decode((string)$row['attachments'], true);
+                if (is_array($arr)) foreach ($arr as $a) {
+                    if (is_array($a) && !empty($a['id'])) $referencedNow[(string)$a['id']] = true;
+                    if (is_array($a) && !empty($a['url'])) $collect((string)$a['url']);
+                }
+            }
+            $stmt = $pdo->query("SELECT text FROM comments WHERE text IS NOT NULL AND text <> ''");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $collect((string)$row['text']);
+
+            $token   = getGoogleAccessToken();
+            $trashed = [];
+            $failed  = [];
+            $skippedNowReferenced = [];
+
+            foreach (array_keys($requestedIds) as $fid) {
+                if (isset($referencedNow[$fid])) {
+                    // safeguard 発動: 再スキャンで参照が見つかった ID は触らない
+                    $skippedNowReferenced[] = $fid;
+                    continue;
+                }
+                try {
+                    trashDriveFile($fid, $token);
+                    $trashed[] = $fid;
+                } catch (Throwable $e) {
+                    $failed[] = ['id' => $fid, 'error' => $e->getMessage()];
+                }
+            }
+
+            echo json_encode(['success' => true, 'data' => [
+                'requestedCount'       => count($requestedIds),
+                'trashedCount'         => count($trashed),
+                'failedCount'          => count($failed),
+                'skippedNowReferencedCount' => count($skippedNowReferenced),
+                'failed'               => $failed,
+                'skippedNowReferenced' => $skippedNowReferenced,
+            ]]);
+            break;
+
+        // ============================================================
         // generateDocumentFromComment — テンプレートDocコピー＋プレースホルダ置換
         // ============================================================
         case 'generateDocumentFromComment':
@@ -1499,7 +1843,7 @@ try {
 
             $todayStr = date('Y年n月j日');
             $title    = $task['title'] ?? '';
-            $desc     = !empty($task['description']) ? $task['description'] : '(なし)';
+            $desc     = !empty($task['description']) ? stripBase64Images((string)$task['description']) : '(なし)';
 
             $taskInfo  = "【システム情報】\n現在の日付: {$todayStr}\n\n";
             $taskInfo .= "【メイン課題】\nタイトル: {$title}\n詳細: {$desc}\n\n";
@@ -1775,6 +2119,14 @@ PROMPT;
                     $cappedTasks = $totalCount > 300 ? array_slice($tasks, 0, 300) : $tasks;
                     $cappedNote  = $totalCount > 300 ? "（実際の表示件数 {$totalCount} 件のうち先頭 300 件を分析対象としています）\n" : '';
 
+                    // description のインライン Base64 画像は AI に渡さない（トークン浪費回避）
+                    foreach ($cappedTasks as &$_ct) {
+                        if (is_array($_ct) && isset($_ct['description'])) {
+                            $_ct['description'] = stripBase64Images((string)$_ct['description']);
+                        }
+                    }
+                    unset($_ct);
+
                     $tasksJson = json_encode($cappedTasks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     if ($tasksJson === false) $tasksJson = '[]';
 
@@ -1794,7 +2146,7 @@ PROMPT;
 
                 } elseif ($mode === 'advisor') {
                     $title  = $taskContext['title']       ?? '未設定';
-                    $desc   = $taskContext['description'] ?? '未設定';
+                    $desc   = stripBase64Images((string)($taskContext['description'] ?? '未設定'));
                     $status = $taskContext['status']      ?? '未設定';
                     $due    = $taskContext['dueDate']     ?? '未設定';
                     if ($desc === '') $desc = '未設定';
@@ -1860,7 +2212,7 @@ PROMPT;
 
                 $taskId    = (string)($task['id']            ?? '');
                 $title     = (string)($task['title']         ?? '無題');
-                $desc      = (string)($task['description']   ?? '');
+                $desc      = stripBase64Images((string)($task['description'] ?? ''));
                 $status    = (string)($task['status']        ?? '');
                 $due       = (string)($task['dueDate']       ?? '');
                 $priority  = (string)($task['priority']      ?? '');
@@ -2165,7 +2517,8 @@ PROMPT;
                     $existingForCtx[] = [
                         'id'          => $id,
                         'title'       => $title,
-                        'description' => mb_substr((string)($t['description'] ?? ''), 0, 200),
+                        // インライン Base64 画像を先に剥がしてから 200 字に切る（生 base64 で 200 字埋まる事故を防ぐ）
+                        'description' => mb_substr(stripBase64Images((string)($t['description'] ?? '')), 0, 200),
                         'category'    => (string)($t['category'] ?? ''),
                         'type'        => (string)($t['type'] ?? ''),
                         'dueDate'     => (string)($t['dueDate'] ?? ''),

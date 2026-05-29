@@ -2,6 +2,36 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
   const [isCompact, setIsCompact] = useState(false);
   const [dragOverTaskId, setDragOverTaskId] = useState(null);
 
+  // ★ 折り畳み状態（localStorage 永続化）
+  const [collapsedParents, setCollapsedParents] = useState(() => {
+    try {
+      const stored = localStorage.getItem('gantt-collapsed-parents');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch (e) { return new Set(); }
+  });
+  const [parentsOnly, setParentsOnly] = useState(() => {
+    try { return localStorage.getItem('gantt-parents-only') === 'true'; }
+    catch (e) { return false; }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gantt-collapsed-parents', JSON.stringify([...collapsedParents]));
+    } catch (e) {}
+  }, [collapsedParents]);
+  useEffect(() => {
+    try { localStorage.setItem('gantt-parents-only', String(parentsOnly)); }
+    catch (e) {}
+  }, [parentsOnly]);
+
+  const toggleCollapse = (id) => {
+    setCollapsedParents(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   // ★ スマホ判定（768px未満ならガントの代わりにリスト表示）
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' && window.innerWidth < 768
@@ -17,16 +47,20 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const startDate = new Date(today);
+    let startDate = new Date(today);
     startDate.setDate(today.getDate() - 14);
-
     let maxDate = new Date(today.getFullYear(), today.getMonth() + 2, 0);
     tasks.forEach(t => {
+      if (t.startDate) {
+        const d = new Date(t.startDate);
+        if (d < startDate) startDate = new Date(d);
+      }
       if (t.dueDate) {
         const d = new Date(t.dueDate);
         if (d > maxDate) maxDate = new Date(d);
       }
     });
+    startDate.setDate(startDate.getDate() - 7);
     maxDate.setDate(maxDate.getDate() + 7);
 
     const diffDays = Math.ceil((maxDate - startDate) / (1000 * 60 * 60 * 24));
@@ -45,16 +79,49 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
     return { days: dArray, months: mArray };
   }, [tasks]);
 
-  const structuredTasks = useMemo(() => {
-    const roots = tasks.filter(t => !t.parentId || !tasks.find(pt => pt.id === t.parentId));
-    const result = [];
-    roots.forEach(root => {
-      result.push(root);
-      const children = tasks.filter(t => t.parentId === root.id);
-      result.push(...children);
+  // ★ 階層マップ
+  const { byParent, taskById } = useMemo(() => {
+    const idMap = new Map(tasks.map(t => [t.id, t]));
+    const pMap = new Map();
+    tasks.forEach(t => {
+      const pid = (t.parentId && idMap.has(t.parentId)) ? t.parentId : null;
+      if (!pMap.has(pid)) pMap.set(pid, []);
+      pMap.get(pid).push(t);
     });
-    return result;
+    return { byParent: pMap, taskById: idMap };
   }, [tasks]);
+
+  // ★ 行表示リスト（depth 0-2）
+  const visibleRows = useMemo(() => {
+    const rows = [];
+    const walk = (parentId, depth) => {
+      const children = byParent.get(parentId) || [];
+      for (const child of children) {
+        rows.push({ task: child, depth });
+        if (depth >= 2) continue; // 4階層以上は無視
+        const collapsed = (parentsOnly && depth === 0) || collapsedParents.has(child.id);
+        if (collapsed) continue;
+        walk(child.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return rows;
+  }, [byParent, collapsedParents, parentsOnly]);
+
+  // ★ 折り畳み時のサブバー並び（凍結ソート）
+  // collapsedParents / parentsOnly / タスクの追加削除のみで再計算。ドラッグの単発更新では再ソートしない。
+  const descendantOrder = useMemo(() => {
+    const map = new Map();
+    byParent.forEach((children, parentId) => {
+      const sorted = children
+        .filter(c => c.startDate && c.dueDate)
+        .slice()
+        .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+      map.set(parentId, sorted.map(c => c.id));
+    });
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapsedParents, parentsOnly, tasks.length]);
 
   const todayStr = getTodayStr();
   const [dragState, setDragState] = useState(null);
@@ -75,25 +142,25 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
           スマホではガントチャートの代わりにリスト表示で表示しています
         </div>
         <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
-          {structuredTasks.length === 0 && (
+          {visibleRows.length === 0 && (
             <div className="p-8 text-center text-sm text-gray-400">該当する課題はありません</div>
           )}
-          {structuredTasks.map(task => {
+          {visibleRows.map(({ task, depth }) => {
             const statusConfig = STATUSES.find(s => s.id === task.status);
-            const isChild = !!task.parentId && tasks.some(t => t.id === task.parentId);
             const member = members.find(m => m.email === task.assigneeEmail);
             const catObj = categories.find(c => c.name === task.category);
             const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
             const isOverdue = task.dueDate && task.dueDate < todayStr && task.status !== 'done';
+            const indentPl = depth === 2 ? 'pl-14' : depth === 1 ? 'pl-8' : '';
 
             return (
               <button
                 key={task.id}
                 onClick={() => onTaskClick(task)}
-                className={`w-full text-left p-3 hover:bg-olive-50/40 transition-colors active:bg-olive-100/50 ${isChild ? 'pl-8 bg-gray-50/50' : ''}`}
+                className={`w-full text-left p-3 hover:bg-olive-50/40 transition-colors active:bg-olive-100/50 ${depth > 0 ? 'bg-gray-50/50' : ''} ${indentPl}`}
               >
                 <div className="flex items-start gap-2">
-                  {isChild && <CornerDownRight size={14} className="text-gray-300 mt-0.5 -ml-5 shrink-0" />}
+                  {depth > 0 && <CornerDownRight size={14} className="text-gray-300 mt-0.5 -ml-5 shrink-0" />}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap mb-1">
                       <span className="text-[10px] text-gray-400 font-mono">{task.id?.replace('TASK-','')}</span>
@@ -210,7 +277,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
       const changes = [];
       if (task.startDate !== newStartDate) changes.push(`・開始日を「${task.startDate || '未設定'}」から「${newStartDate || '未設定'}」に変更`);
       if (task.dueDate !== newDueDate) changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${newDueDate || '未設定'}」に変更`);
-      
+
       if (changes.length > 0) {
         const historyComment = {
           id: Date.now().toString() + '_history',
@@ -231,15 +298,76 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
     setDragState(null);
   };
 
+  // ★ 折り畳み時に親バー直下に積むサブバー群を計算
+  const computeSubBars = (task, depth) => {
+    const out = [];
+    let y = 4; // 親バー直下の余白
+    const isParentCollapsed = depth === 0 && (parentsOnly || collapsedParents.has(task.id));
+    const isChildCollapsed  = depth === 1 && collapsedParents.has(task.id);
+
+    if (isParentCollapsed) {
+      const childIds = descendantOrder.get(task.id) || [];
+      childIds.forEach(childId => {
+        const child = taskById.get(childId);
+        if (!child) return;
+        out.push({ task: child, y, height: 8, type: 'child' });
+        y += 8 + 1;
+        const gcIds = descendantOrder.get(child.id) || [];
+        gcIds.forEach(gcId => {
+          const gc = taskById.get(gcId);
+          if (!gc) return;
+          out.push({ task: gc, y, height: 4, type: 'grandchild', parentTitle: child.title });
+          y += 4 + 1;
+        });
+        y += 2; // 子ブロック間のギャップ
+      });
+    } else if (isChildCollapsed) {
+      const gcIds = descendantOrder.get(task.id) || [];
+      gcIds.forEach(gcId => {
+        const gc = taskById.get(gcId);
+        if (!gc) return;
+        out.push({ task: gc, y, height: 4, type: 'grandchild' });
+        y += 4 + 1;
+      });
+    }
+
+    return { subBars: out, extraHeight: out.length > 0 ? y + 2 : 0 };
+  };
+
+  const renderBarPos = (taskOrSub, isSelfDragging) => {
+    const displayStart = isSelfDragging ? dragState.currentStartDate : taskOrSub.startDate;
+    const displayEnd   = isSelfDragging ? dragState.currentDueDate   : taskOrSub.dueDate;
+    if (!displayStart || !displayEnd) return null;
+    const dStart = new Date(displayStart);
+    const dEnd = new Date(displayEnd);
+    const gridStart = days[0];
+    const diffStart = Math.round((dStart - gridStart) / (1000 * 60 * 60 * 24));
+    const diffEnd = Math.round((dEnd - gridStart) / (1000 * 60 * 60 * 24));
+    const left = diffStart * 32;
+    const width = (diffEnd - diffStart + 1) * 32;
+    if (width <= 0) return null;
+    return { left, width };
+  };
+
   return (
     <div className="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col overflow-hidden relative isolate">
-      <button
-        onClick={() => setIsCompact(!isCompact)}
-        className="absolute top-2 left-2 z-[90] bg-white border border-gray-300 text-xs font-bold text-gray-600 px-2 py-1 rounded shadow-sm hover:bg-gray-50 flex items-center gap-1"
-      >
-        {isCompact ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-        {isCompact ? "詳細を表示" : "コンパクト"}
-      </button>
+      <div className="absolute top-2 left-2 z-[90] flex items-center gap-1">
+        <button
+          onClick={() => setIsCompact(!isCompact)}
+          className="bg-white border border-gray-300 text-xs font-bold text-gray-600 px-2 py-1 rounded shadow-sm hover:bg-gray-50 flex items-center gap-1"
+        >
+          {isCompact ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          {isCompact ? "詳細を表示" : "コンパクト"}
+        </button>
+        <button
+          onClick={() => setParentsOnly(p => !p)}
+          className={`border text-xs font-bold px-2 py-1 rounded shadow-sm flex items-center gap-1 ${parentsOnly ? 'bg-olive-600 border-olive-700 text-white hover:bg-olive-700' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+          title="親のみ表示：子・孫を行として出さず、親バーの下に細い棒線で集約"
+        >
+          {parentsOnly ? <Minimize2 size={14} /> : <Rows size={14} />}
+          {parentsOnly ? "親のみ表示中" : "親のみ表示"}
+        </button>
+      </div>
 
       {/* 状態の凡例（右上にフローティング表示） */}
       <div className="absolute top-2 right-2 z-[90] flex items-center gap-2 bg-white/95 backdrop-blur-sm border border-gray-300 rounded-lg px-2.5 py-1 shadow-sm">
@@ -258,7 +386,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
             <div className="w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-gray-50 border-r border-gray-200 flex flex-col justify-end p-2 pb-1 text-xs font-bold text-gray-600 shadow-[2px_0_4px_rgba(0,0,0,0.02)] pl-24">
               課題名 / 担当者
             </div>
-            
+
             <div className="flex flex-col">
               <div className="flex border-b border-gray-200">
                 {months.map((m, idx) => (
@@ -271,9 +399,9 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                 {days.map((d, idx) => {
                   const dateStr = d.toLocaleDateString('sv-SE');
                   const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-                  const isHoliday = holidays && holidays.includes(dateStr); 
+                  const isHoliday = holidays && holidays.includes(dateStr);
                   const isOffDay = isWeekend || isHoliday;
-                  
+
                   return (
                     <div key={idx} className={`w-8 text-[10px] text-center border-r border-gray-200 py-1 flex flex-col items-center justify-center shrink-0 ${dateStr === todayStr ? 'bg-olive-100 font-bold text-olive-800' : isOffDay ? 'bg-gray-200/70 text-gray-400' : 'text-gray-700'}`}>
                       <span className="font-bold">{d.getDate()}</span>
@@ -285,17 +413,27 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
             </div>
           </div>
 
-          {structuredTasks.map(task => {
+          {visibleRows.map(({ task, depth }) => {
             const statusConfig = STATUSES.find(s => s.id === task.status);
-            const isChild = !!task.parentId && tasks.some(t => t.id === task.parentId);
             const member = members.find(m => m.email === task.assigneeEmail);
             const catObj = categories.find(c => c.name === task.category);
             const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
+            const hasChildren = (byParent.get(task.id) || []).length > 0;
+            const isThisCollapsed = (depth === 0 && parentsOnly) || collapsedParents.has(task.id);
+            const showChevron = hasChildren && depth < 2 && !(parentsOnly && depth === 0);
+            const { subBars, extraHeight } = computeSubBars(task, depth);
+            const baseRowHeight = isCompact ? 32 : 48;
+            const rowHeight = baseRowHeight + extraHeight;
+
+            const indentClass =
+              depth === 2 ? 'pl-14 py-2 pr-2'
+              : depth === 1 ? 'pl-8 py-2 pr-2'
+              : 'p-2';
 
             return (
-              <div key={task.id} className="flex border-b border-gray-100 hover:bg-olive-50/40 group transition-colors">
-                <div 
-                  draggable 
+              <div key={task.id} className={`flex hover:bg-olive-50/40 group transition-colors ${parentsOnly ? 'border-b-2 border-olive-200/70 bg-gradient-to-b from-white to-olive-50/20' : 'border-b border-gray-100'}`}>
+                <div
+                  draggable
                   onDragStart={(e) => { e.dataTransfer.setData('taskId', task.id); e.dataTransfer.effectAllowed = 'move'; }}
                   onDragOver={(e) => { e.preventDefault(); setDragOverTaskId(task.id); }}
                   onDragLeave={() => setDragOverTaskId(null)}
@@ -305,74 +443,102 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                     const draggedTaskId = e.dataTransfer.getData('taskId');
                     if (draggedTaskId && draggedTaskId !== task.id) onReorderTask(draggedTaskId, task.id);
                   }}
-                  className={`w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-white group-hover:bg-olive-50/40 border-r border-gray-200 flex flex-col justify-center cursor-pointer transition-colors relative shadow-[2px_0_4px_rgba(0,0,0,0.02)] shrink-0 ${isChild ? 'pl-8 py-2 pr-2' : 'p-2'} ${dragOverTaskId === task.id ? 'border-t-2 border-t-olive-500' : ''}`} 
-                  onClick={() => onTaskClick(task)}
+                  className={`w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-white group-hover:bg-olive-50/40 border-r border-gray-200 flex flex-col justify-center cursor-pointer transition-colors relative shadow-[2px_0_4px_rgba(0,0,0,0.02)] shrink-0 ${indentClass} ${dragOverTaskId === task.id ? 'border-t-2 border-t-olive-500' : ''}`}
+                  style={{ minHeight: rowHeight + 'px' }}
+                  onClick={(e) => {
+                    if (e.target.closest && e.target.closest('[data-chevron]')) return;
+                    onTaskClick(task);
+                  }}
                 >
-                  {isChild && <CornerDownRight size={14} className="absolute left-3 top-3 text-gray-300" />}
-                  <div className="flex items-center gap-2">
+                  {depth > 0 && <CornerDownRight size={14} className={`absolute ${depth === 2 ? 'left-9' : 'left-3'} top-3 text-gray-300`} />}
+                  {showChevron && (
+                    <button
+                      data-chevron="1"
+                      onClick={(e) => { e.stopPropagation(); toggleCollapse(task.id); }}
+                      className={`absolute ${depth === 0 ? 'left-1' : 'left-6'} top-1/2 -translate-y-1/2 w-5 h-5 rounded hover:bg-gray-100 flex items-center justify-center text-gray-500 hover:text-gray-700`}
+                      title={isThisCollapsed ? '展開' : '折り畳む'}
+                    >
+                      {isThisCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                  )}
+                  <div className={`flex items-center gap-2 ${showChevron ? 'pl-5' : ''}`}>
                     <span className="text-[10px] text-gray-400 font-mono w-11 flex-shrink-0">{task.id.replace('TASK-','')}</span>
                     <span className="text-sm font-medium truncate text-gray-800 group-hover:text-olive-600">{task.title}</span>
                   </div>
                   {!isCompact && (
-                    <div className="flex items-center gap-1.5 mt-1 pl-13">
+                    <div className={`flex items-center gap-1.5 mt-1 ${showChevron ? 'pl-5' : ''}`}>
                       <span className="text-xs text-gray-500 flex items-center gap-1">{member?.avatar} <span className="truncate max-w-[60px]">{task.assigneeName}</span></span>
                       <span className={`text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-600 shrink-0`}>{statusConfig?.label}</span>
                       {catColor && <span className={`text-[9px] px-1 py-0.5 rounded font-bold border ${catColor.bg} ${catColor.border} ${catColor.text} truncate max-w-[60px]`}>{task.category}</span>}
                     </div>
                   )}
                 </div>
-                
+
                 <div className="flex relative w-max overflow-hidden">
                   {days.map((d, idx) => {
                     const dateStr = d.toLocaleDateString('sv-SE');
                     const isOffDay = d.getDay() === 0 || d.getDay() === 6 || (holidays && holidays.includes(dateStr));
-                    return <div key={idx} className={`w-8 ${isCompact ? 'h-8' : 'h-12'} border-r border-gray-100 shrink-0 ${isOffDay ? 'bg-gray-100/50' : ''}`}></div>;
+                    return <div key={idx} className={`w-8 border-r border-gray-100 shrink-0 ${isOffDay ? 'bg-gray-100/50' : ''}`} style={{ height: rowHeight + 'px' }}></div>;
                   })}
-                  
+
                   {days.map((d, idx) => d.toLocaleDateString('sv-SE') === todayStr ? <div key={`today-${idx}`} className="absolute top-0 bottom-0 border-l-2 border-red-300 z-0 pointer-events-none" style={{ left: idx * 32 + 15 }}></div> : null)}
-                  
-                  {/* ★ 通常の期間バー */}
+
+                  {/* ★ メインバー */}
                   {(() => {
-                    const displayStart = (dragState && dragState.taskId === task.id) ? dragState.currentStartDate : task.startDate;
-                    const displayEnd = (dragState && dragState.taskId === task.id) ? dragState.currentDueDate : task.dueDate;
-                    if (!displayStart || !displayEnd) return null;
-                    
-                    const dStart = new Date(displayStart);
-                    const dEnd = new Date(displayEnd);
-                    const gridStart = days[0];
-                    const diffStart = Math.round((dStart - gridStart) / (1000 * 60 * 60 * 24));
-                    const diffEnd = Math.round((dEnd - gridStart) / (1000 * 60 * 60 * 24));
-                    
-                    const left = diffStart * 32;
-                    const width = (diffEnd - diffStart + 1) * 32;
-                    if (width <= 0) return null;
-                    
+                    const isSelf = dragState && dragState.taskId === task.id;
+                    const pos = renderBarPos(task, isSelf);
+                    if (!pos) return null;
+
                     return (
-                      <div 
-                        className={`absolute ${isCompact ? 'top-1' : 'top-3'} h-6 rounded shadow-[0_1px_2px_rgba(0,0,0,0.3)] flex items-center group/bar ${statusConfig?.barColor || 'bg-gray-400'} ${dragState?.taskId === task.id ? 'opacity-80 z-50 shadow-md transition-none' : 'transition-all duration-200'}`} 
-                        style={{ left: left, width: width, zIndex: 50 }}
+                      <div
+                        className={`absolute ${isCompact ? 'top-1' : 'top-3'} h-6 rounded shadow-[0_1px_2px_rgba(0,0,0,0.3)] flex items-center group/bar ${statusConfig?.barColor || 'bg-gray-400'} ${isSelf ? 'opacity-80 z-50 shadow-md transition-none' : 'transition-all duration-200'}`}
+                        style={{ left: pos.left, width: pos.width, zIndex: 50 }}
                       >
-                        <div 
-                          className="absolute inset-x-2 inset-y-0 cursor-grab active:cursor-grabbing hover:bg-white/20 transition-colors" 
-                          onPointerDown={(e) => handlePointerDown(e, task, 'move')} 
-                          onPointerMove={handlePointerMove} 
+                        <div
+                          className="absolute inset-x-2 inset-y-0 cursor-grab active:cursor-grabbing hover:bg-white/20 transition-colors"
+                          onPointerDown={(e) => handlePointerDown(e, task, 'move')}
+                          onPointerMove={handlePointerMove}
                           onPointerUp={handlePointerUp}
                         ></div>
-                        <div 
-                          className="absolute left-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-l flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity" 
-                          onPointerDown={(e) => handlePointerDown(e, task, 'start')} 
-                          onPointerMove={handlePointerMove} 
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-l flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity"
+                          onPointerDown={(e) => handlePointerDown(e, task, 'start')}
+                          onPointerMove={handlePointerMove}
                           onPointerUp={handlePointerUp}
                         ></div>
-                        <div 
-                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-r flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity" 
-                          onPointerDown={(e) => handlePointerDown(e, task, 'end')} 
-                          onPointerMove={handlePointerMove} 
+                        <div
+                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize hover:bg-black/20 rounded-r flex items-center justify-center opacity-0 group-hover/bar:opacity-100 transition-opacity"
+                          onPointerDown={(e) => handlePointerDown(e, task, 'end')}
+                          onPointerMove={handlePointerMove}
                           onPointerUp={handlePointerUp}
                         ></div>
                       </div>
                     );
                   })()}
+
+                  {/* ★ 折り畳み時のサブバー（子=1/3, 孫=1/6） */}
+                  {subBars.map((sb, sIdx) => {
+                    const isSelf = dragState && dragState.taskId === sb.task.id;
+                    const pos = renderBarPos(sb.task, isSelf);
+                    if (!pos) return null;
+                    const subStatus = STATUSES.find(s => s.id === sb.task.status);
+                    const topPos = (isCompact ? 4 : 12) + 24 + 4 + sb.y;
+                    const tooltip = sb.type === 'child'
+                      ? `子課題: ${sb.task.title}`
+                      : `孫課題: ${sb.task.title}${sb.parentTitle ? `（親: ${sb.parentTitle}）` : ''}`;
+
+                    return (
+                      <div
+                        key={`sb-${sb.task.id}-${sIdx}`}
+                        className={`absolute rounded-sm shadow-sm ${subStatus?.barColor || 'bg-gray-400'} ${isSelf ? 'opacity-80 z-[55] shadow-md transition-none' : 'transition-all duration-200'} cursor-grab active:cursor-grabbing hover:brightness-110`}
+                        style={{ left: pos.left, width: pos.width, top: topPos + 'px', height: sb.height + 'px', zIndex: 45 }}
+                        title={tooltip}
+                        onPointerDown={(e) => handlePointerDown(e, sb.task, 'move')}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                      ></div>
+                    );
+                  })}
 
                   {/* ★ 実施日のマーク（バーよりも前面の z-[60] で描画） */}
                   {(() => {
@@ -380,14 +546,14 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                     const dImpl = new Date(task.implementationDate);
                     const gridStart = days[0];
                     const diffImpl = Math.round((dImpl - gridStart) / (1000 * 60 * 60 * 24));
-                    
+
                     if (diffImpl < 0 || diffImpl >= days.length) return null;
-                    
-                    const left = diffImpl * 32; 
+
+                    const left = diffImpl * 32;
                     const daysCount = task.implementationDays || 1;
-                    
+
                     return (
-                      <div 
+                      <div
                         className={`absolute ${isCompact ? 'top-1' : 'top-3'} z-[60] w-8 h-6 flex items-center justify-center pointer-events-none`}
                         style={{ left: left }}
                         title={`実施日: ${task.implementationDate} (${daysCount}日間)`}
