@@ -698,21 +698,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       }, [formData.comments, currentUserId, isNew, formData.id]);
 
       const [commentText, setCommentText] = useState('');
-      const commentTextareaRef = useRef(null);
-      const commentMention = useMentionSuggest(members);
+      // ★ コメント欄は TaskModal 詳細欄 / Wiki と同じ TipTap (RichMarkdownEditor) を使う。
+      //    旧 textarea ベースの mention 検出（@入力中サジェスト）は、TipTap がエディタ内 selection を
+      //    持つため textarea API で位置検出できない。メンション挿入はボタンクリック側で
+      //    editor.insertAtCursor を呼ぶ運用に変更している。
+      const commentEditorRef = useRef(null);
+      const editingCommentEditorRef = useRef(null);
       const [editingCommentId, setEditingCommentId] = useState(null);
       const [editingCommentText, setEditingCommentText] = useState('');
       const [isUploadingToComment, setIsUploadingToComment] = useState(false);
       const commentFileInputRef = useRef(null);
-
-      const handleCommentChange = (e) => {
-        setCommentText(e.target.value);
-        commentMention.detectMention(commentTextareaRef, e.target.value, e.target.selectionStart);
-      };
-
-      const handleCommentKeyDown = (e) => {
-        commentMention.handleKeyDown(e, commentTextareaRef, commentText, setCommentText);
-      };
 
       const isDirty = useMemo(() => {
         if (task) {
@@ -1087,7 +1082,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
 
         setCommentText('');
-        commentMention.reset();
+        // RichMarkdownEditor は親 value 変化に追従するが、editor.isFocused 中は setContent をスキップする。
+        // 投稿直後はフォーカス中なので、ref 経由で確実に空に戻す。
+        commentEditorRef.current?.setMarkdown('');
 
         try {
           const saved = await api.saveComment(newComment);
@@ -1148,15 +1145,22 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             const uploadedResult = await api.uploadFile(base64Data);
             
             if (file.type.startsWith('image/')) {
+              // 画像: markdown 形式で挿入。Drive 直リンクは表示が壊れるため uc?id= 経由にする。
               const directImageUrl = `https://drive.google.com/uc?id=${uploadedResult.id}`;
-              uploadedUrls.push(`![${uploadedResult.name}](${directImageUrl})\n<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-olive-600 hover:underline">📎 画像を別タブで開く</a>`);
+              uploadedUrls.push(`![${uploadedResult.name}](${directImageUrl})\n[📎 画像を別タブで開く](${uploadedResult.url})`);
             } else {
-              uploadedUrls.push(`<a href="${uploadedResult.url}" target="_blank" rel="noopener noreferrer" class="text-olive-600 hover:underline font-bold">📎 ${uploadedResult.name}</a>`);
+              // 非画像: markdown リンク形式で挿入（<a> タグは tiptap-markdown で正しくシリアライズされない）
+              uploadedUrls.push(`[📎 ${uploadedResult.name}](${uploadedResult.url})`);
             }
           }
           
           const appendText = uploadedUrls.join('\n\n');
-          setCommentText(prev => prev + (prev ? '\n\n' : '') + appendText);
+          // RichMarkdownEditor にカーソル位置へ挿入する。isFocused 中でも確実に反映される。
+          if (commentEditorRef.current) {
+            commentEditorRef.current.insertAtCursor('\n\n' + appendText + '\n');
+          } else {
+            setCommentText(prev => prev + (prev ? '\n\n' : '') + appendText);
+          }
         } catch (err) {
           const msg = err && err.message ? err.message : '不明なエラー';
           setErrorMsg('コメントへのファイル添付に失敗しました: ' + msg);
@@ -1845,7 +1849,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         <span className="text-2xl">{currentUser?.avatar}</span>
                         <span className="text-xs font-bold text-gray-700 truncate">{currentUser?.name} としてコメントを残す</span>
                       </div>
-                      {/* メンション用のメンバー選択ボタン */}
+                      {/* メンション用のメンバー選択ボタン（クリックでカーソル位置に @名前 を挿入） */}
                       <div>
                         <span className="text-[11px] font-bold text-gray-500 flex items-center gap-1 mb-1">
                           <Bell size={11} /> メンション（通知）
@@ -1856,16 +1860,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               key={member.email}
                               type="button"
                               onClick={() => {
-                                const textarea = commentTextareaRef.current;
-                                if (textarea) {
-                                  const start = textarea.selectionStart;
-                                  const before = commentText.substring(0, start);
-                                  const after = commentText.substring(start);
-                                  setCommentText(before + `@${member.name} ` + after);
-                                  setTimeout(() => {
-                                    textarea.focus();
-                                    textarea.setSelectionRange(start + member.name.length + 2, start + member.name.length + 2);
-                                  }, 0);
+                                if (commentEditorRef.current) {
+                                  commentEditorRef.current.insertAtCursor(`@${member.name} `);
                                 } else {
                                   setCommentText(prev => prev + `@${member.name} `);
                                 }
@@ -1877,47 +1873,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                           ))}
                         </div>
                       </div>
-                      {/* サジェスト機能付きのコメントテキストエリア */}
-                      <div className="relative">
-                        <textarea
-                          ref={commentTextareaRef}
-                          className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white shadow-sm resize-y min-h-[80px]"
-                          placeholder="進捗や連絡事項、メモなどを入力...（「@」でメンション）"
-                          value={commentText}
-                          disabled={isDeletingTask}
-                          onChange={handleCommentChange}
-                          onKeyDown={handleCommentKeyDown}
-                        />
-                        {commentMention.state.active && (
-                          <div
-                            className="absolute w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden"
-                            style={{
-                              top: commentMention.state.caret.top + commentMention.state.caret.height + 4,
-                              left: commentMention.state.caret.left
-                            }}
-                          >
-                            <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
-                              TabキーかEnterキーで選択
-                            </div>
-                            <ul className="max-h-48 overflow-y-auto">
-                              {commentMention.state.members.map((m, idx) => (
-                                <li
-                                  key={m.email}
-                                  ref={(el) => {
-                                    if (el && idx === commentMention.state.selectedIndex) {
-                                      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                                    }
-                                  }}
-                                  onClick={() => commentMention.insertMention(commentTextareaRef, commentText, setCommentText, m)}
-                                  className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === commentMention.state.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
-                                >
-                                  <span>{m.avatar}</span> {m.name}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
+                      {/* コメントエディタ（詳細欄・Wiki と同じ TipTap ベース）。mentionMembers を渡すと「@」入力でサジェストが出る */}
+                      <RichMarkdownEditor
+                        ref={commentEditorRef}
+                        value={commentText}
+                        onChange={(md) => setCommentText(md)}
+                        disabled={isDeletingTask}
+                        placeholder="進捗や連絡事項、メモなどを入力...（「@」でメンション、Markdown が使えます）"
+                        minHeight="120px"
+                        mentionMembers={members}
+                      />
                       <div className="flex justify-between items-center gap-2">
                         <input type="file" ref={commentFileInputRef} onChange={handleCommentFileUpload} multiple disabled={isDeletingTask || isUploadingToComment} className="hidden" id="comment-file-upload" />
                         <label htmlFor="comment-file-upload" className={`cursor-pointer bg-white hover:bg-gray-50 text-gray-600 text-[11px] font-bold py-1.5 px-2 rounded-full border border-gray-300 transition-colors shadow-sm flex items-center gap-1 ${isDeletingTask || isUploadingToComment ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -1973,11 +1938,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                             <div className={`${isDeleting ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
                               {isEditing ? (
                                 <div className="flex flex-col gap-2 mt-1">
-                                  <textarea
-                                    className="w-full border border-olive-300 rounded-lg p-2 text-xs focus:outline-none focus:ring-2 focus:ring-olive-500 bg-white resize-y min-h-[80px]"
+                                  <RichMarkdownEditor
+                                    ref={editingCommentEditorRef}
                                     value={editingCommentText}
-                                    onChange={(e) => setEditingCommentText(e.target.value)}
-                                    autoFocus
+                                    onChange={(md) => setEditingCommentText(md)}
+                                    placeholder="コメントを編集..."
+                                    minHeight="120px"
                                   />
                                   <div className="flex justify-end gap-2">
                                     <button onClick={cancelEditComment} className="px-2.5 py-1 text-[11px] font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">キャンセル</button>

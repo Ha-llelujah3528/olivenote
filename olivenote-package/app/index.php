@@ -650,7 +650,7 @@ if (!auth_is_logged_in()) {
     // - forwardedRef 経由で getMarkdown / setMarkdown / insertTemplate / focus を露出
     // ============================================================
     const RichMarkdownEditor = React.forwardRef(
-      ({ value, onChange, placeholder, disabled, minHeight }, ref) => {
+      ({ value, onChange, placeholder, disabled, minHeight, mentionMembers }, ref) => {
         const lastEmittedRef = useRef(value || '');
         // onChange は親が render のたびに新規生成し得る → ref で常に最新版を参照
         const onChangeRef = useRef(onChange);
@@ -661,6 +661,17 @@ if (!auth_is_logged_in()) {
         // 進行中・完了・失敗のアップロード状況を可視化（ツールバー直下のステータスバーで表示）
         // shape: [{ id, name, status: 'pending'|'success'|'error', error?: string, retry?: () => void }]
         const [pendingUploads, setPendingUploads] = useState([]);
+
+        // ===== @メンションサジェスト =====
+        const [mentionSuggest, setMentionSuggest] = useState({ active: false, members: [], selectedIndex: 0, rect: null });
+        const mentionSuggestRef = useRef({ active: false, members: [], selectedIndex: 0, rect: null });
+        useEffect(() => { mentionSuggestRef.current = mentionSuggest; }, [mentionSuggest]);
+        const mentionMembersRef = useRef(mentionMembers || []);
+        useEffect(() => { mentionMembersRef.current = mentionMembers || []; }, [mentionMembers]);
+        // useEditor の onUpdate / keydown listener から参照するため先に宣言（初期値 null; 初回 render 後すぐ差し替わる）
+        const detectMentionRef = useRef(null);
+        const insertMentionRef = useRef(null);
+        // =====================================
 
         const editor = useEditor({
           extensions: [
@@ -766,10 +777,17 @@ if (!auth_is_logged_in()) {
           },
           onUpdate: ({ editor }) => {
             const md = editor.storage.markdown.getMarkdown();
-            if (md === lastEmittedRef.current) return;
-            lastEmittedRef.current = md;
-            const cb = onChangeRef.current;
-            if (typeof cb === 'function') cb(md);
+            if (md !== lastEmittedRef.current) {
+              lastEmittedRef.current = md;
+              const cb = onChangeRef.current;
+              if (typeof cb === 'function') cb(md);
+            }
+            // @メンションサジェスト: カーソル直前の @... パターンを検出
+            detectMentionRef.current && detectMentionRef.current(editor);
+          },
+          // カーソル移動だけでコンテンツが変わらないケース（矢印キー・クリック）でも dropdown を更新する
+          onSelectionUpdate: ({ editor }) => {
+            detectMentionRef.current && detectMentionRef.current(editor);
           },
         });
 
@@ -837,8 +855,96 @@ if (!auth_is_logged_in()) {
             const cb = onChangeRef.current;
             if (typeof cb === 'function') cb(next);
           },
+          // カーソル位置にテキストを挿入（フォーカスも当てる）。@メンション挿入や
+          // ファイル添付後の URL 挿入など、末尾追記ではなくカーソル位置に入れたい時に使う。
+          // insertTemplate と同様、挿入後に onChange を明示的に呼んで state を確実に更新する。
+          insertAtCursor: (text) => {
+            if (!editor) return;
+            editor.chain().focus().insertContent(text).run();
+            const md = editor.storage.markdown.getMarkdown();
+            lastEmittedRef.current = md;
+            const cb = onChangeRef.current;
+            if (typeof cb === 'function') cb(md);
+          },
           focus: () => editor?.commands.focus(),
         }), [editor]);
+
+        // ===== @メンションサジェスト: 挿入 / 検出 / キーボード操作 =====
+
+        // カーソル直前の @... パターンを選択した member で置換してプレーンテキストとして挿入する
+        const insertMentionSuggestion = (member) => {
+          if (!editor) return;
+          const { state } = editor;
+          const { selection } = state;
+          const { $from } = selection;
+          const textBefore = $from.parent.textContent.slice(0, $from.parentOffset);
+          const match = textBefore.match(/@([^\s　]*)$/);
+          if (!match) { setMentionSuggest(prev => ({ ...prev, active: false })); return; }
+          const from = selection.from - match[0].length;
+          const to = selection.from;
+          editor.chain().focus().deleteRange({ from, to }).insertContent(`@${member.name} `).run();
+          setMentionSuggest({ active: false, members: [], selectedIndex: 0, rect: null });
+        };
+
+        // render のたびに ref を最新関数で差し替える（useEffect 外で同期的に実行）
+        detectMentionRef.current = (editor) => {
+          const allMembers = mentionMembersRef.current;
+          if (!allMembers.length) return;
+          const { state, view } = editor;
+          const { selection } = state;
+          if (selection.from !== selection.to) {
+            setMentionSuggest(prev => prev.active ? { ...prev, active: false } : prev);
+            return;
+          }
+          const { $from } = selection;
+          const textBefore = $from.parent.textContent.slice(0, $from.parentOffset);
+          const match = textBefore.match(/@([^\s　]*)$/);
+          if (match) {
+            const query = match[1];
+            const filtered = allMembers.filter(m => m.name?.toLowerCase().includes(query.toLowerCase()));
+            if (filtered.length > 0) {
+              const coords = view.coordsAtPos(selection.from);
+              setMentionSuggest({ active: true, members: filtered, selectedIndex: 0, rect: { top: coords.bottom + 4, left: coords.left } });
+              return;
+            }
+          }
+          setMentionSuggest(prev => prev.active ? { ...prev, active: false } : prev);
+        };
+        insertMentionRef.current = insertMentionSuggestion;
+
+        // エディタ DOM に capture フェーズで keydown を差し込み、mention 表示中の↑↓/Tab/Enter/Esc を横取りする
+        useEffect(() => {
+          if (!editor) return;
+          const dom = editor.view.dom;
+          const onKeyDown = (e) => {
+            const ms = mentionSuggestRef.current;
+            if (!ms.active) return;
+            if (e.key === 'Escape') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, active: false })); return; }
+            if (e.key === 'ArrowDown') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex + 1) % prev.members.length })); return; }
+            if (e.key === 'ArrowUp') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex - 1 + prev.members.length) % prev.members.length })); return; }
+            if (e.key === 'Tab' || e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              const cur = mentionSuggestRef.current;
+              if (cur.active && cur.members[cur.selectedIndex]) {
+                insertMentionRef.current && insertMentionRef.current(cur.members[cur.selectedIndex]);
+              }
+            }
+          };
+          dom.addEventListener('keydown', onKeyDown, true);
+          return () => dom.removeEventListener('keydown', onKeyDown, true);
+        }, [editor]);
+
+        // フォーカスが外れたらドロップダウンを閉じる（ただし mention item への mousedown は preventDefault で blur を防ぐ）
+        useEffect(() => {
+          if (!editor) return;
+          const dom = editor.view.dom;
+          const onBlur = () => setMentionSuggest(prev => prev.active ? { ...prev, active: false } : prev);
+          // blur はバブルしないため focusout を使う（TipTap 内のネストした contenteditable でも確実に発火する）
+          dom.addEventListener('focusout', onBlur);
+          return () => dom.removeEventListener('focusout', onBlur);
+        }, [editor]);
+        // =====================================
 
         // ツールバーのボタン生成ヘルパ
         const tbBtn = (active, onClick, children, title) => (
@@ -1146,6 +1252,29 @@ if (!auth_is_logged_in()) {
             <div className="olive-tiptap-content" style={{ minHeight: minHeight || '240px' }}>
               <EditorContent editor={editor} />
             </div>
+            {/* @メンションサジェストドロップダウン（position:fixed でスクロール/overflow の影響を受けない） */}
+            {mentionSuggest.active && mentionSuggest.rect && (
+              <div
+                className="fixed w-56 bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden"
+                style={{ top: mentionSuggest.rect.top, left: mentionSuggest.rect.left, zIndex: 9999 }}
+              >
+                <div className="p-1.5 bg-olive-50 border-b border-gray-100 text-xs font-bold text-olive-800">
+                  TabキーかEnterキーで選択
+                </div>
+                <ul className="max-h-48 overflow-y-auto">
+                  {mentionSuggest.members.map((m, idx) => (
+                    <li
+                      key={m.email}
+                      ref={(el) => { if (el && idx === mentionSuggest.selectedIndex) el.scrollIntoView({ block: 'nearest' }); }}
+                      onMouseDown={(e) => { e.preventDefault(); insertMentionSuggestion(m); }}
+                      className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2 ${idx === mentionSuggest.selectedIndex ? 'bg-olive-100 font-bold text-olive-900' : 'hover:bg-gray-50 text-gray-700'}`}
+                    >
+                      <span>{m.avatar}</span> {m.name}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         );
       }
