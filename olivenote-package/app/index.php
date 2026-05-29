@@ -437,7 +437,8 @@ if (!auth_is_logged_in()) {
       List, ListOrdered, Grid, Image as ImageIcon, Bell, Star, Sparkles, Wand2, Save, MessageCircle, Send, Bot,
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
       UploadCloud, Check, Edit3, Table, Palette,
-      Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown
+      Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown,
+      History, ChevronLeft
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
