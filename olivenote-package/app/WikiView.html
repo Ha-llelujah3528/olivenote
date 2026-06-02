@@ -242,6 +242,18 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     }
   }
 
+  // モバイル: エディタ表示からツリー一覧へ戻る。
+  // スマホでは2ペインを画面幅で切替表示しているため、選択解除でツリーに戻す。
+  function handleBackToList() {
+    if (isDirty && !window.confirm('未保存の変更があります。一覧に戻りますか？')) return;
+    setSelected(null);
+    setIsDraft(false);
+    setIsDirty(false);
+    if (window.location.hash.startsWith('#/wiki/')) {
+      window.history.replaceState(null, '', window.location.pathname + '#/wiki');
+    }
+  }
+
   function handleCancel() {
     if (isDirty && !window.confirm('未保存の変更を破棄しますか？')) return;
     setIsDraft(false);
@@ -691,7 +703,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   return (
     <div className={`flex-1 bg-white border border-gray-200 rounded-lg flex overflow-hidden shadow-sm ${opening ? 'cursor-wait' : ''}`}>
       {/* ===== Left tree ===== */}
-      <aside className="w-72 border-r border-gray-200 flex flex-col bg-gray-50 shrink-0">
+      {/* モバイルは1ペイン切替: ページ選択中(=editor表示中)はツリーを隠す。md以上は常に表示 */}
+      <aside className={`w-full md:w-72 border-r border-gray-200 flex-col bg-gray-50 md:shrink-0 ${(selected || opening) ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-white">
           <h3 className="font-bold text-sm flex items-center gap-1.5"><BookOpen size={16}/> ドキュメント</h3>
           <button
@@ -721,11 +734,18 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       </aside>
 
       {/* ===== Right pane ===== */}
-      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+      {/* モバイルは1ペイン切替: 未選択時はツリー全画面にするためエディタ側を隠す。md以上は常に表示 */}
+      <main className={`flex-1 flex-col overflow-hidden min-w-0 ${(selected || opening) ? 'flex' : 'hidden md:flex'}`}>
         {selected ? (
           <>
             {/* Toolbar */}
             <div className="border-b border-gray-200 p-2 flex flex-wrap items-center gap-2 bg-white shrink-0">
+              {/* モバイル専用: ツリー一覧へ戻る */}
+              <button
+                onClick={handleBackToList}
+                title="ドキュメント一覧へ戻る"
+                className="md:hidden border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded px-2 py-1.5 flex items-center gap-1"
+              ><ChevronLeft size={14}/>一覧</button>
               <button
                 onClick={() => handleSave(true)}
                 disabled={!isDirty || isSaving}

@@ -65,6 +65,7 @@ if (!auth_is_logged_in()) {
         "lucide-react": "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0",
         "@tiptap/react": "https://esm.sh/@tiptap/react@2.10.3?deps=react@18.2.0,react-dom@18.2.0",
         "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@2.10.3",
+        "@tiptap/extension-paragraph": "https://esm.sh/@tiptap/extension-paragraph@2.10.3",
         "@tiptap/extension-link": "https://esm.sh/@tiptap/extension-link@2.10.3",
         "@tiptap/extension-task-list": "https://esm.sh/@tiptap/extension-task-list@2.10.3",
         "@tiptap/extension-task-item": "https://esm.sh/@tiptap/extension-task-item@2.10.3",
@@ -450,6 +451,7 @@ if (!auth_is_logged_in()) {
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
     import { useEditor, EditorContent } from '@tiptap/react';
     import StarterKit from '@tiptap/starter-kit';
+    import Paragraph from '@tiptap/extension-paragraph';
     import TipTapLink from '@tiptap/extension-link';
     import TaskList from '@tiptap/extension-task-list';
     import TaskItem from '@tiptap/extension-task-item';
@@ -461,6 +463,50 @@ if (!auth_is_logged_in()) {
     import TipTapTableCell from '@tiptap/extension-table-cell';
     import TipTapImage from '@tiptap/extension-image';
     import { Markdown } from 'tiptap-markdown';
+
+    // ===== 空段落を保持する Paragraph（バグ: 改行が round-trip で詰まる対策）=====
+    //   prosemirror-markdown の既定 serializer は「空段落＝無出力 + ブロック区切りは常に
+    //   空行1つへ正規化」するため、ユーザーが Enter を連打して入れた空行が保存→再オープンで
+    //   1つに畳まれてしまう。空段落だけ NBSP( ) を1文字書くと、markdown-it 再パース時に
+    //   「中身のある段落」として復元され、連続空行がそのまま保持される（隔離ハーネスで往復実証済）。
+    //   tiptap-markdown は拡張の storage.markdown.serialize を serializer として使うため、
+    //   StarterKit の paragraph を無効化し、この拡張で置換する。
+    const MarkdownParagraph = Paragraph.extend({
+      addStorage() {
+        return {
+          markdown: {
+            serialize(state, node) {
+              if (node.childCount === 0) {
+                state.write(String.fromCharCode(160));  // 空段落 → NBSP(U+00A0) で空行を残す
+                state.closeBlock(node);
+                return;
+              }
+              // 中身のある段落は prosemirror-markdown 既定と同じ挙動
+              state.renderInline(node);
+              state.closeBlock(node);
+            },
+            parse: {},
+          },
+        };
+      },
+    });
+
+    // ===== 空チェックボックスを保存 Markdown から除去する =====
+    //   上記 MarkdownParagraph で空段落を NBSP 化した副作用として、空の taskItem は
+    //   `- [ ] <NBSP>` と serialize され、markdown-it が「中身あり」と判定して再オープンで
+    //   本物の空チェックボックスとして復活してしまう（= 入力していないのにチェックボックスが出る）。
+    //   そこで emit する Markdown 文字列から「マーカー + 空チェックボックス + 空白/NBSP のみ」の
+    //   行を落とす。テキストや画像のある実チェックボックス（`- [ ] やること`）は残す。
+    //   空行(NBSP段落)は行頭が `-` でないのでマッチせず保持される（隔離ハーネスで実証済）。
+    const EMPTY_CHECKBOX_LINE = /^\s*[-*+] \[[ xX]\]\s*$/;  // \s は NBSP(U+00A0) も含む
+    const HAS_CHECKBOX = /[-*+] \[[ xX]\]/;                  // チェックボックス自体が無ければ即 return 用
+    const stripEmptyCheckboxes = (md) => {
+      const s = md || '';
+      // onUpdate は毎キー走るので、チェックボックスを含まない大半の文書は split せず素通し
+      // （巨大ドキュメントでの split/filter/join コストを避ける）
+      if (!HAS_CHECKBOX.test(s)) return s;
+      return s.split('\n').filter(line => !EMPTY_CHECKBOX_LINE.test(line)).join('\n');
+    };
 
     // ===== テーマ定義（将来追加可能） =====
     const THEMES = [
@@ -775,7 +821,10 @@ if (!auth_is_logged_in()) {
               // StarterKit には Link が含まれないので、別途 TipTapLink で追加
               heading: { levels: [1, 2, 3, 4] },
               codeBlock: { HTMLAttributes: { class: 'olive-tiptap-codeblock' } },
+              // 空段落を保持する MarkdownParagraph で置換するため標準 paragraph を無効化
+              paragraph: false,
             }),
+            MarkdownParagraph,
             TipTapLink.configure({
               openOnClick: false,
               autolink: true,
@@ -871,12 +920,16 @@ if (!auth_is_logged_in()) {
               return true;
             },
           },
-          onUpdate: ({ editor }) => {
-            const md = editor.storage.markdown.getMarkdown();
+          onUpdate: ({ editor, transaction }) => {
+            const md = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             if (md !== lastEmittedRef.current) {
               lastEmittedRef.current = md;
-              const cb = onChangeRef.current;
-              if (typeof cb === 'function') cb(md);
+              // autoClean = パース時に湧く幽霊 taskItem の自動除去。ユーザー編集ではないので
+              // onChange(=dirty 化) を発火させない（開いただけで「未保存」になるのを防ぐ）。
+              if (!transaction || !transaction.getMeta('autoClean')) {
+                const cb = onChangeRef.current;
+                if (typeof cb === 'function') cb(md);
+              }
             }
             // @メンションサジェスト: カーソル直前の @... パターンを検出
             detectMentionRef.current && detectMentionRef.current(editor);
@@ -884,6 +937,12 @@ if (!auth_is_logged_in()) {
           // カーソル移動だけでコンテンツが変わらないケース（矢印キー・クリック）でも dropdown を更新する
           onSelectionUpdate: ({ editor }) => {
             detectMentionRef.current && detectMentionRef.current(editor);
+          },
+          // フォーカスを失ったら空チェックボックス(空 taskItem)を doc から除去する。
+          // 「見えている内容＝保存内容」を担保する後始末（編集中は触らないので onBlur で実行）。
+          // クロージャの editor は初回 render で null 固定になり得るため、引数の editor を渡す。
+          onBlur: ({ editor }) => {
+            removeEmptyTaskItems(editor);
           },
         });
 
@@ -906,6 +965,43 @@ if (!auth_is_logged_in()) {
           editor.view.dispatch(tr);
         };
 
+        // 空のチェックボックス(taskItem)を doc から除去する。
+        //   tiptap-markdown@0.8.10 は空 taskItem を `- [ ] ` と serialize し、再オープンで
+        //   `- \[ \]` 等へ化けて「入力していないのにチェックボックスが出る」状態になる。
+        //   serializer 上書きは実チェックボックスの往復を壊したため（隔離ハーネスで確認済）、
+        //   doc 側で空項目を消す方式を採用。onBlur で実行するので編集中の入力は妨げない。
+        const removeEmptyTaskItems = (ed) => {
+          if (!ed || ed.isDestroyed || !ed.isEditable) return;
+          const isEmptyItem = (n) => {
+            const onlyChild = n.childCount === 1 ? n.firstChild : null;
+            return n.content.size === 0 || (onlyChild && onlyChild.content.size === 0);
+          };
+          const deletions = [];
+          ed.state.doc.descendants((node, pos) => {
+            if (node.type.name !== 'taskList') return true;
+            const items = [];
+            node.forEach((child, offset) => {
+              items.push({ child, from: pos + 1 + offset, to: pos + 1 + offset + child.nodeSize });
+            });
+            const empties = items.filter(it => it.child.type.name === 'taskItem' && isEmptyItem(it.child));
+            if (empties.length === 0) return false;
+            if (empties.length === items.length) {
+              // 全項目が空 → リストごと削除（最後の1項目だけ消すとスキーマが空項目を復活させる）
+              deletions.push({ from: pos, to: pos + node.nodeSize });
+            } else {
+              empties.forEach(it => deletions.push({ from: it.from, to: it.to }));
+            }
+            return false; // taskList 配下にはこれ以上潜らない
+          });
+          if (deletions.length === 0) return;
+          deletions.sort((a, b) => b.from - a.from); // 後方から消して前方位置を保つ
+          const tr = ed.state.tr;
+          tr.setMeta('autoClean', true);       // onUpdate 側で dirty 化を抑制するための目印
+          tr.setMeta('addToHistory', false);   // 自動除去は undo 履歴に積まない
+          deletions.forEach(d => tr.delete(d.from, d.to));
+          ed.view.dispatch(tr);
+        };
+
         // 親から value が変わった時のみ再同期（自分が emit した直後・編集中はスキップ）
         useEffect(() => {
           if (!editor) return;
@@ -915,8 +1011,9 @@ if (!auth_is_logged_in()) {
           if (editor.isFocused) return;
           lastEmittedRef.current = incoming;
           editor.commands.setContent(incoming, false);
-          // setContent 後に走る: 残存 #pending-xxx を救済除去
+          // setContent 後に走る: 残存 #pending-xxx を救済除去 + パース時に湧く幽霊 taskItem の除去
           cleanupStalePendingLinks();
+          removeEmptyTaskItems(editor);
         }, [value, editor]);
 
         // エディタ初回マウント時にも残存 #pending-xxx を除去する
@@ -924,6 +1021,7 @@ if (!auth_is_logged_in()) {
         useEffect(() => {
           if (!editor) return;
           cleanupStalePendingLinks();
+          removeEmptyTaskItems(editor);
           // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [editor]);
 
@@ -934,7 +1032,7 @@ if (!auth_is_logged_in()) {
         }, [editor, disabled]);
 
         React.useImperativeHandle(ref, () => ({
-          getMarkdown: () => editor?.storage.markdown.getMarkdown() || '',
+          getMarkdown: () => stripEmptyCheckboxes(editor?.storage.markdown.getMarkdown() || ''),
           setMarkdown: (md) => {
             if (!editor) return;
             lastEmittedRef.current = md || '';
@@ -942,9 +1040,9 @@ if (!auth_is_logged_in()) {
           },
           insertTemplate: (md) => {
             if (!editor) return;
-            const current = editor.storage.markdown.getMarkdown();
+            const current = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             const sep = current && !/\n\n$/.test(current) ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
-            const next = current + sep + md;
+            const next = stripEmptyCheckboxes(current + sep + md);
             lastEmittedRef.current = next;
             editor.commands.setContent(next, false);
             editor.commands.focus('end');
@@ -957,7 +1055,7 @@ if (!auth_is_logged_in()) {
           insertAtCursor: (text) => {
             if (!editor) return;
             editor.chain().focus().insertContent(text).run();
-            const md = editor.storage.markdown.getMarkdown();
+            const md = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             lastEmittedRef.current = md;
             const cb = onChangeRef.current;
             if (typeof cb === 'function') cb(md);

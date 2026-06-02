@@ -170,10 +170,18 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
 
   return (
     <div className={`fixed bottom-6 right-6 z-[60] flex flex-col items-end pointer-events-none transition-opacity duration-200 ${hidden && !isOpen ? 'opacity-0 invisible' : 'opacity-100 visible'}`}>
-      
+
+      {/* 外側クリックで最小化する透明オーバーレイ。
+          DOM 順で先頭に置くことで、後続のチャット窓・FAB が上に描画される
+          → 窓/FAB へのクリックはそれぞれに当たり、それ以外はオーバーレイが拾って閉じる。
+          ラッパーは pointer-events-none なので overlay 側で auto に戻す。 */}
+      {isOpen && (
+        <div className="fixed inset-0 pointer-events-auto" onClick={() => setIsOpen(false)} aria-hidden="true"></div>
+      )}
+
       {/* チャットウィンドウ */}
       {isOpen && (
-        <div className="bg-white w-[350px] sm:w-[400px] h-[500px] max-h-[70vh] rounded-2xl shadow-2xl border border-gray-200 mb-4 flex flex-col pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
+        <div className="relative z-10 bg-white w-[350px] sm:w-[400px] max-w-[calc(100vw-3rem)] h-[500px] max-h-[70vh] rounded-2xl shadow-2xl border border-gray-200 mb-4 flex flex-col pointer-events-auto overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
           
           {/* ヘッダー */}
           <div className="bg-olive-800 text-white px-4 py-3 flex justify-between items-center shrink-0">
@@ -469,6 +477,16 @@ function App() {
     window.addEventListener('hashchange', applyHash);
     return () => window.removeEventListener('hashchange', applyHash);
   }, []);
+
+  // ドキュメント以外のビューに切り替えたら #/wiki/<uuid> を掃除する。
+  // これをしないと別ビューに居ても F5 リロードで applyHash が古いハッシュを拾い、
+  // ドキュメント画面に戻ってしまう（permalink は wiki ビューだけの想定）。
+  // replaceState は hashchange を発火しないので applyHash とのループは起きない。
+  useEffect(() => {
+    if (activeTab !== 'wiki' && window.location.hash.startsWith('#/wiki')) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, [activeTab]);
   const [isFilterExpanded, setIsFilterExpanded] = useState(true);
   const [isAutoGenOpen, setIsAutoGenOpen] = useState(false);  // AI課題自動生成モーダル
 
@@ -1272,6 +1290,8 @@ function App() {
                   </span>
                 )}
               </button>
+              {/* 小窓の外側クリックで閉じる透明オーバーレイ（テーマメニューと同じ idiom） */}
+              {isNotifOpen && <div className="fixed inset-0 z-40" onClick={() => setIsNotifOpen(false)}></div>}
               {isNotifOpen && (
                 <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh] text-gray-800">
                   <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
@@ -1370,6 +1390,8 @@ function App() {
             )}
           </button>
 
+          {/* 小窓の外側クリックで閉じる透明オーバーレイ（テーマメニューと同じ idiom） */}
+          {isNotifOpen && <div className="fixed inset-0 z-40" onClick={() => setIsNotifOpen(false)}></div>}
           {isNotifOpen && (
             <div className="absolute right-0 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1rem)] bg-white rounded-xl shadow-xl border border-gray-200 z-50 overflow-hidden flex flex-col max-h-[80vh]">
               <div className="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
