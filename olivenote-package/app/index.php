@@ -681,6 +681,33 @@ if (!auth_is_logged_in()) {
     //   applyImageWidthTokens() で後処理して同じ幅を反映する。
     // ============================================================
     const IMG_WIDTH_TOKEN_RE = /^(25|50|100)%$/;
+
+    // ============================================================
+    // 画像貼り付けの暴走ガード（2段構え）
+    //   画像は body_md に base64 データURIとして直接保存される設計のため、意図しない連続
+    //   貼り付けで body_md が十数MBに肥大化すると、読み込み時に TipTap の同期マウントで
+    //   画面が固まる（実運用で 10MB / 約45秒フリーズの事故が発生）。
+    //
+    //   (1) 重複スキップ（主軸 / DUP_WINDOW_MS）:
+    //       「誤爆の連続貼り付け」は実体として "同じ画像をもう一度貼る"（Ctrl+V 連打・二度押し・
+    //       同じファイルの再ドロップ）。直近に挿入したのと中身が同一の画像が短時間に再挿入され
+    //       たらスキップする。中身比較なので、D&D の複数枚・1枚ずつ（=全部別画像）は素通りする。
+    //   (2) 合計サイズの最終防壁（MAX_DOC_IMAGE_CHARS = 50MB）:
+    //       意図的・事故を問わず、これを超えたら止める安全装置。通常運用ではまず当たらない。
+    //   base64 の文字数 ≒ バイト数。
+    const MAX_DOC_IMAGE_CHARS = 50 * 1024 * 1024; // 50MB（最終防壁）
+    const DUP_WINDOW_MS = 4000;                   // この時間内に同一画像が再挿入されたら誤爆とみなしスキップ
+    // ドキュメント内の base64 画像 src の合計文字数を数える（容量ガード用）
+    const sumEmbeddedImageChars = (editor) => {
+      if (!editor || editor.isDestroyed) return 0;
+      let total = 0;
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'image' && typeof node.attrs.src === 'string' && node.attrs.src.startsWith('data:')) {
+          total += node.attrs.src.length;
+        }
+      });
+      return total;
+    };
     const ResizableImage = TipTapImage.extend({
       addAttributes() {
         return {
@@ -725,6 +752,8 @@ if (!auth_is_logged_in()) {
         // 画像アップロード関数: editor / api を参照するため、ref 経由で editorProps(paste/drop) から呼ぶ
         const uploadAndInsertImageRef = useRef(null);
         const imageInputRef = useRef(null);
+        // 直近に挿入した画像の署名 [{ sig, t }]（重複スキップ判定用。時間窓 DUP_WINDOW_MS で間引く）
+        const recentImageSigsRef = useRef([]);
         // 進行中・完了・失敗のアップロード状況を可視化（ツールバー直下のステータスバーで表示）
         // shape: [{ id, name, status: 'pending'|'success'|'error', error?: string, retry?: () => void }]
         const [pendingUploads, setPendingUploads] = useState([]);
@@ -1174,6 +1203,44 @@ if (!auth_is_logged_in()) {
               }
             }
 
+            // 1.4. 重複スキップ: 直近 DUP_WINDOW_MS 内に挿入したのと「中身が同じ」画像なら、
+            //   誤爆の連続貼り付け（Ctrl+V 連打・二度押し・同ファイル再ドロップ）とみなしスキップ。
+            //   署名は圧縮後 dataUrl から作る（同じ元画像→同じ圧縮結果なので一致する）。長さ +
+            //   先頭/末尾の断片で十分に弁別でき、巨大文字列を保持せずに済む。中身比較なので
+            //   D&D 複数枚・1枚ずつ（全部別画像）は一致せず素通りする。
+            const dataUrl = compressed.dataUrl || '';
+            const sig = dataUrl.length + '|' + dataUrl.slice(0, 48) + '|' + dataUrl.slice(-48);
+            const nowTs = Date.now();
+            const recentSigs = recentImageSigsRef.current.filter(e => nowTs - e.t < DUP_WINDOW_MS);
+            if (recentSigs.some(e => e.sig === sig)) {
+              recentImageSigsRef.current = recentSigs; // 古いエントリを間引いて保存
+              setPendingUploads(prev => [...prev, {
+                id: 'dup-' + nowTs.toString(36) + Math.random().toString(36).slice(2, 6),
+                name: file.name || '画像',
+                status: 'error',
+                kind: 'limit',
+                error: '同じ画像が連続して貼り付けられたためスキップしました（誤操作防止）。別の画像はそのまま貼り付けできます。',
+              }]);
+              return;
+            }
+            recentSigs.push({ sig, t: nowTs });
+            recentImageSigsRef.current = recentSigs;
+
+            // 1.5. 最終防壁: 埋め込み済み画像 + 今回の圧縮後サイズが上限(50MB)を超えるなら挿入中止。
+            //   alert 連発を避けるためステータスバーで通知。通常運用ではまず当たらない安全装置。
+            const newImageChars = dataUrl.length;
+            if (sumEmbeddedImageChars(editor) + newImageChars > MAX_DOC_IMAGE_CHARS) {
+              const limitMb = (MAX_DOC_IMAGE_CHARS / 1024 / 1024).toFixed(1);
+              setPendingUploads(prev => [...prev, {
+                id: 'limit-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                name: file.name || '画像',
+                status: 'error',
+                kind: 'limit',
+                error: `このドキュメントの画像合計容量が上限（約${limitMb}MB）に達したため追加できません。不要な画像を削除するか、ドキュメントを分割してください。`,
+              }]);
+              return;
+            }
+
             // 2. アップロードID発番 → エディタに即時挿入（リンク先は placeholder）
             const uploadId = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
             const placeholderHref = `#pending-${uploadId}`;
@@ -1336,7 +1403,9 @@ if (!auth_is_logged_in()) {
                       <span className="text-gray-500 ml-1">
                         {u.status === 'pending' && '— Drive にオリジナル保存中...（このまま閉じないでください）'}
                         {u.status === 'success' && '— Drive 保存完了。画像クリックで原本を別タブ表示できます'}
-                        {u.status === 'error' && `— Drive 保存に失敗: ${u.error || '不明なエラー'}`}
+                        {u.status === 'error' && (u.kind === 'limit'
+                          ? `— ${u.error || '画像を追加できませんでした'}`
+                          : `— Drive 保存に失敗: ${u.error || '不明なエラー'}`)}
                       </span>
                     </span>
                     {u.status === 'error' && u.retry && (
