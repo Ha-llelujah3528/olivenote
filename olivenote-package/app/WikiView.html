@@ -449,7 +449,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     let bodyHtml = '';
     if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
       try {
-        bodyHtml = window.marked.parse(editBody || '');
+        bodyHtml = applyImageWidthTokens(window.marked.parse(editBody || ''));
       } catch (_) {
         bodyHtml = `<pre>${esc(editBody || '')}</pre>`;
       }

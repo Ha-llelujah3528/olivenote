@@ -182,7 +182,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           descHtml = '<em style="color:#9ca3af">(記載なし)</em>';
         } else if (typeof marked !== 'undefined') {
           marked.use({ gfm: true, breaks: true });
-          let raw = marked.parse(formData.description);
+          let raw = applyImageWidthTokens(marked.parse(formData.description));
           // チェックボックスの disabled は印刷では特に影響なしだがクラスを除去
           raw = raw.replace(/<input([^>]*?)disabled([^>]*?)>/gi, '<input$1$2>');
           // @メンションのハイライト

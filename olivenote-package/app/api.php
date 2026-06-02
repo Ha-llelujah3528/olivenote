@@ -30,6 +30,33 @@ function getGoogleAccessToken(
     $clientEmail = $clientEmail ?? CLIENT_EMAIL;
     $privateKey  = $privateKey  ?? PRIVATE_KEY;
 
+    // ===== アクセストークンのキャッシュ =====
+    // 以前は呼び出しごとに OAuth トークンを新規取得しており、画像アップロード 1 枚
+    // につき毎回 Google への往復が発生していた。複数枚を同時にアップロードすると
+    // PHP ワーカーを長時間占有し、サイト全体のスローダウン（getInitialData の遅延）
+    // を招く一因になっていた。scope + clientEmail 単位でファイルにキャッシュする。
+    //   - TTL は Google が返す expires_in 準拠（期限 120 秒前で失効扱い）
+    //   - 保存先はドキュメントルート外を最優先。config.php と同じ階層（require の
+    //     '../../../config.php' が指す = web 非公開域）に書く。ここはトークン同様の
+    //     機密(config.php)が既に置かれている場所なので一貫性がある。書けない環境は
+    //     session 保存ディレクトリ→システム一時ディレクトリへフォールバック。
+    //     ※ session_save_path() は空文字を返す環境があるため ?: で握りつぶさない
+    //   - パーミッションは 0600 に絞り、web 経由でも読めないようにする
+    //   - 読み書きに失敗しても素通しで従来どおり毎回取得にフォールバック（安全側）
+    $privateBase   = dirname(__DIR__, 3);          // config.php と同階層（ドキュメントルート外）
+    $sessionPath   = session_save_path();
+    $tokenCacheDir = (is_dir($privateBase) && is_writable($privateBase))
+        ? $privateBase
+        : (($sessionPath !== '' && is_dir($sessionPath) && is_writable($sessionPath)) ? $sessionPath : sys_get_temp_dir());
+    $tokenCacheFile = rtrim($tokenCacheDir, '/\\') . '/.olivenote_gtoken_' . md5($scope . '|' . $clientEmail) . '.json';
+    if (is_readable($tokenCacheFile)) {
+        $cachedToken = json_decode((string)@file_get_contents($tokenCacheFile), true);
+        if (is_array($cachedToken) && !empty($cachedToken['access_token'])
+            && isset($cachedToken['expires_at']) && $cachedToken['expires_at'] > time() + 120) {
+            return $cachedToken['access_token'];
+        }
+    }
+
     $now     = time();
     $header  = base64url_encode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
     $payload = base64url_encode(json_encode([
@@ -68,6 +95,17 @@ function getGoogleAccessToken(
     if (empty($json['access_token'])) {
         throw new Exception('Google認証失敗: ' . ($json['error_description'] ?? $res));
     }
+
+    // 取得できたトークンをキャッシュ（書き込み失敗は無視＝次回また取得するだけ）
+    $expiresIn = (int)($json['expires_in'] ?? 3600);
+    if (@file_put_contents(
+            $tokenCacheFile,
+            json_encode(['access_token' => $json['access_token'], 'expires_at' => $now + $expiresIn]),
+            LOCK_EX
+        ) !== false) {
+        @chmod($tokenCacheFile, 0600);
+    }
+
     return $json['access_token'];
 }
 
@@ -768,6 +806,15 @@ function generateWikiUuid(): string {
 try {
     // 認証関連 action（provider 固有 verify / logout）は lib/auth で処理
     if (auth_dispatch($action, $payload, $pdo)) exit;
+
+    // ここから先の通常データ action は $_SESSION を「読む」だけで書き込まない
+    // （$_SESSION への書き込みは auth_google.php の verify と auth.php の logout のみで、
+    //   いずれも上の auth_dispatch で処理済み）。そのためセッションロックを早期に解放する。
+    // これにより、同一ユーザーが複数リクエストを並行実行しても（例: 画像の複数枚同時
+    // アップロード）セッションロックで直列化されず、長い Drive アップロード中に本人の
+    // 他リクエストや再読み込み（getInitialData）がブロックされない。読み取り済みの
+    // $_SESSION 値は close 後もそのまま参照できる。
+    session_write_close();
 
     switch ($action) {
 

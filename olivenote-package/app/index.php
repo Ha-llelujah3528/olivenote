@@ -260,13 +260,16 @@ if (!auth_is_logged_in()) {
       .olive-tiptap-content .ProseMirror img.olive-tiptap-image.ProseMirror-selectednode {
         outline: 2px solid #4D7A2D;
       }
-      /* リンクラップされた画像（オリジナルが Drive にある状態）はクリック可能を示す */
+      /* リンクラップされた画像（オリジナルが Drive にある状態）。
+         クリックは「ノード選択（→幅プリセット表示）」に変えたため、虫眼鏡(zoom-in)では
+         なく pointer で「クリックできる」ことだけ示す。Drive 原本を開く動線は選択時に
+         画像のそばへ出る浮動メニュー／ツールバーの「原寸を開く」に分離した。 */
       .olive-tiptap-content .ProseMirror a.olive-tiptap-link > img.olive-tiptap-image {
-        cursor: zoom-in;
+        cursor: pointer;
         transition: opacity 120ms ease;
       }
       .olive-tiptap-content .ProseMirror a.olive-tiptap-link > img.olive-tiptap-image:hover {
-        opacity: 0.85;
+        opacity: 0.92;
       }
       /* placeholder リンク (#pending-xxx) のときはまだ Drive 保存中なのでカーソルを変えない */
       .olive-tiptap-content .ProseMirror a.olive-tiptap-link[href^="#pending-"] > img.olive-tiptap-image {
@@ -638,6 +641,70 @@ if (!auth_is_logged_in()) {
     };
 
     // ============================================================
+    // Drive 画像アップロードの同時実行セマフォ
+    //   画像を複数枚まとめて貼り付け／ドロップすると、1 枚ごとにサーバー(api.php)の
+    //   uploadFile（Driveへ原本アップロード＋公開設定）が走る。これらを同時に殺到
+    //   させると PHP ワーカーを食い潰し、他ユーザーのページ読み込み(getInitialData)
+    //   まで巻き込んで全体が固まる原因になっていた。そこで同時実行数を絞り、超過分は
+    //   キューで順番待ちにする（プレビューは即時 base64 埋め込みなので体感は損なわない）。
+    // ============================================================
+    const driveUploadLimiter = (() => {
+      const MAX_CONCURRENT = 2;
+      let active = 0;
+      const queue = [];
+      const pump = () => {
+        if (active >= MAX_CONCURRENT || queue.length === 0) return;
+        active++;
+        const { task, resolve, reject } = queue.shift();
+        Promise.resolve()
+          .then(task)
+          .then(resolve, reject)
+          .finally(() => { active--; pump(); });
+      };
+      // task: () => Promise<any> を受け取り、空きスロットで実行する
+      return (task) => new Promise((resolve, reject) => {
+        queue.push({ task, resolve, reject });
+        pump();
+      });
+    })();
+
+    // ============================================================
+    // ResizableImage — 画像にプリセット幅（小/中/大/原寸）を持たせる拡張
+    //   Markdown 保存の制約: 素の Markdown 画像記法 `![alt](src)` には幅を書く構文が
+    //   無い。一方 `![alt](src "title")` の title は tiptap-markdown / markdown-it が
+    //   標準で往復できる。そこで「幅トークン」を image の title 属性に格納する:
+    //     - title が "25%" | "50%" | "100%" のときは幅指定とみなし style:width に変換、
+    //       tooltip(title 属性) としては出さない（ユーザーに "50%" が見えないように）
+    //     - それ以外の title は通常の tooltip としてそのまま出す（現状 title は未使用）
+    //   これで Markdown は標準のまま（リンク巻き `[![alt](src "50%")](href)` も維持）、
+    //   保存/再読込でサイズが保たれる。PDF/印刷/プレビュー（marked 経由）は出力 HTML を
+    //   applyImageWidthTokens() で後処理して同じ幅を反映する。
+    // ============================================================
+    const IMG_WIDTH_TOKEN_RE = /^(25|50|100)%$/;
+    const ResizableImage = TipTapImage.extend({
+      addAttributes() {
+        return {
+          ...this.parent?.(),
+          title: {
+            default: null,
+            // markdown-it 経由の <img title="50%"> からそのまま読む（既定挙動と同じ）
+            parseHTML: (el) => el.getAttribute('title'),
+            renderHTML: (attrs) => {
+              const t = attrs.title;
+              if (typeof t === 'string' && IMG_WIDTH_TOKEN_RE.test(t)) {
+                return { style: 'width:' + t };   // 幅トークンは style 化・tooltip 非表示
+              }
+              // 幅トークン以外（原寸=null/空、万一の "null" 文字列等）は title 属性を一切出さない。
+              // 現状このエディタは画像 title を「幅トークンの保存先」専用に使っており通常の
+              // tooltip 用途は無いため、ゴミ tooltip（"null" 等）の表示を確実に防ぐ。
+              return {};
+            },
+          },
+        };
+      },
+    });
+
+    // ============================================================
     // RichMarkdownEditor — TipTap (ProseMirror) ベースの WYSIWYG エディタ
     // TaskModal / Wiki（Sprint 3）共通で使う想定。
     //
@@ -699,7 +766,7 @@ if (!auth_is_logged_in()) {
             TipTapTableRow,
             TipTapTableHeader,
             TipTapTableCell,
-            TipTapImage.configure({
+            ResizableImage.configure({
               // インライン化することで Link マークが画像に直接乗る
               //   → [![alt](data:...)](href) としてマークダウン往復可能
               //   → クリックでオリジナル Drive ファイルを開く動線が作れる
@@ -762,16 +829,16 @@ if (!auth_is_logged_in()) {
               images.forEach(f => uploadAndInsertImageRef.current && uploadAndInsertImageRef.current(f));
               return true;
             },
-            // 画像クリック: Drive 上のオリジナル(高画質)を別タブで開く
-            // 編集中はノード選択を妨げないよう、リンクが pending でない場合のみ動作
+            // 画像クリック: 画像ノードを選択する（→ ツールバーに幅プリセット 小/中/大/原寸 が出る）。
+            //   以前はここで Drive 原本を window.open して return true しており、
+            //   ProseMirror 既定のノード選択を奪っていた。その結果クリックしても
+            //   isActive('image') が true にならず「幅を調整できない」状態だった。
+            //   Drive オリジナルを開く動線は、選択時ツールバーの「原寸を開く」ボタンに分離。
             handleClickOn: (view, pos, node, nodePos, event) => {
               if (node.type.name !== 'image') return false;
-              const linkMark = node.marks.find(m => m.type.name === 'link');
-              if (!linkMark) return false;
-              const href = linkMark.attrs && linkMark.attrs.href;
-              if (!href || href.startsWith('#pending-')) return false;
+              if (disabled || !editor) return false;   // 閲覧専用時は既定挙動に委ねる
               event.preventDefault();
-              window.open(href, '_blank', 'noopener,noreferrer');
+              editor.chain().setNodeSelection(nodePos).run();
               return true;
             },
           },
@@ -1021,8 +1088,12 @@ if (!auth_is_logged_in()) {
         const startBackgroundDriveUpload = (file, uploadId) => {
           (async () => {
             try {
-              const base64Data = await fileToBase64(file);
-              const res = await api.uploadFile(base64Data);
+              // 同時実行セマフォ経由でアップロード（複数枚同時貼り付け時のサーバー殺到を防ぐ）。
+              // base64 化も重い処理なのでスロット内で行い、待機中の余計なメモリ確保も避ける。
+              const res = await driveUploadLimiter(async () => {
+                const base64Data = await fileToBase64(file);
+                return api.uploadFile(base64Data);
+              });
               if (!res || !res.id) throw new Error('Drive へのアップロードに失敗しました');
               const originalUrl = `https://drive.google.com/file/d/${res.id}/view`;
               const placeholderHref = `#pending-${uploadId}`;
@@ -1163,6 +1234,29 @@ if (!auth_is_logged_in()) {
           );
         }
 
+        // 選択中の画像ノードに紐づく Drive リンク（あれば「原寸を開く」ボタンを出す）。
+        // handleClickOn で画像をノード選択する設計に変えたため、原本を開く動線をここに分離。
+        const selectedImageHref = (() => {
+          const sel = editor.state.selection;
+          const node = sel && sel.node;
+          if (!node || node.type.name !== 'image') return '';
+          const lm = node.marks.find(m => m.type.name === 'link');
+          const href = lm && lm.attrs && lm.attrs.href;
+          return (href && !href.startsWith('#pending-')) ? href : '';
+        })();
+
+        // 画像幅を変更する。chain().focus() は NodeSelection を解除してしまい、変更のたびに
+        // 選択が外れて幅メニューが消える（毎回クリックし直しになる）ため focus は使わず、
+        // 変更後に同じ位置へ NodeSelection を張り直して選択を維持する。
+        // token は '25%' | '50%' | '100%' | null（null = サイズ指定解除）。
+        const setImageWidth = (token) => {
+          const sel = editor.state.selection;
+          const pos = (sel && sel.node && sel.node.type.name === 'image') ? sel.from : null;
+          let chain = editor.chain().updateAttributes('image', { title: token });
+          if (pos !== null) chain = chain.setNodeSelection(pos);
+          chain.run();
+        };
+
         return (
           <div className="olive-rich-md-editor border border-gray-300 rounded-lg bg-white">
             <div className="olive-tiptap-toolbar sticky top-0 z-10 flex flex-wrap items-center gap-1 p-1.5 border-b border-gray-200 bg-gray-50 rounded-t-lg">
@@ -1202,6 +1296,21 @@ if (!auth_is_logged_in()) {
                   {tbBtn(false, () => editor.chain().focus().deleteColumn().run(), '列−', '列を削除')}
                   {tbBtn(false, () => editor.chain().focus().toggleHeaderRow().run(), 'Hヘッダ', 'ヘッダ行を切替')}
                   {tbBtn(false, () => editor.chain().focus().deleteTable().run(), '表削除', 'テーブルごと削除')}
+                </>
+              )}
+              {/* 画像が選択されている時だけ表示する幅プリセット（小/中/大/原寸）。
+                  幅は image の title 属性に "25%"|"50%"|"100%" として持たせ Markdown 往復する。 */}
+              {editor.isActive('image') && (
+                <>
+                  <span className="w-px h-5 bg-gray-300 mx-1" />
+                  <span className="text-[11px] text-gray-500 px-0.5 select-none">画像幅</span>
+                  {tbBtn(editor.isActive('image', { title: '25%' }),  () => setImageWidth('25%'),  '小',   '画像幅 25%')}
+                  {tbBtn(editor.isActive('image', { title: '50%' }),  () => setImageWidth('50%'),  '中',   '画像幅 50%')}
+                  {tbBtn(editor.isActive('image', { title: '100%' }), () => setImageWidth('100%'), '大',   '画像幅 100%')}
+                  {tbBtn(false, () => setImageWidth(null), '原寸', '原寸（サイズ指定を解除）')}
+                  {selectedImageHref
+                    ? tbBtn(false, () => window.open(selectedImageHref, '_blank', 'noopener,noreferrer'), '原寸を開く', 'Drive のオリジナル画像を新規タブで開く')
+                    : null}
                 </>
               )}
               <span className="w-px h-5 bg-gray-300 mx-1" />
@@ -1275,6 +1384,32 @@ if (!auth_is_logged_in()) {
                 </ul>
               </div>
             )}
+            {/* 画像選択時に画像のすぐ上へ出す幅メニュー（position:fixed）。
+                BubbleMenu(tippy) は React の DOM 整合性を壊し insertBefore クラッシュを
+                招いたため不採用。メンションサジェストと同じ自前 fixed 方式にする。
+                座標は選択位置から coordsAtPos で都度算出（本コンポーネントは selection 変化で
+                再レンダリングされる）。onMouseDown preventDefault で操作中も画像選択を保持。 */}
+            {editor.isActive('image') && (() => {
+              let coords = null;
+              try { coords = editor.view.coordsAtPos(editor.state.selection.from); } catch (_) { coords = null; }
+              if (!coords) return null;
+              return (
+                <div
+                  className="fixed z-[9999] flex items-center gap-1 bg-white border border-gray-300 rounded-md shadow-lg px-1.5 py-1"
+                  style={{ top: Math.max(8, coords.top - 44), left: coords.left }}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  <span className="text-[11px] text-gray-500 px-0.5 select-none">画像幅</span>
+                  {tbBtn(editor.isActive('image', { title: '25%' }),  () => setImageWidth('25%'),  '小',   '画像幅 25%')}
+                  {tbBtn(editor.isActive('image', { title: '50%' }),  () => setImageWidth('50%'),  '中',   '画像幅 50%')}
+                  {tbBtn(editor.isActive('image', { title: '100%' }), () => setImageWidth('100%'), '大',   '画像幅 100%')}
+                  {tbBtn(false, () => setImageWidth(null), '原寸', '原寸（サイズ指定を解除）')}
+                  {selectedImageHref
+                    ? tbBtn(false, () => window.open(selectedImageHref, '_blank', 'noopener,noreferrer'), '原寸を開く', 'Drive のオリジナル画像を新規タブで開く')
+                    : null}
+                </div>
+              );
+            })()}
           </div>
         );
       }
@@ -1370,6 +1505,29 @@ if (!auth_is_logged_in()) {
       reader.onload = () => resolve({ name: file.name, mimeType: file.type, data: reader.result.split(',')[1] });
       reader.onerror = error => reject(error);
     });
+
+    // marked.parse の出力 HTML に画像幅トークンを反映する後処理。
+    //   RichMarkdownEditor は画像の幅を <img title="50%"> として Markdown に保存する
+    //   （素の Markdown に幅構文が無いため title フィールドを流用）。marked はこの title を
+    //   そのまま title 属性として出すので、ここで title="NN%" を style:width に変換し、
+    //   tooltip としては出さないようにする。PDF/印刷/プレビューでもエディタと同じ幅で表示
+    //   するための共通ユーティリティ（App.html / TaskModal.html / WikiView.html /
+    //   MarkdownPreview.html から参照）。
+    const applyImageWidthTokens = (html) => {
+      if (!html || html.indexOf('title=') === -1) return html;
+      return html.replace(/<img\b[^>]*>/gi, (tag) => {
+        const m = tag.match(/title="(\d{1,3}%)"/i);
+        if (!m) return tag;                       // 幅トークン以外の title はそのまま
+        const w = m[1];
+        let out = tag.replace(/\s*title="\d{1,3}%"/i, '');   // tooltip トークンを除去
+        if (/\sstyle="/i.test(out)) {
+          out = out.replace(/style="([^"]*)"/i, (s, css) => `style="${css};width:${w}"`);
+        } else {
+          out = out.replace(/<img\b/i, `<img style="width:${w}"`);
+        }
+        return out;
+      });
+    };
 
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>

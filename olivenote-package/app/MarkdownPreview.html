@@ -9,7 +9,7 @@ function MarkdownPreview({ text, onCheckboxChange }) {
     if (typeof marked !== 'undefined') {
       // ★ 修正箇所：breaks: true を追加！これで普通の改行が反映されます
       marked.use({ gfm: true, breaks: true });
-      let rawHtml = marked.parse(text);
+      let rawHtml = applyImageWidthTokens(marked.parse(text));
       rawHtml = rawHtml.replace(/<input([^>]*?)disabled([^>]*?)>/gi, '<input$1$2 class="cursor-pointer">');
       processedHtml = rawHtml;
     } else {
