@@ -160,6 +160,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       });
 
       // ============================================================
+      // 表示中の課題を CSV エクスポート（コメント・画像は除く、description は Markdown）
+      // ============================================================
+      const handleExportCsv = () => {
+        downloadTasksCsv([formData], {
+          members,
+          filename: `olivenote_${sanitizeFilename(formData.id || 'task')}_${sanitizeFilename(formData.title)}.csv`,
+        });
+        showToast && showToast('課題をCSV出力しました');
+      };
+
+      // ============================================================
       // タスクの基本情報を A4 印刷用に新規ウィンドウへ書き出し
       // ============================================================
       const handlePrint = () => {
@@ -2255,6 +2266,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       </button>
                       <button onClick={handlePrint} disabled={isDeletingTask || isSaving} title="基本情報をA4で印刷" className="px-3 md:px-4 py-2 rounded-lg font-bold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50 text-sm">
                         <Printer size={16} /> <span className="hidden md:inline">印刷</span>
+                      </button>
+                      <button onClick={handleExportCsv} disabled={isDeletingTask || isSaving} title="この課題をCSVで出力（コメント・画像は除く）" className="px-3 md:px-4 py-2 rounded-lg font-bold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 shadow-sm transition-colors flex items-center gap-1 disabled:opacity-50 text-sm">
+                        <FileDown size={16} /> <span className="hidden md:inline">CSV出力</span>
                       </button>
                       {/* ★ リニューアル：ドキュメント出力モーダル呼び出しボタン */}
                       {docTemplates && docTemplates.length > 0 && (

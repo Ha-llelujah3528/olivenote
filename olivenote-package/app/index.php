@@ -2060,6 +2060,87 @@ if (!auth_is_logged_in()) {
     // 含まれない値は既定へ丸める。UIから断った provider をサーバへ漏らさないためのガード。
     const sanitizeAiModel = (v) => AI_MODEL_OPTIONS.some(o => o.value === v) ? v : AI_MODEL_DEFAULT;
 
+    // ============================================================
+    // 課題の CSV エクスポート（一覧/ボードのフィルタ済み課題・個別課題で共用）
+    //   - コメント・画像（添付の実体）は出力しない。添付はファイル名のみ。
+    //   - description は保存済みの Markdown 文字列をそのまま出力する。
+    //   - Excel(日本語環境)で文字化けしないよう UTF-8 BOM を付与し、改行は CRLF。
+    //   App.html / TaskModal.html から共通参照（同一 <script> スコープ・STATUSES/PRIORITIES 参照）。
+    // ============================================================
+    const CSV_EXPORT_COLUMNS = [
+      { key: 'id',                 label: '課題ID' },
+      { key: 'title',              label: '課題名' },
+      { key: 'status',             label: 'ステータス' },
+      { key: 'priority',           label: '優先度' },
+      { key: 'type',               label: '種別' },
+      { key: 'category',           label: 'カテゴリ' },
+      { key: 'parentId',           label: '親課題ID' },
+      { key: 'assigneeName',       label: '担当者' },
+      { key: 'assigneeEmail',      label: '担当者メール' },
+      { key: 'subAssignees',       label: 'サブ担当者' },
+      { key: 'startDate',          label: '開始日' },
+      { key: 'dueDate',            label: '期限日' },
+      { key: 'implementationDate', label: '実施日' },
+      { key: 'implementationDays', label: '実施日数' },
+      { key: 'likes',              label: 'いいね数' },
+      { key: 'attachments',        label: '添付ファイル名' },
+      { key: 'createdAt',          label: '作成日時' },
+      { key: 'updatedAt',          label: '更新日時' },
+      { key: 'description',        label: '詳細(Markdown)' },
+    ];
+
+    // CSV セル1個をエスケープ。改行/カンマ/" を含む値は " で囲み、内部の " は2重化。
+    const csvEscapeCell = (val) => {
+      const s = (val == null) ? '' : String(val);
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+
+    // 1課題 → CSV 1行ぶんの配列（CSV_EXPORT_COLUMNS の順）。
+    const taskToCsvRow = (task, memberNameByEmail) => {
+      const statusLabel   = (STATUSES.find(s => s.id === task.status)     || {}).label ?? (task.status   || '');
+      const priorityLabel = (PRIORITIES.find(p => p.id === task.priority) || {}).label ?? (task.priority || '');
+      const subNames    = (task.subAssignees || []).map(e => memberNameByEmail.get(e) || e).join(' / ');
+      const attachNames = (task.attachments  || []).map(a => a && a.name).filter(Boolean).join(' / ');
+      return CSV_EXPORT_COLUMNS.map(col => {
+        switch (col.key) {
+          case 'status':       return statusLabel;
+          case 'priority':     return priorityLabel;
+          case 'subAssignees': return subNames;
+          case 'likes':        return (task.likes || []).length;
+          case 'attachments':  return attachNames;
+          default:             return task[col.key] != null ? task[col.key] : '';
+        }
+      });
+    };
+
+    const buildTasksCsv = (tasks, memberNameByEmail) => {
+      const header = CSV_EXPORT_COLUMNS.map(c => c.label);
+      const rows = (tasks || []).map(t => taskToCsvRow(t, memberNameByEmail));
+      return [header, ...rows].map(cells => cells.map(csvEscapeCell).join(',')).join('\r\n');
+    };
+
+    // ファイル名に使えない文字を除去（課題名をファイル名に使うケース用）。
+    const sanitizeFilename = (name) => String(name || '').replace(/[\\\/:*?"<>|\r\n]+/g, '_').slice(0, 80);
+
+    // 課題（配列 or 単体）を CSV としてダウンロードさせる。
+    //   options: { members?: [{email,name}], filename?: string }
+    const downloadTasksCsv = (tasks, options = {}) => {
+      const list = Array.isArray(tasks) ? tasks : [tasks];
+      const memberNameByEmail = new Map((options.members || []).map(m => [m.email, m.name]));
+      const csv = buildTasksCsv(list, memberNameByEmail);
+      // 先頭に UTF-8 BOM (U+FEFF) を付与 → Excel(日本語環境) で文字化けを防ぐ
+      const BOM = String.fromCharCode(0xFEFF);
+      const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = options.filename || ('olivenote_tasks_' + new Date().toLocaleDateString('sv-SE') + '.csv');
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>
     <?php readfile(__DIR__ . '/ListView.html'); ?>

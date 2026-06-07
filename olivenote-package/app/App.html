@@ -1220,6 +1220,23 @@ function App() {
     w.document.close();
   };
   
+  // ============================================================
+  // 現在フィルタ済みの課題を CSV エクスポート（一覧/ボード共通）
+  //   コメント・画像は出力しない。description は Markdown のまま。
+  // ============================================================
+  const handleExportCsv = () => {
+    if (!filteredTasks || filteredTasks.length === 0) {
+      showToast('出力対象の課題がありません', 'error');
+      return;
+    }
+    const viewLabel = activeTab === 'list' ? '一覧' : 'ボード';
+    downloadTasksCsv(filteredTasks, {
+      members,
+      filename: `olivenote_課題${viewLabel}_${getTodayStr()}.csv`,
+    });
+    showToast(`${filteredTasks.length}件の課題をCSV出力しました`);
+  };
+
   const activeFilterCount = Object.keys(filters).filter(k => {
     if (k === 'statuses') {
       const current = filters.statuses || [];
@@ -1763,6 +1780,19 @@ function App() {
                  <div className="w-full md:w-auto pb-1 text-right md:text-left">
                    <button onClick={() => { clearFilters(); setSearchQuery(''); }} className="text-sm font-bold text-olive-600 hover:text-olive-800 transition-colors px-2 underline">条件をクリア</button>
                  </div>
+              )}
+
+              {/* CSV エクスポートボタン（一覧・ボード表示時のみ・フィルタ済み課題が対象） */}
+              {(activeTab === 'list' || activeTab === 'board') && (
+                <div className="w-full md:w-auto pb-1 text-right md:text-left">
+                  <button
+                    onClick={handleExportCsv}
+                    title="現在フィルタ済みの課題をCSVで出力（コメント・画像は除く）"
+                    className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-3 py-1.5 rounded shadow-sm transition-colors inline-flex items-center gap-1"
+                  >
+                    <FileDown size={14}/>CSV出力
+                  </button>
+                </div>
               )}
 
               {/* ガント印刷ボタン（ガントタブ表示時のみ） */}
