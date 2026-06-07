@@ -992,6 +992,20 @@ function wiki_has_ydoc_column(PDO $pdo): bool {
     return $cached;
 }
 
+// files.is_ai_generated 列の有無を判定（migration 007 / STG は手動 ALTER）。
+//   列が無い旧環境でも getAllData / sync が壊れないよう、フィルタは列がある時だけ適用する。
+function files_has_ai_flag(PDO $pdo): bool {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM files LIKE 'is_ai_generated'");
+        $cached = (bool)$stmt->fetch();
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
 // ================================================================
 // Pusher（リアルタイム同時編集）— composer 不使用の軽量 REST 実装
 //   - 描画差分/カーソルなど高頻度なデータは、フロントの client events
@@ -1156,7 +1170,12 @@ try {
             }
 
             // Documents（削除されていないもの、最終更新の新しい順）
-            $stmt = $pdo->query("SELECT * FROM files WHERE deleted_at IS NULL ORDER BY last_updated DESC");
+            //   AI生成Doc（AI_DOC_FOLDER_ID 配下、is_ai_generated=1）はメイン一覧から除外する。
+            //   列が無い旧環境では従来どおり全件返す（graceful fallback）。
+            $docsSql = "SELECT * FROM files WHERE deleted_at IS NULL"
+                . (files_has_ai_flag($pdo) ? " AND is_ai_generated = 0" : "")
+                . " ORDER BY last_updated DESC";
+            $stmt = $pdo->query($docsSql);
             $docs = [];
             while ($row = $stmt->fetch()) {
                 $docs[] = docFromRow($row);
@@ -1791,7 +1810,11 @@ try {
             }
 
             // 2) DB側の現状を取得（ソフトデリート行も含めて全件）
-            $stmt   = $pdo->query("SELECT id, name, url, parent_id, mime_type, last_updated, deleted_at FROM files");
+            //    is_ai_generated 列がある環境では併せて取得し、削除パスで AI生成Doc を保護する。
+            $hasAiFlag = files_has_ai_flag($pdo);
+            $selCols = "id, name, url, parent_id, mime_type, last_updated, deleted_at"
+                . ($hasAiFlag ? ", is_ai_generated" : "");
+            $stmt   = $pdo->query("SELECT {$selCols} FROM files");
             $dbDocs = [];
             while ($row = $stmt->fetch()) {
                 $dbDocs[$row['id']] = $row;
@@ -1840,9 +1863,12 @@ try {
                 //   - parent_id が NULL（マイグレーション直後の旧データ）または
                 //     parent_id が今回の探索対象（visited）に含まれるものだけが対象。
                 //   - 他のフォルダツリー（例：AI生成Doc）に属するものは触らない。
+                //   - AI生成Doc（is_ai_generated=1）は parent_id が NULL でも削除しない
+                //     （DOC_FOLDER_ID の同期対象外。列が無い旧環境では従来挙動）。
                 foreach ($dbDocs as $id => $row) {
-                    if (!empty($row['deleted_at']))   continue;
-                    if (isset($driveFiles[$id]))      continue;
+                    if (!empty($row['deleted_at']))      continue;
+                    if (isset($driveFiles[$id]))         continue;
+                    if (!empty($row['is_ai_generated'])) continue;
                     $parent = $row['parent_id'] ?? null;
                     $managed = ($parent === null || $parent === '' || isset($visited[$parent]));
                     if ($managed) {
@@ -2168,9 +2194,15 @@ try {
                 }
             }
 
-            // 4) DocsViewに表示するためdocumentsテーブルへ登録
-            $pdo->prepare("INSERT INTO files (id, name, url, last_updated) VALUES (?, ?, ?, ?)")
-                ->execute([$newId, $newName, $newUrl, $modified]);
+            // 4) ファイルテーブルへ登録（AI生成Doc は is_ai_generated=1 でメイン一覧から除外）
+            //    列が無い旧環境では従来どおりフラグ無しで登録する。
+            if (files_has_ai_flag($pdo)) {
+                $pdo->prepare("INSERT INTO files (id, name, url, last_updated, is_ai_generated) VALUES (?, ?, ?, ?, 1)")
+                    ->execute([$newId, $newName, $newUrl, $modified]);
+            } else {
+                $pdo->prepare("INSERT INTO files (id, name, url, last_updated) VALUES (?, ?, ?, ?)")
+                    ->execute([$newId, $newName, $newUrl, $modified]);
+            }
 
             echo json_encode(['success' => true, 'data' => [
                 'id'   => $newId,

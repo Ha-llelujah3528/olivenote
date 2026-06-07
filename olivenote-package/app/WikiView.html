@@ -47,6 +47,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   const collabUserRef    = useRef(null);               // 自分のカーソル表示用 { name, color }（Phase 2）
   const ydocSaveTimerRef = useRef(null);               // writer の 3 秒 idle 保存タイマ
   const lastRevSaveRef   = useRef(0);                  // 最後に revision を作った時刻（5 分間隔判定）
+  const ytitleRef        = useRef(null);               // タイトル用 Y.Text（collab 中のみ。本文とは別に同期）
+  const titleObserverRef = useRef(null);               // 上記 observer（teardown で解除）
   useEffect(() => { isCollabRef.current = isCollab; }, [isCollab]);
   useEffect(() => { editBodyRef.current = editBody; }, [editBody]);
   useEffect(() => { editTitleRef.current = editTitle; }, [editTitle]);
@@ -259,8 +261,30 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   };
 
   // 現ページの collab を完全に片付ける。flushFinal=true なら離脱ビーコンを撃つ。
+  // タイトル input → Y.Text への最小差分適用。
+  //   共通の prefix / suffix を残して中央だけ delete/insert することで、
+  //   同時編集時も他者の編集を潰さず CRDT マージできる（whole-replace は競合を壊す）。
+  //   origin 'local-title-input' で観測側が自分の編集をスキップできるようにする。
+  const applyTitleDiffToYText = (ydoc, ytext, next) => {
+    const prev = ytext.toString();
+    if (prev === next) return;
+    const minLen = Math.min(prev.length, next.length);
+    let start = 0;
+    while (start < minLen && prev[start] === next[start]) start++;
+    let endPrev = prev.length, endNext = next.length;
+    while (endPrev > start && endNext > start && prev[endPrev - 1] === next[endNext - 1]) { endPrev--; endNext--; }
+    ydoc.transact(() => {
+      if (endPrev > start) ytext.delete(start, endPrev - start);
+      if (endNext > start) ytext.insert(start, next.slice(start, endNext));
+    }, 'local-title-input');
+  };
+
   const teardownCollab = (flushFinal) => {
     if (ydocSaveTimerRef.current) { clearTimeout(ydocSaveTimerRef.current); ydocSaveTimerRef.current = null; }
+    if (ytitleRef.current && titleObserverRef.current) {
+      try { ytitleRef.current.unobserve(titleObserverRef.current); } catch (_) {}
+    }
+    ytitleRef.current = null; titleObserverRef.current = null;
     if (flushFinal && providerRef.current && currentPageIdRef.current && ydocRef.current) {
       try { beaconYdoc(currentPageIdRef.current, providerRef.current.encodeState()); } catch (_) {}
     }
@@ -275,7 +299,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   // ページの Y.Doc + Pusher プロバイダを用意し、初期状態を確定する。
   //   戻り値: true=collab 起動 / false=単独編集にフォールバック（Pusher 無効 or 列未適用）。
   //   呼び出し前に teardownCollab() 済みであること。
-  const openCollab = async (pageId, bodyMd) => {
+  const openCollab = async (pageId, bodyMd, pageTitle) => {
     let info = null;
     try { info = await api.getWikiYdoc(pageId); } catch (_) { info = null; }
     if (!info || !info.collabReady) return false;            // ydoc_state 列が無い → 単独編集
@@ -311,8 +335,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     } else {
       const others = (res.members || []).filter(m => m.id !== res.myId);
       if (others.length === 0) {
-        // 自分だけ → markdown から seed して条件付き UPDATE で勝者確定
-        const update = seedYdocUpdateFromMarkdown(bodyMd || '');
+        // 自分だけ → markdown から seed して条件付き UPDATE で勝者確定（タイトルも同梱）
+        const update = seedYdocUpdateFromMarkdown(bodyMd || '', pageTitle || '');
         let seedRes = null;
         try { seedRes = await api.seedWikiYdoc(pageId, _u8ToB64(update)); } catch (_) {}
         if (seedRes && seedRes.seeded) {
@@ -327,6 +351,27 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
 
     ydocRef.current = ydoc;
     providerRef.current = provider;
+
+    // ---- タイトルの同時編集バインド（Y.Text 'title'）----
+    //   - ytext が非空（新スキーマで seed 済 / ピア収束済）→ それを正本として表示。
+    //   - ytext が空（旧 collab ページ＝title 未収録）→ DB タイトル表示を維持し、
+    //     勝手に書き込まない（多重 seed による重複を防ぐ）。最初に誰かが編集した時点で
+    //     その差分が ytext に入り、observer 経由で全員へ伝播する。
+    const ytitle = ydoc.getText('title');
+    ytitleRef.current = ytitle;
+    const seededTitle = ytitle.toString();
+    if (seededTitle !== '') { setEditTitle(seededTitle); editTitleRef.current = seededTitle; }
+    const titleObserver = (ev, txn) => {
+      if (txn && txn.origin === 'local-title-input') return;   // 自分の編集はスキップ
+      const v = ytitle.toString();
+      setEditTitle(v); editTitleRef.current = v;
+      // title 列の追従保存を予約（writer 判定は scheduleYdocSave 内部で行う。
+      // writer 交代直後の取りこぼしを防ぐため、ここでは writer チェックしない）。
+      scheduleYdocSave();
+    };
+    ytitle.observe(titleObserver);
+    titleObserverRef.current = titleObserver;
+
     lastRevSaveRef.current = Date.now();   // 開いた直後に revision を作らない（5 分カウント開始）
     setIsCollab(true); isCollabRef.current = true;
     return true;
@@ -363,7 +408,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       }
       // 同時編集をセットアップ（Pusher 無効/列未適用なら false → 従来の単独編集）。
       // ydoc/provider と初期状態を確定してからエディタを mount したいので await する。
-      await openCollab(id, data.page.bodyMd || '');
+      await openCollab(id, data.page.bodyMd || '', data.page.title || '');
       // editorKey はここで進める（collab の ydoc 確定後に 1 度だけ remount させる）
       setEditorKey(k => k + 1);
       // ここで opening を true のままにしておき、エディタ(TipTap)は opening=false まで描画しない。
@@ -982,7 +1027,17 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
                 <input
                   type="text"
                   value={editTitle}
-                  onChange={e => { setEditTitle(e.target.value); setIsDirty(true); }}
+                  onChange={e => {
+                    const v = e.target.value;
+                    if (isCollabRef.current && ytitleRef.current && ydocRef.current) {
+                      // collab 中はタイトルを Y.Text に最小差分で反映（observer は自分の編集をスキップ）
+                      applyTitleDiffToYText(ydocRef.current, ytitleRef.current, v);
+                      setEditTitle(v); editTitleRef.current = v;
+                      scheduleYdocSave();                 // writer なら title 列も追従保存（内部でガード）
+                    } else {
+                      setEditTitle(v); setIsDirty(true);
+                    }
+                  }}
                   placeholder="タイトル"
                   className="w-full text-2xl font-bold mb-3 border-b border-gray-200 focus:border-olive-500 focus:outline-none py-1 bg-transparent"
                 />

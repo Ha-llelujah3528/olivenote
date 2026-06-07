@@ -906,13 +906,16 @@ if (!auth_is_logged_in()) {
     //   2) prosemirrorJSONToYDoc(schema, json, 'default') で Y.Doc 構築
     //      ※ フラグメント名は必ず 'default'（TipTap Collaboration の既定）。'prosemirror' だと
     //        「seed したのにエディタが空」になる（設計 §11.A）。
-    const seedYdocUpdateFromMarkdown = (markdown) => {
+    const seedYdocUpdateFromMarkdown = (markdown, title) => {
       const ed = new Editor({ extensions: buildBaseEditorExtensions('', { history: true }), content: markdown || '' });
       let json = null, schema = null;
       try { json = ed.getJSON(); schema = ed.schema; } catch (_) {} finally { ed.destroy(); }
       // パースに失敗したら空ドキュメントとして seed（少なくとも有効な Y.Doc を返す）
       const ydoc = new Y.Doc();
       try { if (json && schema) Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, 'default'))); } catch (_) {}
+      // タイトルも同じ Y.Doc に Y.Text('title') として seed する（本文と同じ条件付き UPDATE で
+      // 直列化されるため、勝者/敗者/ピア収束すべてで本文・タイトルが一貫する。設計 §4）。
+      try { if (title) ydoc.getText('title').insert(0, String(title)); } catch (_) {}
       const update = Y.encodeStateAsUpdate(ydoc);
       ydoc.destroy();
       return update;
