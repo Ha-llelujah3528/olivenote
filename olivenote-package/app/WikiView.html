@@ -33,6 +33,24 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   const [diffOpen, setDiffOpen]       = useState(false);
   const [diffData, setDiffData]       = useState(null);
 
+  // ===== 同時編集 (Yjs + Pusher) — 設計: docs/wiki-collab-design.md =====
+  const [isCollab, setIsCollab]   = useState(false);   // 現在開いているページが同時編集モードか
+  const [presence, setPresence]   = useState([]);      // 同時接続メンバー [{id,name,color}]
+  const ydocRef        = useRef(null);                 // 現ページの Y.Doc
+  const providerRef    = useRef(null);                 // Pusher 中継プロバイダ
+  const myIdRef        = useRef(null);                 // presence 上の自分の id（email）
+  const isWriterRef    = useRef(false);                // 自分が DB 永続化担当(writer)か
+  const isCollabRef    = useRef(false);                // setTimeout クロージャ用の isCollab ミラー
+  const editBodyRef    = useRef('');                   // writer 保存用に最新 markdown を保持
+  const editTitleRef   = useRef('');                   // writer 保存用に最新タイトルを保持
+  const currentPageIdRef = useRef(null);               // 現ページ id（teardown/beacon クロージャ用）
+  const collabUserRef    = useRef(null);               // 自分のカーソル表示用 { name, color }（Phase 2）
+  const ydocSaveTimerRef = useRef(null);               // writer の 3 秒 idle 保存タイマ
+  const lastRevSaveRef   = useRef(0);                  // 最後に revision を作った時刻（5 分間隔判定）
+  useEffect(() => { isCollabRef.current = isCollab; }, [isCollab]);
+  useEffect(() => { editBodyRef.current = editBody; }, [editBody]);
+  useEffect(() => { editTitleRef.current = editTitle; }, [editTitle]);
+
   // ===== D&D（Pointer Events 自前実装）=====
   //   HTML5 ネイティブ Drag and Drop API（draggable + onDragStart/Over/Drop）は
   //   dragover の発火タイミングがブラウザ・速度依存で不安定、ゴースト画像が制御不能、
@@ -70,6 +88,26 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     window.addEventListener('beforeunload', h);
     return () => window.removeEventListener('beforeunload', h);
   }, [isDirty]);
+
+  // ===== collab: タブ閉じ / バックグラウンド化で収束状態をビーコン保存 =====
+  //   「最後の 1 人が去って部屋が空」になっても穴を作らないための保険（設計 §11.C）。
+  useEffect(() => {
+    const flush = () => {
+      if (providerRef.current && currentPageIdRef.current && ydocRef.current) {
+        try { beaconYdoc(currentPageIdRef.current, providerRef.current.encodeState()); } catch (_) {}
+      }
+    };
+    const onVis = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  // ===== collab: コンポーネント・アンマウント時に確実に切断＋ビーコン保存 =====
+  useEffect(() => () => { teardownCollab(true); }, []);
 
   // ===== D&D: document レベルの pointermove / pointerup ドライバ =====
   //   ドラッグはノードの onPointerDown で開始予約（dragRef.active = true）。
@@ -152,13 +190,16 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
 
   // ===== Auto-save (3 秒 idle) =====
   //  - 新規モード (draft) はユーザーが明示的に「登録」を押すまで永続化しない
+  //  - collab 中は writer の scheduleYdocSave に保存を一本化するため、この旧 autosave は無効化する
+  //    （リモート編集で isDirty が立つことは無いが、状態遷移の隙間で誤発火しないよう明示ガード）
   useEffect(() => {
+    if (isCollab) return;
     if (isDraft) return;
     if (!isDirty || !selected) return;
     const t = setTimeout(() => { handleSave(false); }, 3000);
     return () => clearTimeout(t);
     // eslint-disable-next-line
-  }, [isDirty, editTitle, editBody, isDraft]);
+  }, [isDirty, editTitle, editBody, isDraft, isCollab]);
 
   // ============================================================
   // API ラッパ
@@ -175,8 +216,126 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     }
   }
 
+  // ============================================================
+  // 同時編集ヘルパ
+  // ============================================================
+  const REV_INTERVAL_MS = 5 * 60 * 1000;   // collab 中に revision を作る最短間隔（5 分）
+
+  // presence メンバーのうち user_id(email) 最小の 1 人を writer に選出（全員が同じ結論を導く）。
+  // ソロ（メンバー無し）なら自分が writer。
+  const electWriter = (members, myId) => {
+    if (!members || members.length === 0) { isWriterRef.current = true; return; }
+    const minId = members.map(m => m.id).filter(Boolean).sort()[0];
+    isWriterRef.current = (myId != null && myId === minId);
+  };
+
+  // 離脱時に「自分の収束状態」を 1 発だけ保存（sendBeacon）。最後の 1 人が去っても穴を作らない。
+  const beaconYdoc = (pageId, ydocStateB64) => {
+    if (!pageId || !ydocStateB64) return;
+    const body = JSON.stringify({ action: 'saveWikiYdoc', payload: { id: pageId, ydocState: ydocStateB64 } });
+    try {
+      if (navigator.sendBeacon) navigator.sendBeacon('api.php', new Blob([body], { type: 'application/json' }));
+      else fetch('api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
+    } catch (_) {}
+  };
+
+  // writer の定期保存（3 秒 idle）。通常は ydoc_state だけ更新（軽い・revision 作らない）。
+  // 5 分経過していたら body_md + revision も作る（履歴の膨張を防ぐ）。
+  const scheduleYdocSave = () => {
+    if (!isCollabRef.current) return;
+    if (ydocSaveTimerRef.current) clearTimeout(ydocSaveTimerRef.current);
+    ydocSaveTimerRef.current = setTimeout(() => {
+      if (!isWriterRef.current || !providerRef.current || !currentPageIdRef.current) return;
+      const pid = currentPageIdRef.current;
+      const state = providerRef.current.encodeState();
+      const now = Date.now();
+      if (now - lastRevSaveRef.current >= REV_INTERVAL_MS) {
+        lastRevSaveRef.current = now;
+        api.saveWikiPage({ id: pid, title: editTitleRef.current, bodyMd: editBodyRef.current, ydocState: state }).catch(() => {});
+      } else {
+        api.saveWikiYdoc(pid, state).catch(() => {});
+      }
+    }, 3000);
+  };
+
+  // 現ページの collab を完全に片付ける。flushFinal=true なら離脱ビーコンを撃つ。
+  const teardownCollab = (flushFinal) => {
+    if (ydocSaveTimerRef.current) { clearTimeout(ydocSaveTimerRef.current); ydocSaveTimerRef.current = null; }
+    if (flushFinal && providerRef.current && currentPageIdRef.current && ydocRef.current) {
+      try { beaconYdoc(currentPageIdRef.current, providerRef.current.encodeState()); } catch (_) {}
+    }
+    if (providerRef.current) { try { providerRef.current.destroy(); } catch (_) {} providerRef.current = null; }
+    // ydoc.destroy() はここでは呼ばない: 旧エディタがアンマウントされるまで bind が残るため、
+    // ここで破棄すると Collaboration プラグインが破棄済み doc を触って例外になり得る。GC に委ねる。
+    ydocRef.current = null;
+    myIdRef.current = null; isWriterRef.current = false;
+    setPresence([]); setIsCollab(false); isCollabRef.current = false;
+  };
+
+  // ページの Y.Doc + Pusher プロバイダを用意し、初期状態を確定する。
+  //   戻り値: true=collab 起動 / false=単独編集にフォールバック（Pusher 無効 or 列未適用）。
+  //   呼び出し前に teardownCollab() 済みであること。
+  const openCollab = async (pageId, bodyMd) => {
+    let info = null;
+    try { info = await api.getWikiYdoc(pageId); } catch (_) { info = null; }
+    if (!info || !info.collabReady) return false;            // ydoc_state 列が無い → 単独編集
+
+    const ydoc = new Y.Doc();
+    const provider = createPusherYjsProvider(pageId, ydoc, {
+      onPresence: (members, myId) => {
+        myIdRef.current = myId;
+        setPresence(members);
+        electWriter(members, myId);
+      },
+    });
+
+    let res;
+    try { res = await provider.ready; } catch (_) { res = { ok: false }; }
+    if (!res || !res.ok) {                                   // Pusher 未接続 → 単独編集
+      try { provider.destroy(); } catch (_) {}
+      try { ydoc.destroy(); } catch (_) {}
+      return false;
+    }
+
+    // 自分のカーソル表示用ユーザー（色は presence のサーバ割当色＝アバターと一致させる）
+    const me = (res.members || []).find(m => m.id === res.myId);
+    collabUserRef.current = {
+      name: (currentUser && (currentUser.name || currentUser.email)) || 'ゲスト',
+      color: (me && me.color) || '#3b82f6',
+    };
+
+    // ---- 初期状態の確定（設計 §4）----
+    if (info.ydocState) {
+      // DB に確定状態がある → それを採用
+      try { Y.applyUpdate(ydoc, _b64ToU8(info.ydocState), 'remote'); } catch (_) {}
+    } else {
+      const others = (res.members || []).filter(m => m.id !== res.myId);
+      if (others.length === 0) {
+        // 自分だけ → markdown から seed して条件付き UPDATE で勝者確定
+        const update = seedYdocUpdateFromMarkdown(bodyMd || '');
+        let seedRes = null;
+        try { seedRes = await api.seedWikiYdoc(pageId, _u8ToB64(update)); } catch (_) {}
+        if (seedRes && seedRes.seeded) {
+          try { Y.applyUpdate(ydoc, update, 'remote'); } catch (_) {}     // 自分が勝者
+        } else {
+          // 競合で負けた → 勝者の state を取り直す（ローカルは未編集なので破棄して問題ない）
+          try { const again = await api.getWikiYdoc(pageId); if (again && again.ydocState) Y.applyUpdate(ydoc, _b64ToU8(again.ydocState), 'remote'); } catch (_) {}
+        }
+      }
+      // others>0 → seed せず、provider の SV 交換でピアから収束する（待つだけ）
+    }
+
+    ydocRef.current = ydoc;
+    providerRef.current = provider;
+    lastRevSaveRef.current = Date.now();   // 開いた直後に revision を作らない（5 分カウント開始）
+    setIsCollab(true); isCollabRef.current = true;
+    return true;
+  };
+
   async function openPage(id) {
     if (isDirty && !window.confirm('未保存の変更があります。破棄して別のページを開きますか？')) return;
+    // 前ページの collab を片付ける（自分の収束状態をビーコン保存してから切断）
+    teardownCollab(true);
     // 即座にスピナーを出してクリックへの反応を返す（ネットワーク待ち + 後続のエディタマウントを「読込中」として可視化）
     setOpening(true);
     try {
@@ -188,18 +347,25 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
         showToast && showToast('ページが見つかりませんでした', 'error');
         return;
       }
+      currentPageIdRef.current = id;
       setIsDraft(false);
       setDraftParentId(null);
       setSelected(data.page);
       setEditTitle(data.page.title || '');
       setEditBody(data.page.bodyMd || '');
-      setEditorKey(k => k + 1);
+      editBodyRef.current = data.page.bodyMd || '';
+      editTitleRef.current = data.page.title || '';
       setIsDirty(false);
       setLastSaved(data.page.updatedAt || null);
       const want = `#/wiki/${id}`;
       if (window.location.hash !== want) {
         window.history.replaceState(null, '', window.location.pathname + want);
       }
+      // 同時編集をセットアップ（Pusher 無効/列未適用なら false → 従来の単独編集）。
+      // ydoc/provider と初期状態を確定してからエディタを mount したいので await する。
+      await openCollab(id, data.page.bodyMd || '');
+      // editorKey はここで進める（collab の ydoc 確定後に 1 度だけ remount させる）
+      setEditorKey(k => k + 1);
       // ここで opening を true のままにしておき、エディタ(TipTap)は opening=false まで描画しない。
       // 2 フレーム待ってから false にすることで「スピナーをブラウザに一度描画させてから」
       // 重い ProseMirror マウント（同期処理・本文量に比例）を走らせる。
@@ -246,6 +412,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   // スマホでは2ペインを画面幅で切替表示しているため、選択解除でツリーに戻す。
   function handleBackToList() {
     if (isDirty && !window.confirm('未保存の変更があります。一覧に戻りますか？')) return;
+    teardownCollab(true);
+    currentPageIdRef.current = null;
     setSelected(null);
     setIsDraft(false);
     setIsDirty(false);
@@ -256,6 +424,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
 
   function handleCancel() {
     if (isDirty && !window.confirm('未保存の変更を破棄しますか？')) return;
+    teardownCollab(true);
+    currentPageIdRef.current = null;
     setIsDraft(false);
     setDraftParentId(null);
     setSelected(null);
@@ -274,6 +444,24 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     // 新規モードはタイトル空欄を許さない（既存は途中保存も許容）
     if (isDraft && !editTitle.trim()) {
       showToast && showToast('タイトルを入力してください', 'warn');
+      return;
+    }
+    // collab 中の明示保存: 誰でも body_md + revision + ydoc_state を確定保存できる（設計 §11.E）。
+    //   最新値はリモート編集で更新され得るので state ではなく ref を使う（クロージャ stale 回避）。
+    if (isCollab && selected) {
+      setIsSaving(true);
+      try {
+        const state = providerRef.current ? providerRef.current.encodeState() : undefined;
+        await api.saveWikiPage({ id: selected.id, title: editTitleRef.current, bodyMd: editBodyRef.current, ydocState: state });
+        lastRevSaveRef.current = Date.now();
+        setIsDirty(false);   // タイトル手動変更で立った dirty を解除（beforeunload ガードを残さない）
+        await loadPages();
+        if (manual) showToast && showToast('保存しました', 'success');
+      } catch (e) {
+        showToast && showToast('保存に失敗しました: ' + (e.message || e), 'error');
+      } finally {
+        setIsSaving(false);
+      }
       return;
     }
     setIsSaving(true);
@@ -326,6 +514,8 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     if (!selected) return;
     if (!window.confirm(`「${selected.title || '(無題)'}」とその配下を削除しますか？\n復元はできません（DBログには残ります）`)) return;
     try {
+      teardownCollab(false);   // 削除するページの状態は保存しない（ビーコン不要）
+      currentPageIdRef.current = null;
       await api.deleteWikiPage(selected.id);
       setSelected(null);
       setEditTitle(''); setEditBody(''); setIsDirty(false);
@@ -748,14 +938,35 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
               ><ChevronLeft size={14}/>一覧</button>
               <button
                 onClick={() => handleSave(true)}
-                disabled={!isDirty || isSaving}
+                disabled={isSaving || (!isCollab && !isDirty)}
                 className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-3 py-1.5 flex items-center gap-1 disabled:opacity-50"
               >
                 {isSaving ? <Loader2 size={12} className="animate-spin"/> : <Save size={12}/>} 保存
               </button>
-              <div className="text-[11px] text-gray-500">
-                {isSaving ? '保存中…' : isDirty ? '未保存の変更あり' : lastSaved ? `保存済 (${lastSaved})` : ''}
-              </div>
+              {isCollab ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-olive-700 font-bold flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"/>
+                    同時編集中{presence.length > 1 ? `（${presence.length}人）` : ''}
+                  </span>
+                  {/* 自分以外の参加者を頭文字アバターで表示 */}
+                  {presence.filter(p => p.id !== myIdRef.current).length > 0 && (
+                    <div className="flex items-center -space-x-1.5">
+                      {presence.filter(p => p.id !== myIdRef.current).slice(0, 4).map((p) => (
+                        <span key={p.id} title={p.name}
+                          className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold border-2 border-white shadow-sm"
+                          style={{ backgroundColor: p.color }}>
+                          {(p.name || '?').trim().charAt(0).toUpperCase()}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-gray-500">
+                  {isSaving ? '保存中…' : isDirty ? '未保存の変更あり' : lastSaved ? `保存済 (${lastSaved})` : ''}
+                </div>
+              )}
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={handleDuplicate} title="このページを複製" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><Copy size={12}/>複製</button>
                 <button onClick={openMoveModal} title="階層を移動" className="border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs rounded px-2 py-1.5 flex items-center gap-1"><CornerDownRight size={12}/>移動</button>
@@ -787,8 +998,18 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
                 ) : (
                   <RichMarkdownEditor
                     key={editorKey}
+                    collab={isCollab && ydocRef.current ? { ydoc: ydocRef.current, provider: providerRef.current, user: collabUserRef.current } : undefined}
                     value={editBody}
-                    onChange={(md) => { setEditBody(md); setIsDirty(true); }}
+                    onChange={(md) => {
+                      if (isCollab) {
+                        // collab 中はリモート編集でも onChange が来る。dirty 化や全員 autosave は
+                        // しない（暴発防止）。最新 markdown を writer 保存用に保持し、3 秒 idle 保存を予約。
+                        setEditBody(md); editBodyRef.current = md;
+                        scheduleYdocSave();
+                      } else {
+                        setEditBody(md); setIsDirty(true);
+                      }
+                    }}
                     placeholder={'本文を入力...\n`# ` で見出し、`- ` でリスト、`[ ] ` でチェックボックス'}
                     minHeight="400px"
                   />

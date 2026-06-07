@@ -62,7 +62,7 @@ const CONCIERGE_GREETING = {
   'concierge-tasks': 'こんにちは！現在フィルターで表示中の課題について分析します。\n「期限超過は何件？」「担当者ごとの件数は？」「優先度が高い未着手を教えて」など、お気軽にどうぞ📊'
 };
 
-function OliveConcierge({ filteredTasks = [], members = [], categories = [], taskTypes = [], filters = {}, searchQuery = '', hidden = false }) {
+function OliveConcierge({ filteredTasks = [], members = [], categories = [], taskTypes = [], filters = {}, searchQuery = '', hidden = false, aiModel = AI_MODEL_DEFAULT, onAiModelChange = () => {} }) {
   const [isOpen, setIsOpen] = useState(false);
   const [mode, setMode] = useState('concierge');
   const [messages, setMessages] = useState([
@@ -144,7 +144,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
           filtersSummary: buildFiltersSummary(),
           tasks: compactTasksForAi(),
         };
-        res = await api.chatWithOliveAI('concierge-tasks', updatedHistory, null, tasksContext);
+        res = await api.chatWithOliveAI('concierge-tasks', updatedHistory, null, tasksContext, aiModel);
       } else {
         res = await api.chatWithOliveAI('concierge', updatedHistory, null);
       }
@@ -216,7 +216,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
                   ? 'bg-olive-600 text-white shadow'
                   : 'text-gray-300 hover:bg-white/10'
               }`}
-              title="表示中の課題について（gemini-2.5-pro）"
+              title="表示中の課題について（AIモデルは下のメニューで選択）"
             >
               <span>📊 表示中の課題</span>
               <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
@@ -226,6 +226,25 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
               </span>
             </button>
           </div>
+
+          {/* モデル選択（「表示中の課題」モードのみ） */}
+          {mode === 'concierge-tasks' && (
+            <div className="bg-olive-50 px-3 py-1.5 flex items-center gap-2 shrink-0 border-b border-olive-100">
+              <span className="text-[11px] text-olive-700 font-bold whitespace-nowrap flex items-center gap-1">
+                <Bot size={12} /> AIモデル
+              </span>
+              <select
+                value={aiModel}
+                onChange={(e) => onAiModelChange(e.target.value)}
+                disabled={isTyping}
+                className="flex-1 text-xs border border-olive-200 rounded px-2 py-1 bg-white outline-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 disabled:bg-gray-50 disabled:opacity-60"
+              >
+                {AI_MODEL_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* メッセージエリア */}
           <div className="flex-1 overflow-y-auto p-4 bg-olive-50 flex flex-col gap-4">
@@ -1375,6 +1394,7 @@ function App() {
           <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarDays size={16} /> ガント</button>
           <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarIcon size={16} /> カレンダー</button>
           <button onClick={() => setActiveTab('wiki')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'wiki' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><BookOpen size={16} /> ドキュメント</button>
+          <button onClick={() => setActiveTab('whiteboard')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'whiteboard' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Palette size={16} /> ホワイトボード</button>
           <button onClick={() => setActiveTab('files')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'files' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><FileText size={16} /> ファイル</button>
           <button onClick={() => setActiveTab('settings')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'settings' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Settings size={16} /> 設定</button>
         </div>
@@ -1472,7 +1492,7 @@ function App() {
           >
             <LogOut size={18} />
           </button>
-          {activeTab !== 'files' && activeTab !== 'wiki' && (
+          {activeTab !== 'files' && activeTab !== 'wiki' && activeTab !== 'whiteboard' && (
             <>
               <button
                 onClick={() => setIsAutoGenOpen(true)}
@@ -1854,6 +1874,7 @@ function App() {
         {activeTab === 'calendar' && <CalendarView tasks={filteredTasks} onOpenTask={handleOpenTask} holidays={holidays} taskTypes={taskTypes} members={members} />}
         {activeTab === 'files' && <FilesView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}
         {activeTab === 'wiki' && <WikiView currentUser={currentUser} members={members} wikiTargetPageId={wikiTargetPageId} setWikiTargetPageId={setWikiTargetPageId} showToast={showToast} />}
+        {activeTab === 'whiteboard' && <WhiteboardView currentUser={currentUser} members={members} categories={categories} onCreateTask={handleSaveTask} showToast={showToast} />}
         {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} />}
       </main>
 
@@ -1865,6 +1886,8 @@ function App() {
           taskTemplates={taskTemplates}
           docTemplates={docTemplates}
           showToast={showToast}
+          aiModelAdvisor={sanitizeAiModel(userPrefs['aiModelAdvisor'])}
+          onAdvisorModelChange={(v) => savePref('aiModelAdvisor', v)}
         />
       )}
       <OliveConcierge
@@ -1875,6 +1898,8 @@ function App() {
         filters={filters}
         searchQuery={searchQuery}
         hidden={isModalOpen}
+        aiModel={sanitizeAiModel(userPrefs['aiModelConciergeTasks'])}
+        onAiModelChange={(v) => savePref('aiModelConciergeTasks', v)}
       />
 
       <TaskAutoGenerateModal

@@ -39,6 +39,19 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
         return map;
       }, [tasks]);
 
+      // ★ パフォーマンス: カード毎の .find() / ステータス毎の filter を排除するための事前 Map 化。
+      //   従来はカード1枚ごとに members/categories/PRIORITIES を線形探索し、
+      //   さらにカラム数ぶん tasks を filter していた（低スペックPCでのカクつきの主因）。
+      const { membersByEmail, categoriesByName, priorityById, tasksByStatus } = useMemo(() => {
+        const mMap = new Map((members || []).map(m => [m.email, m]));
+        const cMap = new Map((categories || []).map(c => [c.name, c]));
+        const pMap = new Map(PRIORITIES.map(p => [p.id, p]));
+        const sMap = {};
+        STATUSES.forEach(s => { sMap[s.id] = []; });
+        tasks.forEach(t => { if (sMap[t.status]) sMap[t.status].push(t); });
+        return { membersByEmail: mMap, categoriesByName: cMap, priorityById: pMap, tasksByStatus: sMap };
+      }, [tasks, members, categories]);
+
       // ============================================================
       // 共通：1枚のタスクカードをレンダリングするヘルパー
       //   - compactMode=true のときはタイトル＋期限のみに切り詰める（要件2）
@@ -46,11 +59,11 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
       //   - task.cardColor があればカード全体をパステル色で塗る（要件1）
       // ============================================================
       const renderTaskCard = (task, statusIdForDrop) => {
-        const priorityObj = PRIORITIES.find(p => p.id === task.priority) || PRIORITIES[1];
+        const priorityObj = priorityById.get(task.priority) || PRIORITIES[1];
         const dueInfo = getDueDateInfo(task.dueDate, task.status);
-        const member = members.find(m => m.email === task.assigneeEmail);
+        const member = membersByEmail.get(task.assigneeEmail);
         const isDragOver = dragOverTaskId === task.id;
-        const catObj = categories.find(c => c.name === task.category);
+        const catObj = categoriesByName.get(task.category);
         const catColor = catObj ? CATEGORY_COLORS[catObj.colorIndex] : null;
         const cardColor = getCardColor(task.cardColor);
         const isInvalidDrop = isDragOver && dragOverInvalid;
@@ -145,7 +158,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
       // ============================================================
       if (isMobile) {
         const currentStatus = STATUSES.find(s => s.id === mobileStatusId) || STATUSES[0];
-        const columnTasks = tasks.filter(t => t.status === currentStatus.id);
+        const columnTasks = tasksByStatus[currentStatus.id] || [];
 
         return (
           <div className="flex-1 flex flex-col h-full overflow-hidden">
@@ -206,7 +219,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
       return (
         <div className="flex-1 flex gap-4 overflow-x-auto pb-4 h-full">
           {STATUSES.map(status => {
-            const columnTasks = tasks.filter(t => t.status === status.id);
+            const columnTasks = tasksByStatus[status.id] || [];
             return (
               <div
                 key={status.id}

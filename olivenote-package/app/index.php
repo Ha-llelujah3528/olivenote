@@ -61,7 +61,9 @@ if (!auth_is_logged_in()) {
     {
       "imports": {
         "react": "https://esm.sh/react@18.2.0",
+        "react-dom": "https://esm.sh/react-dom@18.2.0",
         "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
         "lucide-react": "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0",
         "@tiptap/react": "https://esm.sh/@tiptap/react@2.10.3?deps=react@18.2.0,react-dom@18.2.0",
         "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@2.10.3",
@@ -75,7 +77,14 @@ if (!auth_is_logged_in()) {
         "@tiptap/extension-table-header": "https://esm.sh/@tiptap/extension-table-header@2.10.3",
         "@tiptap/extension-table-cell": "https://esm.sh/@tiptap/extension-table-cell@2.10.3",
         "@tiptap/extension-image": "https://esm.sh/@tiptap/extension-image@2.10.3",
-        "tiptap-markdown": "https://esm.sh/tiptap-markdown@0.8.10"
+        "tiptap-markdown": "https://esm.sh/tiptap-markdown@0.8.10",
+        "@excalidraw/excalidraw": "https://esm.sh/@excalidraw/excalidraw@0.17.6?deps=react@18.2.0,react-dom@18.2.0&external=react,react-dom",
+        "pusher-js": "https://esm.sh/pusher-js@8.4.0",
+        "yjs": "https://esm.sh/yjs@13.6.20",
+        "@tiptap/extension-collaboration": "https://esm.sh/@tiptap/extension-collaboration@2.10.3?deps=yjs@13.6.20&external=yjs",
+        "@tiptap/extension-collaboration-cursor": "https://esm.sh/@tiptap/extension-collaboration-cursor@2.10.3?deps=yjs@13.6.20&external=yjs",
+        "y-prosemirror": "https://esm.sh/y-prosemirror@1.2.12?deps=yjs@13.6.20&external=yjs",
+        "y-protocols/awareness": "https://esm.sh/y-protocols@1.0.6/awareness?deps=yjs@13.6.20&external=yjs"
       }
     }
   </script>
@@ -86,6 +95,13 @@ if (!auth_is_logged_in()) {
     let INJECTED_DATA = null;
     // フッタのバージョン表示用。dist/stg どちらでも index.php 冒頭で算出される。
     window.APP_VERSION = <?= json_encode($appVersion, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+    // Pusher（リアルタイム同時編集）のフロント設定。PUSHER_KEY が空なら enabled=false で
+    // 同期機能は丸ごとスキップされ、従来の単独編集＋DB保存で動作する。秘密鍵(SECRET)は渡さない。
+    window.PUSHER = {
+      key:     <?= json_encode(defined('PUSHER_KEY') ? PUSHER_KEY : '', JSON_HEX_TAG | JSON_HEX_AMP) ?>,
+      cluster: <?= json_encode(defined('PUSHER_CLUSTER') && PUSHER_CLUSTER !== '' ? PUSHER_CLUSTER : 'ap3', JSON_HEX_TAG | JSON_HEX_AMP) ?>,
+      enabled: <?= (defined('PUSHER_KEY') && PUSHER_KEY !== '') ? 'true' : 'false' ?>
+    };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
@@ -96,8 +112,32 @@ if (!auth_is_logged_in()) {
   <!-- Floating UI: ドロップダウン等の自動配置（flip / shift）。window.FloatingUIDOM として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/@floating-ui/core@1.6.8"></script>
   <script src="https://cdn.jsdelivr.net/npm/@floating-ui/dom@1.6.13"></script>
+  <!-- Excalidraw（ホワイトボード）の CSS。本体 JS は importmap 経由で遅延 import する。
+       ※ esm.sh は生の dist CSS を 404 で返すため、CSS は unpkg から取得する。 -->
+  <link rel="stylesheet" href="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.css" />
   <!-- TipTap (ProseMirror) は importmap 経由で ESM 読み込み。CSS は <style> ブロック内に手書きで定義。 -->
     <style>
+      /* ===== 横オーバーフロー予防ガード =====
+         実測ではレイアウトは健全（STG/PRD 全タブ 320〜390px で document の
+         overflowPx=0）だが、内部の overflow-x-auto 領域（ボードのカラム/
+         ナビのタブ等）からの横スクロール連鎖や、将来の回帰で document 全体が
+         横に広がるのを「保険」として断つ。ピンチズーム自体は阻害しない
+         （viewport の user-scalable は据え置き）。
+         ※ body は別途 .overflow-hidden(Tailwind) で両軸クリップ済。 */
+      html {
+        overflow-x: clip;            /* 万一の document 横拡大を視覚的に断つ（座標は据え置き） */
+      }
+      html, body {
+        overscroll-behavior-x: none; /* 横スクロール連鎖・端でのバウンドを抑制 */
+      }
+
+      /* ===== Excalidraw（ホワイトボード）UIの不要部品を非表示 ===== */
+      /* ライブラリ（再利用シェイプ集）機能はこの用途では使わないのでトグルごと隠す。
+         メニュー内の「Excalidraw links」等は WhiteboardView 側でカスタム MainMenu に
+         置き換えて除外している（CSS ではなく描画で制御）。 */
+      .excalidraw .default-sidebar-trigger,
+      .excalidraw .sidebar-trigger.default-sidebar-trigger { display: none !important; }
+
       /* ===== タスクモーダル開閉アニメーション（引き出し風） ===== */
       /* 背景: ふわっとフェードイン */
       @keyframes olive-modal-backdrop-in {
@@ -246,6 +286,30 @@ if (!auth_is_logged_in()) {
         font-weight: bold;
       }
       /* placeholder（@tiptap/extension-placeholder） */
+      /* 同時編集カーソル（@tiptap/extension-collaboration-cursor, Phase 2）
+         色はライブラリが border-color / background-color をインライン指定する。ここはレイアウトのみ。 */
+      .olive-tiptap-content .ProseMirror .collaboration-cursor__caret {
+        border-left: 1px solid #0d0d0d;
+        border-right: 1px solid #0d0d0d;
+        margin-left: -1px;
+        margin-right: -1px;
+        pointer-events: none;
+        position: relative;
+        word-break: normal;
+      }
+      .olive-tiptap-content .ProseMirror .collaboration-cursor__label {
+        border-radius: 3px 3px 3px 0;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 600;
+        left: -1px;
+        line-height: normal;
+        padding: 1px 6px;
+        position: absolute;
+        top: -1.4em;
+        user-select: none;
+        white-space: nowrap;
+      }
       /* インライン画像: 段落内に配置されるが、視覚的にはブロック的に見せる
          （max-width で段落幅に収まる、margin で前後と分離） */
       .olive-tiptap-content .ProseMirror img.olive-tiptap-image {
@@ -449,7 +513,7 @@ if (!auth_is_logged_in()) {
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
-    import { useEditor, EditorContent } from '@tiptap/react';
+    import { useEditor, EditorContent, Editor } from '@tiptap/react';
     import StarterKit from '@tiptap/starter-kit';
     import Paragraph from '@tiptap/extension-paragraph';
     import TipTapLink from '@tiptap/extension-link';
@@ -463,6 +527,12 @@ if (!auth_is_logged_in()) {
     import TipTapTableCell from '@tiptap/extension-table-cell';
     import TipTapImage from '@tiptap/extension-image';
     import { Markdown } from 'tiptap-markdown';
+    // ===== Wiki 同時編集 (Yjs) — 設計: docs/wiki-collab-design.md =====
+    import * as Y from 'yjs';
+    import Collaboration from '@tiptap/extension-collaboration';
+    import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+    import { prosemirrorJSONToYDoc } from 'y-prosemirror';
+    import * as awarenessProtocol from 'y-protocols/awareness';
 
     // ===== 空段落を保持する Paragraph（バグ: 改行が round-trip で詰まる対策）=====
     //   prosemirror-markdown の既定 serializer は「空段落＝無出力 + ブロック区切りは常に
@@ -778,6 +848,250 @@ if (!auth_is_logged_in()) {
     });
 
     // ============================================================
+    // 共有: エディタ拡張ビルダ（スキーマ部分のみ）
+    //   RichMarkdownEditor 本体と、Wiki 同時編集の seed 用 headless エディタが
+    //   「全く同じ ProseMirror スキーマ」を使うための単一ソース。editorProps / 画像アップロード等の
+    //   「振る舞い」はスキーマに無関係なのでここには含めない（呼び出し側で付与）。
+    //   collab 時は StarterKit の history を無効化（undo/redo は Collaboration に委譲）。
+    // ============================================================
+    const buildBaseEditorExtensions = (placeholder, opts = {}) => {
+      const disableHistory = opts.history === false;
+      return [
+        StarterKit.configure({
+          heading: { levels: [1, 2, 3, 4] },
+          codeBlock: { HTMLAttributes: { class: 'olive-tiptap-codeblock' } },
+          paragraph: false,
+          ...(disableHistory ? { history: false } : {}),
+        }),
+        MarkdownParagraph,
+        TipTapLink.configure({
+          openOnClick: false,
+          autolink: true,
+          linkOnPaste: true,
+          HTMLAttributes: { class: 'olive-tiptap-link', rel: 'noopener noreferrer', target: '_blank' },
+        }),
+        TaskList,
+        TaskItem.configure({ nested: true }),
+        Placeholder.configure({ placeholder: placeholder || '課題の詳細を入力...（Markdown が使えます）' }),
+        TipTapTable.configure({ resizable: true, HTMLAttributes: { class: 'olive-tiptap-table' } }),
+        TipTapTableRow,
+        TipTapTableHeader,
+        TipTapTableCell,
+        ResizableImage.configure({ inline: true, allowBase64: true, HTMLAttributes: { class: 'olive-tiptap-image' } }),
+        Markdown.configure({
+          html: false, tightLists: true, bulletListMarker: '-', linkify: true, breaks: true,
+          transformPastedText: true, transformCopiedText: true,
+        }),
+      ];
+    };
+
+    // ============================================================
+    // Wiki 同時編集 (Yjs) — base64 ヘルパ / seeder / Pusher 中継プロバイダ
+    //   設計: docs/wiki-collab-design.md（§3 provider, §4 seed, §11）
+    // ============================================================
+    // Yjs の update / state vector はバイナリ(Uint8Array)。Pusher / API は文字列なので base64 で運ぶ。
+    const _u8ToB64 = (u8) => {
+      let s = ''; const CH = 0x8000;
+      for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+      return btoa(s);
+    };
+    const _b64ToU8 = (b64) => {
+      const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    };
+
+    // markdown → Y.Doc 初期状態(Update バイト列)。
+    //   1) 本番と同一スキーマの headless 非collab エディタで markdown を PM JSON にパース
+    //   2) prosemirrorJSONToYDoc(schema, json, 'default') で Y.Doc 構築
+    //      ※ フラグメント名は必ず 'default'（TipTap Collaboration の既定）。'prosemirror' だと
+    //        「seed したのにエディタが空」になる（設計 §11.A）。
+    const seedYdocUpdateFromMarkdown = (markdown) => {
+      const ed = new Editor({ extensions: buildBaseEditorExtensions('', { history: true }), content: markdown || '' });
+      let json = null, schema = null;
+      try { json = ed.getJSON(); schema = ed.schema; } catch (_) {} finally { ed.destroy(); }
+      // パースに失敗したら空ドキュメントとして seed（少なくとも有効な Y.Doc を返す）
+      const ydoc = new Y.Doc();
+      try { if (json && schema) Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, 'default'))); } catch (_) {}
+      const update = Y.encodeStateAsUpdate(ydoc);
+      ydoc.destroy();
+      return update;
+    };
+
+    // Pusher presence チャンネルを Yjs の中継に使う軽量プロバイダ。
+    //   - ローカル update を client-yjs-update で全員へ配信（150ms バッチ + 9KB チャンク）
+    //   - 受信は applyUpdate(…, 'remote') で適用（origin 判定でエコー防止）
+    //   - 欠損自己修復: state vector を交換し差分(client-yjs-sync)を返送（subscribe直後/member_added/15s毎）
+    //   - presence メンバーは onPresence(members, myId) で WikiView に通知
+    //   ※ provider は「DB 永続化のハブではない」。同期は完全 P2P で、特定ピアに依存しない。
+    const createPusherYjsProvider = (pageId, ydoc, opts = {}) => {
+      const onPresence = opts.onPresence || function () {};
+      const MAX_BYTES = 9000;
+      const channelName = 'presence-wiki-' + pageId;
+      let channel = null, pusher = null, myId = null, destroyed = false, msgSeq = 0;
+      const membersInfo = new Map();
+      let batch = [], flushTimer = null, hbTimer = null;
+      const partials = new Map();   // mid -> { parts:[], n, got }
+
+      // ===== awareness（カーソル/選択範囲の共有, Phase 2）=====
+      //   CollaborationCursor 拡張に渡す provider.awareness。状態は ephemeral（DB 非永続）。
+      //   ローカル変化は client-aware で中継、受信は applyAwarenessUpdate(…, 'remote')。
+      const awareness = new awarenessProtocol.Awareness(ydoc);
+      let awareThrottle = 0, awareTrailing = null, awarePending = new Set();
+
+      const send = (event, data) => { try { if (channel) channel.trigger(event, data); } catch (_) {} };
+
+      // u8 を base64 化し、9KB を超えるなら mid 付きでチャンク分割送信
+      const sendBytes = (event, base, u8) => {
+        const b64 = _u8ToB64(u8);
+        if (b64.length <= MAX_BYTES) { send(event, { ...base, u: b64 }); return; }
+        const mid = (myId || 'x') + ':' + (++msgSeq);
+        const n = Math.ceil(b64.length / MAX_BYTES);
+        for (let i = 0; i < n; i++) send(event, { ...base, mid, i, n, u: b64.slice(i * MAX_BYTES, (i + 1) * MAX_BYTES) });
+      };
+
+      // チャンク受信を組み立てて u8 を cb に渡す（単一チャンクは即時）
+      //   欠損チャンクで partials が無限に溜まらないよう、n に上限を設け、古い未完エントリは破棄する。
+      const MAX_CHUNKS = 256;     // full-sync でもこの枚数(=最大 ~2.3MB base64)で十分。超過は不正として無視
+      const PARTIAL_TTL = 30000;  // 30 秒で揃わなかった未完メッセージは破棄
+      const recvBytes = (data, cb) => {
+        if (data.mid == null || data.n == null) { try { cb(_b64ToU8(data.u)); } catch (_) {} return; }
+        const n = data.n | 0, i = data.i | 0;
+        if (n <= 0 || n > MAX_CHUNKS || i < 0 || i >= n) return;   // 異常な i/n は捨てる
+        const now = Date.now();
+        // 経年した未完エントリを掃除（メモリリーク防止）
+        if (partials.size > 0) for (const [k, v] of partials) { if (now - v.t > PARTIAL_TTL) partials.delete(k); }
+        let rec = partials.get(data.mid);
+        if (!rec) { rec = { parts: new Array(n).fill(null), n, got: 0, t: now }; partials.set(data.mid, rec); }
+        if (rec.n !== n) return;   // 同一 mid で枚数が食い違う = 不整合、捨てる
+        if (rec.parts[i] == null) { rec.parts[i] = data.u; rec.got++; }
+        if (rec.got === rec.n) { partials.delete(data.mid); try { cb(_b64ToU8(rec.parts.join(''))); } catch (_) {} }
+      };
+
+      // ローカル update を捕捉 → 150ms バッチ → merge → 配信
+      const onLocalUpdate = (update, origin) => {
+        if (origin === 'remote') return;   // 受信由来は再配信しない（エコー防止）
+        batch.push(update);
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          if (!batch.length || !channel) { batch = []; return; }
+          const merged = Y.mergeUpdates(batch); batch = [];
+          sendBytes('client-yjs-update', {}, merged);
+        }, 150);
+      };
+      ydoc.on('update', onLocalUpdate);
+
+      const sendStateVector = () => {
+        if (channel) send('client-yjs-sv', { uid: myId, sv: _u8ToB64(Y.encodeStateVector(ydoc)) });
+      };
+
+      const applyRemote = (u8) => { try { Y.applyUpdate(ydoc, u8, 'remote'); } catch (_) {} };
+
+      // awareness 変化を client-aware で配信（カーソル移動は高頻度なので 80ms スロットル）。
+      const flushAware = () => {
+        awareThrottle = Date.now();
+        if (!channel || awarePending.size === 0) { awarePending = new Set(); return; }
+        let u8; try { u8 = awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awarePending)); } catch (_) { awarePending = new Set(); return; }
+        awarePending = new Set();
+        sendBytes('client-aware', {}, u8);
+      };
+      const onAwareUpdate = ({ added, updated, removed }, origin) => {
+        if (origin === 'remote') return;   // 受信由来は再配信しない
+        for (const c of added) awarePending.add(c);
+        for (const c of updated) awarePending.add(c);
+        for (const c of removed) awarePending.add(c);
+        const now = Date.now();
+        if (now - awareThrottle > 80) { flushAware(); }
+        else { if (awareTrailing) clearTimeout(awareTrailing); awareTrailing = setTimeout(flushAware, 80); }
+      };
+      awareness.on('update', onAwareUpdate);
+      const applyRemoteAware = (u8) => { try { awarenessProtocol.applyAwarenessUpdate(awareness, u8, 'remote'); } catch (_) {} };
+      // 新規参加者に自分（と手元で見えている全員）の awareness を一括送信する。
+      const sendFullAwareness = () => {
+        if (!channel) return;
+        const clients = Array.from(awareness.getStates().keys());
+        if (clients.length === 0) return;
+        let u8; try { u8 = awarenessProtocol.encodeAwarenessUpdate(awareness, clients); } catch (_) { return; }
+        sendBytes('client-aware', {}, u8);
+      };
+
+      const mapMember = (m) => ({ id: m.id, name: (m.info && m.info.name) || 'ゲスト', color: (m.info && m.info.color) || '#3b82f6' });
+      const emitPresence = () => onPresence(Array.from(membersInfo.values()), myId);
+
+      // ready は「購読が成立して初期メンバーが確定したか」を返す Promise。
+      //   解決値: { ok:true, members, myId } / { ok:false }
+      //   → 初期同期で「自分だけか／既存ピアが居るか」を確実に判定できるようにする。
+      let resolveReady; const ready = new Promise((r) => { resolveReady = r; });
+      let readyDone = false;
+      const finishReady = (val) => { if (!readyDone) { readyDone = true; resolveReady(val); } };
+
+      const setup = async () => {
+        try { pusher = await ensurePusher(); } catch (_) { pusher = null; }
+        if (!pusher || destroyed) { finishReady({ ok: false }); return; }
+        channel = pusher.subscribe(channelName);
+        const failTimer = setTimeout(() => finishReady({ ok: false, timeout: true }), 8000);
+        channel.bind('pusher:subscription_succeeded', (m) => {
+          clearTimeout(failTimer);
+          myId = (m && m.me) ? m.me.id : null;
+          membersInfo.clear();
+          try { m.each((mm) => membersInfo.set(mm.id, mapMember(mm))); } catch (_) {}
+          emitPresence();
+          sendStateVector();   // 後発参加: 既存ピアへ差分を要求
+          finishReady({ ok: true, members: Array.from(membersInfo.values()), myId });
+        });
+        channel.bind('pusher:subscription_error', () => { clearTimeout(failTimer); finishReady({ ok: false }); });
+        channel.bind('pusher:member_added', (mm) => {
+          membersInfo.set(mm.id, mapMember(mm)); emitPresence();
+          sendStateVector();    // 相手が後発: SV 交換を促す
+          sendFullAwareness();  // 相手に自分のカーソルを見せる
+          // エディタ未マウントで自分の awareness がまだ空のタイミングに備えて 1 秒後に再送
+          setTimeout(() => { if (!destroyed) sendFullAwareness(); }, 1000);
+        });
+        channel.bind('pusher:member_removed', (mm) => { membersInfo.delete(mm.id); emitPresence(); });
+        channel.bind('client-aware', (data) => { if (data && data.u != null) recvBytes(data, applyRemoteAware); });
+        channel.bind('client-yjs-update', (data) => { if (data && data.u != null) recvBytes(data, applyRemote); });
+        channel.bind('client-yjs-sv', (data) => {
+          if (!data || data.sv == null || data.uid === myId) return;
+          let diff; try { diff = Y.encodeStateAsUpdate(ydoc, _b64ToU8(data.sv)); } catch (_) { return; }
+          if (diff && diff.length > 2) sendBytes('client-yjs-sync', { to: data.uid }, diff);  // 空 update は ~2byte
+        });
+        channel.bind('client-yjs-sync', (data) => {
+          if (!data || data.u == null || (data.to && data.to !== myId)) return;
+          recvBytes(data, applyRemote);
+        });
+        hbTimer = setInterval(sendStateVector, 15000);
+      };
+
+      setup();
+
+      return {
+        channelName,
+        ready,                      // Promise<{ ok, members?, myId? }>
+        awareness,                  // CollaborationCursor 拡張に渡す（カーソル共有）
+        getMyId: () => myId,
+        getMembers: () => Array.from(membersInfo.values()),
+        encodeState: () => _u8ToB64(Y.encodeStateAsUpdate(ydoc)),
+        destroy: () => {
+          destroyed = true;
+          try { ydoc.off('update', onLocalUpdate); } catch (_) {}
+          try { awareness.off('update', onAwareUpdate); } catch (_) {}
+          if (awareTrailing) { clearTimeout(awareTrailing); awareTrailing = null; }
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+          if (channel) {
+            try { channel.unbind_all(); } catch (_) {}
+            try { if (pusher) pusher.unsubscribe(channelName); } catch (_) {}
+          }
+          channel = null;
+          // 自分の awareness 状態を消してから破棄（他端末から自分のカーソルが消える）
+          try { awarenessProtocol.removeAwarenessStates(awareness, [awareness.clientID], 'local'); } catch (_) {}
+          try { awareness.destroy(); } catch (_) {}
+        },
+      };
+    };
+
+    // ============================================================
     // RichMarkdownEditor — TipTap (ProseMirror) ベースの WYSIWYG エディタ
     // TaskModal / Wiki（Sprint 3）共通で使う想定。
     //
@@ -790,7 +1104,10 @@ if (!auth_is_logged_in()) {
     // - forwardedRef 経由で getMarkdown / setMarkdown / insertTemplate / focus を露出
     // ============================================================
     const RichMarkdownEditor = React.forwardRef(
-      ({ value, onChange, placeholder, disabled, minHeight, mentionMembers }, ref) => {
+      ({ value, onChange, placeholder, disabled, minHeight, mentionMembers, collab }, ref) => {
+        // collab = { ydoc } が渡されたら Wiki 同時編集モード。content を渡さず Collaboration に本文を委ねる。
+        // 渡されない（TaskModal 等）なら従来どおり value(markdown) ベースで動く。
+        const isCollab = !!(collab && collab.ydoc);
         const lastEmittedRef = useRef(value || '');
         // onChange は親が render のたびに新規生成し得る → ref で常に最新版を参照
         const onChangeRef = useRef(onChange);
@@ -816,54 +1133,21 @@ if (!auth_is_logged_in()) {
         // =====================================
 
         const editor = useEditor({
+          // 拡張のスキーマ部分は共有ビルダで生成（seed 用 headless エディタと完全に同一スキーマ）。
+          // collab 時は history を Collaboration に委譲し、Collaboration 拡張を末尾に足す。
           extensions: [
-            StarterKit.configure({
-              // StarterKit には Link が含まれないので、別途 TipTapLink で追加
-              heading: { levels: [1, 2, 3, 4] },
-              codeBlock: { HTMLAttributes: { class: 'olive-tiptap-codeblock' } },
-              // 空段落を保持する MarkdownParagraph で置換するため標準 paragraph を無効化
-              paragraph: false,
-            }),
-            MarkdownParagraph,
-            TipTapLink.configure({
-              openOnClick: false,
-              autolink: true,
-              linkOnPaste: true,
-              HTMLAttributes: {
-                class: 'olive-tiptap-link',
-                rel: 'noopener noreferrer',
-                target: '_blank',
-              },
-            }),
-            TaskList,
-            TaskItem.configure({ nested: true }),
-            Placeholder.configure({
-              placeholder: placeholder || '課題の詳細を入力...（Markdown が使えます）',
-            }),
-            TipTapTable.configure({ resizable: true, HTMLAttributes: { class: 'olive-tiptap-table' } }),
-            TipTapTableRow,
-            TipTapTableHeader,
-            TipTapTableCell,
-            ResizableImage.configure({
-              // インライン化することで Link マークが画像に直接乗る
-              //   → [![alt](data:...)](href) としてマークダウン往復可能
-              //   → クリックでオリジナル Drive ファイルを開く動線が作れる
-              inline: true,
-              // 圧縮版を data:image/...;base64,... のまま埋め込むため許可必須
-              allowBase64: true,
-              HTMLAttributes: { class: 'olive-tiptap-image' },
-            }),
-            Markdown.configure({
-              html: false,
-              tightLists: true,
-              bulletListMarker: '-',
-              linkify: true,
-              breaks: true,
-              transformPastedText: true,
-              transformCopiedText: true,
-            }),
+            ...buildBaseEditorExtensions(placeholder, { history: !isCollab }),
+            ...(isCollab ? [Collaboration.configure({ document: collab.ydoc })] : []),
+            // Phase 2: 他参加者のカーソル/選択範囲を表示（provider.awareness 経由）。
+            ...(isCollab && collab.provider && collab.provider.awareness ? [
+              CollaborationCursor.configure({
+                provider: collab.provider,
+                user: collab.user || { name: 'ゲスト', color: '#3b82f6' },
+              }),
+            ] : []),
           ],
-          content: value || '',
+          // collab 時は本文を Y.Doc から取るので content を渡さない（渡すと二重化＝重複の原因）。
+          content: isCollab ? '' : (value || ''),
           editable: !disabled,
           editorProps: {
             attributes: {
@@ -1003,8 +1287,9 @@ if (!auth_is_logged_in()) {
         };
 
         // 親から value が変わった時のみ再同期（自分が emit した直後・編集中はスキップ）
+        //   collab 時は本文を Y.Doc が支配するので value→setContent は一切行わない（Yjs と衝突するため）。
         useEffect(() => {
-          if (!editor) return;
+          if (!editor || isCollab) return;
           const incoming = value || '';
           if (incoming === lastEmittedRef.current) return;
           // 編集中（フォーカス中）は setContent しない → undo 履歴と入力中状態を保護
@@ -1646,12 +1931,24 @@ if (!auth_is_logged_in()) {
       moveWikiPage:         (id, parentId, sortOrder)          => callApi('moveWikiPage', { id, parentId, sortOrder }),
       duplicateWikiPage:    (id)                                => callApi('duplicateWikiPage', { id }),
 
+      // ---- Wiki 同時編集 (Yjs) ----
+      getWikiYdoc:          (id)                                => callApi('getWikiYdoc', { id }),
+      seedWikiYdoc:         (id, ydocState)                     => callApi('seedWikiYdoc', { id, ydocState }),
+      saveWikiYdoc:         (id, ydocState)                     => callApi('saveWikiYdoc', { id, ydocState }),
+
+      // ---- ホワイトボード（フリーボード） ----
+      listWhiteboards:      ()                                 => callApi('listWhiteboards'),
+      getWhiteboard:        (id)                               => callApi('getWhiteboard', { id }),
+      saveWhiteboard:       (payload)                          => callApi('saveWhiteboard', payload),
+      deleteWhiteboard:     (id)                               => callApi('deleteWhiteboard', { id }),
+      analyzeWhiteboardImage:(payload)                         => callApi('analyzeWhiteboardImage', payload),
+
       // ---- AI仕様書（systemSpecForAI）取得 ----
       getSystemSpecForAI:          ()                            => callApi('getSystemSpecForAI'),
 
       // ---- AI ----
       gatherAiInformation:         (payload)                    => callApi('gatherAiInformation', payload),
-      chatWithOliveAI:             (mode, history, taskContext, tasksContext = null) => callApi('chatWithOliveAI', { mode, history, taskContext, tasksContext }),
+      chatWithOliveAI:             (mode, history, taskContext, tasksContext = null, model = null) => callApi('chatWithOliveAI', { mode, history, taskContext, tasksContext, model }),
       generateTasksFromContext:    (payload)                    => callApi('generateTasksFromContext', payload),
       generateDocumentFromComment: (payload)                    => callApi('generateDocumentFromComment', payload),
       generateAndAppendReleaseNote:(payload)                    => callApi('generateAndAppendReleaseNote', payload),
@@ -1665,6 +1962,9 @@ if (!auth_is_logged_in()) {
       listFilterPresets:     ()                                    => callApi('listFilterPresets'),
       saveFilterPreset:      (preset)                              => callApi('saveFilterPreset',    preset),
       deleteFilterPreset:    (id)                                  => callApi('deleteFilterPreset',  { id }),
+
+      // ---- リアルタイム同時編集（Pusher）----
+      pusherAuth:            (socketId, channel)                   => callApi('pusherAuth', { socketId, channel }),
     };
 
     const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -1672,6 +1972,42 @@ if (!auth_is_logged_in()) {
       reader.onload = () => resolve({ name: file.name, mimeType: file.type, data: reader.result.split(',')[1] });
       reader.onerror = error => reject(error);
     });
+
+    // ============================================================
+    // Pusher（リアルタイム同時編集）クライアント — 遅延ロードの単一インスタンス
+    //   - pusher-js は importmap 経由で「実際に同時編集タブを開いたとき」だけ動的 import
+    //     する（低スペック対策＝起動を軽く保つ）。
+    //   - 認証は private/presence 用のカスタム authorizer → api.pusherAuth（サーバ署名）。
+    //   - window.PUSHER.enabled が false（PUSHER_KEY 未設定）なら null を返し、呼び出し側は
+    //     同期せず従来どおり単独編集＋DB保存にフォールバックする。
+    //   - ホワイトボード/Wiki から共通参照（同一 <script> スコープ）。
+    // ============================================================
+    let __pusherInstance = null;
+    let __pusherLoading  = null;
+    const ensurePusher = async () => {
+      if (!window.PUSHER || !window.PUSHER.enabled) return null;   // 同期無効＝フォールバック
+      if (__pusherInstance) return __pusherInstance;
+      if (__pusherLoading) return __pusherLoading;
+      __pusherLoading = (async () => {
+        const mod = await import('pusher-js');
+        const Pusher = (mod && mod.default) ? mod.default : mod;
+        __pusherInstance = new Pusher(window.PUSHER.key, {
+          cluster: window.PUSHER.cluster,
+          forceTLS: true,
+          // カスタム authorizer: private/presence の購読要求をサーバ署名(api.pusherAuth)で許可。
+          authorizer: (channel) => ({
+            authorize: (socketId, callback) => {
+              api.pusherAuth(socketId, channel.name)
+                .then((data) => callback(null, data))
+                .catch((err) => callback(err, null));
+            },
+          }),
+        });
+        return __pusherInstance;
+      })();
+      try { return await __pusherLoading; }
+      finally { __pusherLoading = null; }
+    };
 
     // marked.parse の出力 HTML に画像幅トークンを反映する後処理。
     //   RichMarkdownEditor は画像の幅を <img title="50%"> として Markdown に保存する
@@ -1696,6 +2032,31 @@ if (!auth_is_logged_in()) {
       });
     };
 
+    // ============================================================
+    // AI モデル選択肢（タスクアドバイザー / コンシェルジュ「表示中の課題」用）
+    //   value はそのまま api.chatWithOliveAI(..., model) で送られ、サーバ側
+    //   OLIVE_AI_MODELS レジストリで検証・解決される。各 value は必ず OLIVE_AI_MODELS の
+    //   キーに含めること（含まれないとサーバで fallback に落ち選択が効かない）。
+    //   ※ 逆は不可ではない: gemini-2.5-flash は「使い方」モードの固定値用にサーバ側のみ存在し、
+    //     ここ（選択肢）には出さない。つまり options はレジストリの部分集合でよい。
+    //   App.html / TaskModal.html から共通参照（同一 <script> スコープ）。
+    // ============================================================
+    const AI_MODEL_OPTIONS = [
+      { value: 'gemini-3.5-flash',  label: 'Gemini 3.5 Flash' },
+      { value: 'gemini-2.5-pro',    label: 'Gemini 2.5 Pro' },
+      // --- third-party (Claude) は G-gen の契約確認が取れるまで一時無効化（2026-06-05）---
+      //   バックエンド（OLIVE_AI_MODELS / callVertexClaude / callOliveAiModel）は休眠状態で残置。
+      //   ここのコメントを外せば即復活（選択肢を戻すだけ。サーバ側レジストリは触らない）。
+      // { value: 'claude-opus-4-8',   label: 'Claude Opus 4.8' },
+      // { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      // { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
+    ];
+    const AI_MODEL_DEFAULT = 'gemini-2.5-pro';
+    // 永続prefs（userPrefs.aiModelAdvisor / aiModelConciergeTasks）に、現在は選択肢に無い
+    // モデル（例: 一時無効化した claude-*）が残っていても、表示中の AI_MODEL_OPTIONS に
+    // 含まれない値は既定へ丸める。UIから断った provider をサーバへ漏らさないためのガード。
+    const sanitizeAiModel = (v) => AI_MODEL_OPTIONS.some(o => o.value === v) ? v : AI_MODEL_DEFAULT;
+
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>
     <?php readfile(__DIR__ . '/ListView.html'); ?>
@@ -1705,6 +2066,7 @@ if (!auth_is_logged_in()) {
     <?php readfile(__DIR__ . '/CalendarView.html'); ?>
     <?php readfile(__DIR__ . '/FilesView.html'); ?>
     <?php readfile(__DIR__ . '/WikiView.html'); ?>
+    <?php readfile(__DIR__ . '/WhiteboardView.html'); ?>
     <?php readfile(__DIR__ . '/SettingsView.html'); ?>
     <?php readfile(__DIR__ . '/MarkdownPreview.html'); ?>
     const root = createRoot(document.getElementById('root'));

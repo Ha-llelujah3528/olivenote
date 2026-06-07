@@ -126,6 +126,46 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
   const todayStr = getTodayStr();
   const [dragState, setDragState] = useState(null);
 
+  // ★ 初期表示の左端を「当日の1週間前」に合わせる横スクロール。
+  //   days はタスク読込で後から再計算される（最初は空 → 後で過去タスク分まで左端が広がる）ため、
+  //   「ユーザーが自分でスクロールするまでは days 更新のたびに当日-7日へ合わせ直す」方針にする。
+  //   こうしないと、空タスク時の days[0] を基準にロックしてしまい、過去タスク読込後に位置がズレる。
+  //   さらにレイアウト未確定フレームでは scrollLeft が 0 にクランプされるため rAF で数フレーム再試行する。
+  //   列幅は本ファイル共通の 32px。
+  const scrollContainerRef = useRef(null);
+  const userScrolledRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
+  useEffect(() => {
+    if (userScrolledRef.current) return;
+    if (!days || days.length === 0) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const target = new Date(today);
+    target.setDate(target.getDate() - 7);
+    const idx = Math.round((target - days[0]) / (1000 * 60 * 60 * 24));
+    const targetLeft = idx > 0 ? idx * 32 : 0;
+    let tries = 0;
+    const apply = () => {
+      const el = scrollContainerRef.current;
+      if (!el || userScrolledRef.current) return;
+      programmaticScrollRef.current = true;
+      el.scrollLeft = targetLeft;
+      requestAnimationFrame(() => { programmaticScrollRef.current = false; });
+      tries += 1;
+      // 内容幅が未確定だと scrollLeft が clamp されるので、合うまで数フレーム再試行
+      if (Math.abs(el.scrollLeft - targetLeft) > 1 && tries < 20) {
+        requestAnimationFrame(apply);
+      }
+    };
+    requestAnimationFrame(apply);
+  }, [days]);
+
+  // ユーザーが自分でスクロールしたら自動補正を止める（プログラム由来のスクロールは無視）
+  const handleGanttScroll = () => {
+    if (programmaticScrollRef.current) return;
+    userScrolledRef.current = true;
+  };
+
   // ============================================================
   // ★ モバイル時はガントの代わりに「期間付きリスト表示」にフォールバック
   // ============================================================
@@ -380,7 +420,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
         ))}
       </div>
 
-      <div className="flex-1 overflow-auto relative">
+      <div ref={scrollContainerRef} onScroll={handleGanttScroll} className="flex-1 overflow-auto relative">
         <div className="inline-flex flex-col w-max min-w-full">
           <div className="flex sticky top-0 z-[80] bg-gray-50 border-b border-gray-200 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
             <div className="w-40 min-w-[10rem] md:w-80 md:min-w-[20rem] sticky left-0 z-[70] bg-gray-50 border-r border-gray-200 flex flex-col justify-end p-2 pb-1 text-xs font-bold text-gray-600 shadow-[2px_0_4px_rgba(0,0,0,0.02)] pl-24">

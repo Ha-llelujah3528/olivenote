@@ -487,15 +487,18 @@ function makeFilePublic(string $fileId, string $token): void {
 // ================================================================
 // Vertex AI ヘルパー
 // ================================================================
-function callVertexAi(string $modelId, array $apiPayload): string {
+function callVertexAi(string $modelId, array $apiPayload, ?string $location = null): string {
     $token = getGoogleAccessToken(
         'https://www.googleapis.com/auth/cloud-platform',
         VERTEX_CLIENT_EMAIL,
         VERTEX_PRIVATE_KEY
     );
-    $location  = VERTEX_LOCATION;
+    $location  = $location ?? VERTEX_LOCATION;
     $projectId = VERTEX_PROJECT_ID;
-    $url = "https://{$location}-aiplatform.googleapis.com/v1/projects/{$projectId}/locations/{$location}/publishers/google/models/{$modelId}:generateContent";
+    // global エンドポイントはホストに地域プレフィックスを付けない（aiplatform.googleapis.com）。
+    // 2025年6月以降リリースの Gemini（3.x 等）は global 限定配信のため、この分岐が無いと NOT_FOUND になる。
+    $host = ($location === 'global') ? 'aiplatform.googleapis.com' : "{$location}-aiplatform.googleapis.com";
+    $url = "https://{$host}/v1/projects/{$projectId}/locations/{$location}/publishers/google/models/{$modelId}:generateContent";
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -556,6 +559,179 @@ function callVertexImagen(string $modelId, array $payload): array {
         throw new Exception('Imagen から有効な応答が返ってきませんでした: ' . $res);
     }
     return $json['predictions'];
+}
+
+// Vertex AI 上の Anthropic Claude を :rawPredict で呼ぶ。
+//   - publisher パスが google ではなく anthropic
+//   - Gemini と違いリクエストは Anthropic Messages 形式（system / messages / max_tokens）
+//   - ボディに anthropic_version を必須で含める
+//   - Claude は Gemini と対応リージョンが異なる（既定 us-east5）
+function callVertexClaude(string $modelId, array $payload, string $location = 'us-east5'): string {
+    $token = getGoogleAccessToken(
+        'https://www.googleapis.com/auth/cloud-platform',
+        VERTEX_CLIENT_EMAIL,
+        VERTEX_PRIVATE_KEY
+    );
+    $projectId = VERTEX_PROJECT_ID;
+    $url = "https://{$location}-aiplatform.googleapis.com/v1/projects/{$projectId}/locations/{$location}/publishers/anthropic/models/{$modelId}:rawPredict";
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 120,
+        CURLOPT_HTTPHEADER     => [
+            "Authorization: Bearer {$token}",
+            'Content-Type: application/json; charset=UTF-8',
+            'Expect:',
+        ],
+    ]);
+    $res  = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($code !== 200) throw new Exception("Vertex AI (Claude) エラー (HTTP {$code}): " . $res);
+    $json = json_decode($res, true);
+    // Anthropic Messages 形式の応答: content は配列。type=text のブロックを連結する。
+    $text = '';
+    if (isset($json['content']) && is_array($json['content'])) {
+        foreach ($json['content'] as $block) {
+            if (is_array($block) && ($block['type'] ?? '') === 'text') {
+                $text .= (string)($block['text'] ?? '');
+            }
+        }
+    }
+    if ($text === '') throw new Exception('AIから有効なテキストが返ってきませんでした。');
+    return $text;
+}
+
+// ================================================================
+// AI モデルレジストリ & ディスパッチャ
+//   フロントから来る model 文字列を provider / 実モデルID / リージョンへ対応付ける。
+//   ここに無いキーは弾いて fallback に落とす（入力バリデーション兼用＝任意の文字列を
+//   そのまま Vertex に渡さない）。モデルを足す/IDを直すときはこの配列だけ触れば済む。
+//   ※「Gemini 3.5 Flash」と Claude 各IDは Vertex Model Garden の現行カタログで要最終確認。
+// ================================================================
+const OLIVE_AI_MODELS = [
+    // gemini-3.5-flash は 2026-05 GA だが global 限定配信（regional だと NOT_FOUND）。
+    'gemini-3.5-flash'  => ['provider' => 'gemini', 'model' => 'gemini-3.5-flash',          'region' => 'global'],
+    'gemini-2.5-pro'    => ['provider' => 'gemini', 'model' => 'gemini-2.5-pro',            'region' => 'us-central1'],
+    'gemini-2.5-flash'  => ['provider' => 'gemini', 'model' => 'gemini-2.5-flash',          'region' => 'us-central1'],
+    'claude-opus-4-8'   => ['provider' => 'claude', 'model' => 'claude-opus-4-8',           'region' => 'us-east5'],
+    'claude-sonnet-4-6' => ['provider' => 'claude', 'model' => 'claude-sonnet-4-6',         'region' => 'us-east5'],
+    'claude-haiku-4-5'  => ['provider' => 'claude', 'model' => 'claude-haiku-4-5@20251001', 'region' => 'us-east5'],
+];
+
+// 要求モデルがレジストリに無ければ fallback の定義を返す。
+// fallback すらレジストリに無い場合は最終防衛として gemini-2.5-pro を返す。
+function resolveOliveAiModel(?string $requested, string $fallback): array {
+    if (is_string($requested) && isset(OLIVE_AI_MODELS[$requested])) {
+        return OLIVE_AI_MODELS[$requested];
+    }
+    if (isset(OLIVE_AI_MODELS[$fallback])) {
+        return OLIVE_AI_MODELS[$fallback];
+    }
+    return OLIVE_AI_MODELS['gemini-2.5-pro'];
+}
+
+// 共通エントリ。system instruction と中立フォーマットの会話履歴
+// （[{role:'user'|'model', text}]）を受け取り、provider ごとのペイロードへ変換して呼び分ける。
+// → プロンプト本体（$systemInstruction）は呼び出し側で1度だけ組み立て、Gemini/Claude で共用する。
+function callOliveAiModel(array $modelDef, string $systemInstruction, array $history, int $maxTokens, float $temperature = 0.4): string {
+    if (($modelDef['provider'] ?? '') === 'claude') {
+        $messages = [];
+        foreach ($history as $msg) {
+            $role = (($msg['role'] ?? '') === 'model') ? 'assistant' : 'user';
+            $messages[] = ['role' => $role, 'content' => (string)($msg['text'] ?? '')];
+        }
+        // Anthropic Messages API は会話の先頭が user ロールである必要がある。
+        // チャット履歴は冒頭に挨拶（model→assistant）が入るため、先頭の assistant を落とす。
+        while (!empty($messages) && $messages[0]['role'] === 'assistant') {
+            array_shift($messages);
+        }
+        if (empty($messages)) {
+            throw new Exception('会話履歴に user メッセージがありません。');
+        }
+        $payload = [
+            'anthropic_version' => 'vertex-2023-10-16',
+            'system'            => $systemInstruction,
+            'messages'          => $messages,
+            'max_tokens'        => $maxTokens,
+            'temperature'       => $temperature,
+        ];
+        return callVertexClaude($modelDef['model'], $payload, $modelDef['region']);
+    }
+
+    // gemini（既定）
+    $contents = [];
+    foreach ($history as $msg) {
+        $role = (($msg['role'] ?? '') === 'model') ? 'model' : 'user';
+        $contents[] = ['role' => $role, 'parts' => [['text' => (string)($msg['text'] ?? '')]]];
+    }
+    $payload = [
+        'system_instruction' => ['parts' => [['text' => $systemInstruction]]],
+        'contents'           => $contents,
+        'generationConfig'   => ['temperature' => $temperature, 'maxOutputTokens' => $maxTokens],
+    ];
+    return callVertexAi($modelDef['model'], $payload, $modelDef['region']);
+}
+
+// ----------------------------------------------------------------
+// プロンプトビルダー（モデルに依存しない system instruction を生成）
+//   タスクアドバイザー / コンシェルジュ「表示中の課題」の2機能は Gemini/Claude を
+//   切替可能なため、プロンプトをここに切り出して両 provider で共用する。
+// ----------------------------------------------------------------
+function buildAdvisorSystemInstruction(array $taskContext): string {
+    $title  = $taskContext['title']   ?? '未設定';
+    $desc   = stripBase64Images((string)($taskContext['description'] ?? '未設定'));
+    $status = $taskContext['status']  ?? '未設定';
+    $due    = $taskContext['dueDate'] ?? '未設定';
+    if ($desc === '') $desc = '未設定';
+    if ($due === '' || $due === null) $due = '未設定';
+
+    return "あなたは優秀なタスク管理アドバイザーです。\n"
+        . "ユーザーが現在直面している以下のタスクについて、壁打ち相手となり、解決策や進め方のアドバイスを提供してください。\n"
+        . "回答は必要に応じてMarkdownを使用し、アクションにつながる具体的な提案を含めてください。文字数制限はありません。\n\n"
+        . "【現在相談対象のタスク情報】\n"
+        . "- タイトル: {$title}\n"
+        . "- 詳細: {$desc}\n"
+        . "- ステータス: {$status}\n"
+        . "- 期限: {$due}";
+}
+
+function buildConciergeTasksSystemInstruction(?array $tasksContext): string {
+    $tasksContext   = is_array($tasksContext) ? $tasksContext : [];
+    $filtersSummary = isset($tasksContext['filtersSummary']) ? (string)$tasksContext['filtersSummary'] : '（フィルター指定なし）';
+    $tasks          = is_array($tasksContext['tasks'] ?? null) ? $tasksContext['tasks'] : [];
+    $totalCount     = count($tasks);
+
+    // ペイロード爆発の予防: 300件で頭打ち
+    $cappedTasks = $totalCount > 300 ? array_slice($tasks, 0, 300) : $tasks;
+    $cappedNote  = $totalCount > 300 ? "（実際の表示件数 {$totalCount} 件のうち先頭 300 件を分析対象としています）\n" : '';
+
+    // description のインライン Base64 画像は AI に渡さない（トークン浪費回避）
+    foreach ($cappedTasks as &$_ct) {
+        if (is_array($_ct) && isset($_ct['description'])) {
+            $_ct['description'] = stripBase64Images((string)$_ct['description']);
+        }
+    }
+    unset($_ct);
+
+    $tasksJson = json_encode($cappedTasks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($tasksJson === false) $tasksJson = '[]';
+
+    return "あなたはタスク管理ツール「Olive Note」の専属アナリストです。\n"
+        . "ユーザーが現在画面上で見ている『フィルター適用済の課題リスト』を分析し、質問に答えてください。\n"
+        . "回答は必要に応じてMarkdown（見出し・表・箇条書き）を使って読みやすく整形し、根拠となるタスクIDがあれば `TASK-XXXX` の形で引用してください。\n"
+        . "リストに存在しないタスクや、与えられていない情報については推測せず『データに無いため不明』と明示してください。\n"
+        . "件数の集計・期限超過の検出・担当者ごとの負荷比較・カテゴリ別の傾向など、定量的な質問にも具体的な数字で答えてください。\n\n"
+        . "【現在のフィルター条件】\n"
+        . $filtersSummary . "\n"
+        . "【表示中の課題件数】" . $totalCount . " 件\n"
+        . $cappedNote
+        . "\n【課題データ (JSON)】\n"
+        . $tasksJson;
 }
 
 // ================================================================
@@ -797,6 +973,119 @@ function generateWikiUuid(): string {
     $data[6] = chr((ord($data[6]) & 0x0f) | 0x40); // version 4
     $data[8] = chr((ord($data[8]) & 0x3f) | 0x80); // variant RFC 4122
     return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+}
+
+/**
+ * wiki_pages に ydoc_state カラム（migration 006）が存在するか。
+ *   - 未適用環境（STG/PRD で ALTER 前）でも Wiki が壊れないよう、Yjs 関連処理を
+ *     このフラグでガードする。1 リクエスト内で一度だけ調べてキャッシュ。
+ */
+function wiki_has_ydoc_column(PDO $pdo): bool {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM wiki_pages LIKE 'ydoc_state'");
+        $cached = (bool)$stmt->fetch();
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+// ================================================================
+// Pusher（リアルタイム同時編集）— composer 不使用の軽量 REST 実装
+//   - 描画差分/カーソルなど高頻度なデータは、フロントの client events
+//     （端末間 P2P。サーバーを経由しない）で流すのが主。
+//   - pusherAuth は presence/private チャンネル購読を HMAC 署名で許可する。
+//   - pusher_trigger はサーバー発のブロードキャスト（保存通知など低頻度）用の補助。
+//   - PUSHER_KEY 等が未設定（空）の環境では全機能を no-op にし、
+//     既存の単独編集＋DB保存にフォールバックする。
+// ================================================================
+function pusher_enabled(): bool {
+    return defined('PUSHER_KEY') && PUSHER_KEY !== ''
+        && defined('PUSHER_SECRET') && PUSHER_SECRET !== ''
+        && defined('PUSHER_APP_ID') && PUSHER_APP_ID !== '';
+}
+
+function pusher_cluster(): string {
+    return (defined('PUSHER_CLUSTER') && PUSHER_CLUSTER !== '') ? PUSHER_CLUSTER : 'ap3';
+}
+
+/**
+ * 購読を許可するチャンネル名か（任意の channel を署名させない安全弁）。
+ * ホワイトボード/Wiki の presence・private チャンネルのみ許可する。
+ */
+function pusher_channel_allowed(string $channel): bool {
+    foreach (['presence-wb-', 'private-wb-', 'presence-wiki-', 'private-wiki-'] as $p) {
+        if (strncmp($channel, $p, strlen($p)) === 0) return true;
+    }
+    return false;
+}
+
+/** seed（email 等）から安定した表示色を決める（presence カーソル/アバター用）。 */
+function pusher_color_for(string $seed): string {
+    $palette = ['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f43f5e'];
+    return $palette[hexdec(substr(md5($seed), 0, 8)) % count($palette)];
+}
+
+/**
+ * presence/private チャンネル購読の認証応答（連想配列）を生成して返す。
+ * pusher-js のカスタム authorizer がこの data を受け取り Pusher へ渡す。
+ *   presence: auth + channel_data（user_id / user_info）
+ *   private : auth のみ
+ */
+function pusher_auth_response(string $socketId, string $channel, string $email, string $name): array {
+    if (strncmp($channel, 'presence-', 9) === 0) {
+        $userId = $email !== '' ? $email : ('anon-' . substr(md5($socketId), 0, 8));
+        $channelData = json_encode([
+            'user_id'   => $userId,
+            'user_info' => [
+                'name'  => $name !== '' ? $name : 'ゲスト',
+                'color' => pusher_color_for($email !== '' ? $email : $socketId),
+            ],
+        ], JSON_UNESCAPED_UNICODE);
+        $sig = hash_hmac('sha256', $socketId . ':' . $channel . ':' . $channelData, PUSHER_SECRET);
+        return ['auth' => PUSHER_KEY . ':' . $sig, 'channel_data' => $channelData];
+    }
+    $sig = hash_hmac('sha256', $socketId . ':' . $channel, PUSHER_SECRET);
+    return ['auth' => PUSHER_KEY . ':' . $sig];
+}
+
+/**
+ * サーバー発のイベントを Pusher REST API へ送信する（補助用途）。
+ * 高頻度な描画差分はフロントの client events で流すため、ここは
+ * 「保存完了通知」など低頻度のブロードキャストに用いる想定。失敗は false。
+ */
+function pusher_trigger(array $channels, string $event, array $data): bool {
+    if (!pusher_enabled()) return false;
+    $body = json_encode([
+        'name'     => $event,
+        'channels' => array_values($channels),
+        'data'     => json_encode($data, JSON_UNESCAPED_UNICODE),
+    ], JSON_UNESCAPED_UNICODE);
+    $params = [
+        'auth_key'       => PUSHER_KEY,
+        'auth_timestamp' => (string)time(),
+        'auth_version'   => '1.0',
+        'body_md5'       => md5($body),
+    ];
+    ksort($params);
+    $queryString = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+    $path        = '/apps/' . PUSHER_APP_ID . '/events';
+    $signature   = hash_hmac('sha256', "POST\n" . $path . "\n" . $queryString, PUSHER_SECRET);
+    $url = 'https://api-' . pusher_cluster() . '.pusher.com' . $path . '?' . $queryString . '&auth_signature=' . $signature;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT        => 5,
+    ]);
+    curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
 }
 
 // ================================================================
@@ -2142,14 +2431,15 @@ PROMPT;
         // ============================================================
         case 'chatWithOliveAI':
             try {
-                $mode         = $payload['mode'] ?? '';
-                $chatHistory  = $payload['history'] ?? [];
-                $taskContext  = $payload['taskContext']  ?? null;
-                $tasksContext = $payload['tasksContext'] ?? null;
+                $mode           = $payload['mode'] ?? '';
+                $chatHistory    = is_array($payload['history'] ?? null) ? $payload['history'] : [];
+                $taskContext    = $payload['taskContext']  ?? null;
+                $tasksContext   = $payload['tasksContext'] ?? null;
+                $requestedModel = isset($payload['model']) ? (string)$payload['model'] : null;
 
                 $systemInstruction = '';
-                $targetModel       = '';
                 $maxTokens         = 1024;
+                $modelDef          = null;
 
                 if ($mode === 'concierge') {
                     // 仕様書はDBに直接保管（settings.systemSpecForAI、rawマークダウン）
@@ -2163,88 +2453,31 @@ PROMPT;
                         . "回答は必要に応じてMarkdown（太字、リスト等）を使って読みやすく整形し、長文になりすぎないよう【最大でも400文字程度】で簡潔にまとめてください。\n\n"
                         . "【Olive Note システム仕様書】\n"
                         . $systemSpec;
-                    $targetModel = 'gemini-2.5-flash';
-                    $maxTokens   = 2048;
+                    $maxTokens = 2048;
+                    // 「使い方」モードはモデル切替対象外。従来どおり gemini-2.5-flash 固定。
+                    $modelDef  = resolveOliveAiModel('gemini-2.5-flash', 'gemini-2.5-flash');
 
                 } elseif ($mode === 'concierge-tasks') {
                     // 表示中の課題（フィルター適用後）に関する分析・質問応答
-                    $filtersSummary = isset($tasksContext['filtersSummary']) ? (string)$tasksContext['filtersSummary'] : '（フィルター指定なし）';
-                    $tasks          = is_array($tasksContext['tasks'] ?? null) ? $tasksContext['tasks'] : [];
-                    $totalCount     = count($tasks);
-
-                    // ペイロード爆発の予防: 300件で頭打ち
-                    $cappedTasks = $totalCount > 300 ? array_slice($tasks, 0, 300) : $tasks;
-                    $cappedNote  = $totalCount > 300 ? "（実際の表示件数 {$totalCount} 件のうち先頭 300 件を分析対象としています）\n" : '';
-
-                    // description のインライン Base64 画像は AI に渡さない（トークン浪費回避）
-                    foreach ($cappedTasks as &$_ct) {
-                        if (is_array($_ct) && isset($_ct['description'])) {
-                            $_ct['description'] = stripBase64Images((string)$_ct['description']);
-                        }
-                    }
-                    unset($_ct);
-
-                    $tasksJson = json_encode($cappedTasks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                    if ($tasksJson === false) $tasksJson = '[]';
-
-                    $systemInstruction = "あなたはタスク管理ツール「Olive Note」の専属アナリストです。\n"
-                        . "ユーザーが現在画面上で見ている『フィルター適用済の課題リスト』を分析し、質問に答えてください。\n"
-                        . "回答は必要に応じてMarkdown（見出し・表・箇条書き）を使って読みやすく整形し、根拠となるタスクIDがあれば `TASK-XXXX` の形で引用してください。\n"
-                        . "リストに存在しないタスクや、与えられていない情報については推測せず『データに無いため不明』と明示してください。\n"
-                        . "件数の集計・期限超過の検出・担当者ごとの負荷比較・カテゴリ別の傾向など、定量的な質問にも具体的な数字で答えてください。\n\n"
-                        . "【現在のフィルター条件】\n"
-                        . $filtersSummary . "\n"
-                        . "【表示中の課題件数】" . $totalCount . " 件\n"
-                        . $cappedNote
-                        . "\n【課題データ (JSON)】\n"
-                        . $tasksJson;
-                    $targetModel = 'gemini-2.5-pro';
-                    $maxTokens   = 16384;
+                    $systemInstruction = buildConciergeTasksSystemInstruction($tasksContext);
+                    $maxTokens = 16384;
+                    // モデル切替対象。未指定/不正は gemini-2.5-pro にフォールバック。
+                    $modelDef  = resolveOliveAiModel($requestedModel, 'gemini-2.5-pro');
 
                 } elseif ($mode === 'advisor') {
-                    $title  = $taskContext['title']       ?? '未設定';
-                    $desc   = stripBase64Images((string)($taskContext['description'] ?? '未設定'));
-                    $status = $taskContext['status']      ?? '未設定';
-                    $due    = $taskContext['dueDate']     ?? '未設定';
-                    if ($desc === '') $desc = '未設定';
-                    if ($due === '' || $due === null) $due = '未設定';
-
-                    $systemInstruction = "あなたは優秀なタスク管理アドバイザーです。\n"
-                        . "ユーザーが現在直面している以下のタスクについて、壁打ち相手となり、解決策や進め方のアドバイスを提供してください。\n"
-                        . "回答は必要に応じてMarkdownを使用し、アクションにつながる具体的な提案を含めてください。文字数制限はありません。\n\n"
-                        . "【現在相談対象のタスク情報】\n"
-                        . "- タイトル: {$title}\n"
-                        . "- 詳細: {$desc}\n"
-                        . "- ステータス: {$status}\n"
-                        . "- 期限: {$due}";
-                    $targetModel = 'gemini-2.5-pro';
-                    $maxTokens   = 16384;
+                    $systemInstruction = buildAdvisorSystemInstruction(is_array($taskContext) ? $taskContext : []);
+                    $maxTokens = 16384;
+                    // モデル切替対象。未指定/不正は gemini-2.5-pro にフォールバック。
+                    $modelDef  = resolveOliveAiModel($requestedModel, 'gemini-2.5-pro');
 
                 } else {
                     echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '無効なモードが指定されました。']]);
                     break;
                 }
 
-                // 会話履歴をVertex AIフォーマットに変換
-                $contents = [];
-                foreach ($chatHistory as $msg) {
-                    $role = (($msg['role'] ?? '') === 'model') ? 'model' : 'user';
-                    $contents[] = [
-                        'role'  => $role,
-                        'parts' => [['text' => $msg['text'] ?? '']],
-                    ];
-                }
-
-                $apiPayload = [
-                    'system_instruction' => ['parts' => [['text' => $systemInstruction]]],
-                    'contents'           => $contents,
-                    'generationConfig'   => [
-                        'temperature'     => 0.4,
-                        'maxOutputTokens' => $maxTokens,
-                    ],
-                ];
-
-                $reply = callVertexAi($targetModel, $apiPayload);
+                // provider 非依存で1度だけ組み立てたプロンプト+履歴を、ディスパッチャが
+                // Gemini / Claude いずれかのペイロードに変換して呼び分ける。
+                $reply = callOliveAiModel($modelDef, $systemInstruction, $chatHistory, $maxTokens, 0.4);
                 echo json_encode(['success' => true, 'data' => ['success' => true, 'reply' => $reply]]);
             } catch (Throwable $e) {
                 // フロントエンドが {success, reply, error} を期待しているため、AI失敗は内側でキャッチしてエラー文を返す
@@ -2933,6 +3166,179 @@ PROMPT;
         // ============================================================
 
         // listWikiPages — ツリー描画用にメタだけ返す（body_md は除外）
+        // ============================================================
+        // ホワイトボード（フリーボード）— Excalidraw シーンの CRUD + AI 解析
+        //   正本データは whiteboards.scene_json(JSON文字列)。リアルタイム同期(Pusher)は
+        //   後付けで、落ちてもこの保存内容から復元する設計。
+        // ============================================================
+        // pusherAuth — presence/private チャンネル購読の署名を発行（認証必須＝switch内）。
+        //   pusher-js のカスタム authorizer から socketId / channel を受けて応答する。
+        case 'pusherAuth':
+            if (!pusher_enabled()) { echo json_encode(['success' => false, 'error' => 'realtime_disabled']); break; }
+            $socketId = (string)($payload['socketId'] ?? '');
+            $channel  = (string)($payload['channel'] ?? '');
+            if ($socketId === '' || $channel === '') { echo json_encode(['success' => false, 'error' => 'socketId and channel are required']); break; }
+            if (!pusher_channel_allowed($channel)) { echo json_encode(['success' => false, 'error' => 'channel_not_allowed']); break; }
+            $email = (string)($_SESSION['user_email'] ?? '');
+            $name  = (string)($_SESSION['user_name'] ?? '');
+            if ($name === '' && $email !== '') {
+                $u = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                $u->execute([$email]);
+                $name = (string)($u->fetchColumn() ?: '');
+            }
+            echo json_encode(['success' => true, 'data' => pusher_auth_response($socketId, $channel, $email, $name)]);
+            break;
+
+        case 'listWhiteboards':
+            $stmt = $pdo->query(
+                "SELECT id, title, parent_id, sort_order, created_by, updated_by, scene_version, created_at, updated_at " .
+                "FROM whiteboards WHERE deleted_at IS NULL " .
+                "ORDER BY parent_id IS NULL DESC, parent_id, sort_order ASC, created_at ASC"
+            );
+            $boards = [];
+            while ($row = $stmt->fetch()) {
+                $boards[] = [
+                    'id'           => $row['id'],
+                    'title'        => $row['title'],
+                    'parentId'     => $row['parent_id'],
+                    'sortOrder'    => (float)$row['sort_order'],
+                    'createdBy'    => $row['created_by'],
+                    'updatedBy'    => $row['updated_by'],
+                    'sceneVersion' => (int)$row['scene_version'],
+                    'createdAt'    => $row['created_at'],
+                    'updatedAt'    => $row['updated_at'],
+                ];
+            }
+            echo json_encode(['success' => true, 'data' => ['boards' => $boards]]);
+            break;
+
+        // getWhiteboard — scene_json 込みで 1 ボード取得
+        case 'getWhiteboard':
+            $id = $payload['id'] ?? '';
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+            $stmt = $pdo->prepare("SELECT * FROM whiteboards WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$id]);
+            $row = $stmt->fetch();
+            if (!$row) { echo json_encode(['success' => false, 'error' => 'not_found']); break; }
+            echo json_encode(['success' => true, 'data' => ['board' => [
+                'id'           => $row['id'],
+                'title'        => $row['title'],
+                'sceneJson'    => $row['scene_json'] ?? '',
+                'parentId'     => $row['parent_id'],
+                'sortOrder'    => (float)$row['sort_order'],
+                'sceneVersion' => (int)$row['scene_version'],
+                'createdBy'    => $row['created_by'],
+                'updatedBy'    => $row['updated_by'],
+                'createdAt'    => $row['created_at'],
+                'updatedAt'    => $row['updated_at'],
+            ]]]);
+            break;
+
+        // saveWhiteboard — 新規/更新 UPSERT。scene を省略すれば改題のみ更新。
+        case 'saveWhiteboard':
+            $editorEmail = $_SESSION['user_email'] ?? '';
+            $id        = (string)($payload['id'] ?? '');
+            $title     = trim((string)($payload['title'] ?? ''));
+            $sceneJson = $payload['sceneJson'] ?? null;          // JSON 文字列を想定
+            if (is_array($sceneJson)) $sceneJson = json_encode($sceneJson, JSON_UNESCAPED_UNICODE);
+            $sceneVer  = isset($payload['sceneVersion']) ? (int)$payload['sceneVersion'] : 0;
+            $parentId  = isset($payload['parentId']) && $payload['parentId'] !== '' ? $payload['parentId'] : null;
+            $safeTitle = $title === '' ? '(無題ボード)' : $title;
+            try {
+                if ($id === '') {
+                    $id = generateWikiUuid();
+                    $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM whiteboards WHERE " . ($parentId === null ? "parent_id IS NULL" : "parent_id = ?"));
+                    $maxStmt->execute($parentId === null ? [] : [$parentId]);
+                    $sortOrder = ((float)$maxStmt->fetchColumn()) + 1024.0;
+                    $ins = $pdo->prepare(
+                        "INSERT INTO whiteboards (id, title, scene_json, parent_id, sort_order, created_by, updated_by, scene_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                    );
+                    $ins->execute([$id, $safeTitle, $sceneJson, $parentId, $sortOrder, $editorEmail, $editorEmail, $sceneVer]);
+                } elseif ($sceneJson === null) {
+                    // 改題のみ
+                    $upd = $pdo->prepare("UPDATE whiteboards SET title = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                    $upd->execute([$safeTitle, $editorEmail, $id]);
+                } else {
+                    $upd = $pdo->prepare("UPDATE whiteboards SET title = ?, scene_json = ?, scene_version = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                    $upd->execute([$safeTitle, $sceneJson, $sceneVer, $editorEmail, $id]);
+                }
+                echo json_encode(['success' => true, 'data' => ['id' => $id, 'title' => $safeTitle, 'sceneVersion' => $sceneVer]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // deleteWhiteboard — ソフトデリート（子ボードもカスケード）。本体と子の更新を 1 トランザクションで。
+        case 'deleteWhiteboard':
+            $id = $payload['id'] ?? '';
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+            try {
+                $pdo->beginTransaction();
+                $pdo->prepare("UPDATE whiteboards SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL")->execute([$id]);
+                $pdo->prepare("UPDATE whiteboards SET deleted_at = NOW() WHERE parent_id = ? AND deleted_at IS NULL")->execute([$id]);
+                $pdo->commit();
+                echo json_encode(['success' => true, 'data' => ['id' => $id]]);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
+        // analyzeWhiteboardImage — ボードの PNG を Vertex AI(Gemini)で解析し、
+        //   課題候補とドキュメント Markdown を JSON で返す。作成自体はフロントの確認後に行う。
+        case 'analyzeWhiteboardImage':
+            $imageB64 = (string)($payload['imageBase64'] ?? '');
+            $mime     = (string)($payload['mimeType'] ?? 'image/png');
+            $extra    = trim((string)($payload['note'] ?? ''));
+            if ($imageB64 === '') { echo json_encode(['success' => false, 'error' => 'imageBase64 is required']); break; }
+            // data URL prefix が付いていたら剥がす
+            $commaPos = strpos($imageB64, 'base64,');
+            if ($commaPos !== false) { $imageB64 = substr($imageB64, $commaPos + 7); }
+
+            $sys = "あなたはホワイトボードの内容を読み取り、業務の課題(タスク)とドキュメントに整理するアシスタントです。"
+                 . "画像はチームが描いた手書き・図・付箋・テキストのホワイトボードです。"
+                 . "日本語で、必ず次の構造の JSON のみを出力してください（前後に説明文やコードフェンスを付けない）:\n"
+                 . '{"summary":"全体の要約","tasks":[{"title":"課題名","description":"詳細(任意)","priority":"low|medium|high"}],"docMarkdown":"ホワイトボードを整理したMarkdownドキュメント"}';
+            $userText = "このホワイトボードを解析して、課題候補と整理ドキュメントを作ってください。" . ($extra !== '' ? ("\n補足: " . $extra) : "");
+            $apiPayload = [
+                'system_instruction' => ['parts' => [['text' => $sys]]],
+                'contents' => [[
+                    'role'  => 'user',
+                    'parts' => [
+                        ['text' => $userText],
+                        ['inline_data' => ['mime_type' => $mime, 'data' => $imageB64]],
+                    ],
+                ]],
+                'generationConfig' => ['temperature' => 0.2, 'maxOutputTokens' => 8192],
+            ];
+            try {
+                $raw = callVertexAi('gemini-2.5-pro', $apiPayload);
+                $clean = trim($raw);
+                $clean = trim((string)(preg_replace('/^```(?:json)?/i', '', $clean) ?? $clean));
+                $clean = trim((string)(preg_replace('/```$/', '', $clean) ?? $clean));
+                $start = strpos($clean, '{');
+                $end   = strrpos($clean, '}');
+                if ($start === false || $end === false) { throw new Exception('AI が想定した JSON 形式を返しませんでした。'); }
+                $json = json_decode(substr($clean, $start, $end - $start + 1), true);
+                if (!is_array($json)) { throw new Exception('AI 応答の JSON 解析に失敗しました。'); }
+                $tasks = [];
+                foreach (($json['tasks'] ?? []) as $t) {
+                    if (!is_array($t)) continue;
+                    $tt = trim((string)($t['title'] ?? ''));
+                    if ($tt === '') continue;
+                    $pri = in_array(($t['priority'] ?? 'medium'), ['low', 'medium', 'high'], true) ? $t['priority'] : 'medium';
+                    $tasks[] = ['title' => $tt, 'description' => (string)($t['description'] ?? ''), 'priority' => $pri];
+                }
+                echo json_encode(['success' => true, 'data' => [
+                    'summary'     => (string)($json['summary'] ?? ''),
+                    'tasks'       => $tasks,
+                    'docMarkdown' => (string)($json['docMarkdown'] ?? ''),
+                ]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+            break;
+
         case 'listWikiPages':
             $stmt = $pdo->query(
                 "SELECT id, title, parent_id, sort_order, created_by, updated_by, created_at, updated_at " .
@@ -2976,9 +3382,65 @@ PROMPT;
             ]]]);
             break;
 
+        // ============================================================
+        // Wiki 同時編集 (Yjs) — 設計: docs/wiki-collab-design.md
+        // ============================================================
+        // getWikiYdoc — 初期ロード/seed 判定用。ydoc_state(base64) と body_md を返す。
+        //   collabReady=false は ydoc_state カラム未適用（ALTER 前）→ フロントは単独編集にフォールバック。
+        case 'getWikiYdoc':
+            $id = $payload['id'] ?? '';
+            if ($id === '') { echo json_encode(['success' => false, 'error' => 'id is required']); break; }
+            if (!wiki_has_ydoc_column($pdo)) {
+                // 列が無い環境: body_md だけ返し collab は無効
+                $stmt = $pdo->prepare("SELECT body_md FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+                $stmt->execute([$id]);
+                $row = $stmt->fetch();
+                if (!$row) { echo json_encode(['success' => false, 'error' => 'not_found']); break; }
+                echo json_encode(['success' => true, 'data' => ['ydocState' => null, 'bodyMd' => $row['body_md'] ?? '', 'collabReady' => false]]);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT body_md, ydoc_state FROM wiki_pages WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$id]);
+            $row = $stmt->fetch();
+            if (!$row) { echo json_encode(['success' => false, 'error' => 'not_found']); break; }
+            echo json_encode(['success' => true, 'data' => [
+                'ydocState'   => $row['ydoc_state'] !== null && $row['ydoc_state'] !== '' ? $row['ydoc_state'] : null,
+                'bodyMd'      => $row['body_md'] ?? '',
+                'collabReady' => true,
+            ]]);
+            break;
+
+        // seedWikiYdoc — markdown 由来の初期 Y.Doc を「ydoc_state が NULL の時だけ」書き込む（直列化）。
+        //   条件付き UPDATE の rowCount で seed 勝者を 1 人に確定する（設計 §4）。
+        case 'seedWikiYdoc':
+            $id        = (string)($payload['id'] ?? '');
+            $ydocState = (string)($payload['ydocState'] ?? '');
+            if ($id === '' || $ydocState === '') { echo json_encode(['success' => false, 'error' => 'id and ydocState are required']); break; }
+            if (!wiki_has_ydoc_column($pdo)) { echo json_encode(['success' => false, 'error' => 'collab_not_ready']); break; }
+            $stmt = $pdo->prepare(
+                "UPDATE wiki_pages SET ydoc_state = ?, ydoc_updated_at = NOW() " .
+                "WHERE id = ? AND deleted_at IS NULL AND (ydoc_state IS NULL OR ydoc_state = '')"
+            );
+            $stmt->execute([$ydocState, $id]);
+            // rowCount==1 → 自分が seed 勝者 / 0 → 既に他者が seed 済（フロントは getWikiYdoc を再取得）
+            echo json_encode(['success' => true, 'data' => ['seeded' => $stmt->rowCount() === 1]]);
+            break;
+
+        // saveWikiYdoc — ydoc_state だけを更新（periodic 保存 / 離脱ビーコン用）。revision は作らない。
+        case 'saveWikiYdoc':
+            $id        = (string)($payload['id'] ?? '');
+            $ydocState = (string)($payload['ydocState'] ?? '');
+            if ($id === '' || $ydocState === '') { echo json_encode(['success' => false, 'error' => 'id and ydocState are required']); break; }
+            if (!wiki_has_ydoc_column($pdo)) { echo json_encode(['success' => false, 'error' => 'collab_not_ready']); break; }
+            $stmt = $pdo->prepare("UPDATE wiki_pages SET ydoc_state = ?, ydoc_updated_at = NOW() WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$ydocState, $id]);
+            echo json_encode(['success' => true, 'data' => ['saved' => $stmt->rowCount() > 0]]);
+            break;
+
         // saveWikiPage — 新規/更新の UPSERT + revision 追加
         //   - 新規: id を採番（UUID）、parent_id を payload で指定可
         //   - 更新: 既存 id を payload に含める。body_md/title のどちらかが変わったら revision を 1 件追加
+        //   - 任意 ydocState: collab 時に body_md と同じトランザクションで ydoc_state も更新する
         case 'saveWikiPage':
             $editorEmail = $_SESSION['user_email'] ?? '';
             $editorName  = '';
@@ -2992,6 +3454,9 @@ PROMPT;
             $parentId    = isset($payload['parentId']) && $payload['parentId'] !== '' ? $payload['parentId'] : null;
             $changeSum   = trim((string)($payload['changeSummary'] ?? ''));
             $id          = (string)($payload['id'] ?? '');
+            // 任意: collab 時に渡る Yjs 状態(base64)。列が在る環境でだけ書く。
+            $ydocState   = (string)($payload['ydocState'] ?? '');
+            $writeYdoc   = ($ydocState !== '' && wiki_has_ydoc_column($pdo));
 
             // 親 page の存在チェック（parentId 指定時）— 削除済みは弾く
             if ($parentId !== null) {
@@ -3017,6 +3482,9 @@ PROMPT;
                         "INSERT INTO wiki_pages (id, title, body_md, parent_id, sort_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)"
                     );
                     $ins->execute([$id, $title === '' ? '(無題)' : $title, $bodyMd, $parentId, $sortOrder, $editorEmail, $editorEmail]);
+                    if ($writeYdoc) {
+                        $pdo->prepare("UPDATE wiki_pages SET ydoc_state = ?, ydoc_updated_at = NOW() WHERE id = ?")->execute([$ydocState, $id]);
+                    }
                     $revNo = 1;
                 } else {
                     // ----- 更新 -----
@@ -3025,15 +3493,22 @@ PROMPT;
                     $cur = $existing->fetch();
                     if (!$cur) { throw new Exception('not_found'); }
 
-                    $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ?");
-                    $upd->execute([$title === '' ? '(無題)' : $title, $bodyMd, $editorEmail, $id]);
+                    if ($writeYdoc) {
+                        $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, ydoc_state = ?, ydoc_updated_at = NOW(), updated_by = ? WHERE id = ?");
+                        $upd->execute([$title === '' ? '(無題)' : $title, $bodyMd, $ydocState, $editorEmail, $id]);
+                    } else {
+                        $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ?");
+                        $upd->execute([$title === '' ? '(無題)' : $title, $bodyMd, $editorEmail, $id]);
+                    }
 
                     // revision_no は同じ page_id の中で連番
                     $maxRev = $pdo->prepare("SELECT COALESCE(MAX(revision_no), 0) FROM wiki_revisions WHERE page_id = ?");
                     $maxRev->execute([$id]);
                     $revNo = ((int)$maxRev->fetchColumn()) + 1;
 
-                    // 変更が無ければ revision を追加しない（無駄なログ防止）
+                    // 変更が無ければ revision を追加しない（無駄なログ防止）。
+                    //   ※ $writeYdoc=true（collab で ydocState 同梱）の時は上の UPDATE で ydoc_state を更新済みなので、
+                    //     ここで return しても collab 状態は保存される。ydocState 無しの通常保存ではそもそも更新対象が無い。
                     if ($cur['title'] === ($title === '' ? '(無題)' : $title) && (string)$cur['body_md'] === $bodyMd) {
                         $pdo->commit();
                         echo json_encode(['success' => true, 'data' => ['id' => $id, 'revisionNo' => null, 'unchanged' => true]]);
@@ -3129,7 +3604,13 @@ PROMPT;
                 $row = $src->fetch();
                 if (!$row) { throw new Exception('revision_not_found'); }
 
-                $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                // collab 中の復元: ydoc_state を NULL に戻し、次回オープン時に復元後 body_md から再 seed させる
+                // （ydoc_state が残っていると古い本文が優先され、復元が反映されないため）。
+                if (wiki_has_ydoc_column($pdo)) {
+                    $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, ydoc_state = NULL, ydoc_updated_at = NULL, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                } else {
+                    $upd = $pdo->prepare("UPDATE wiki_pages SET title = ?, body_md = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL");
+                }
                 $upd->execute([$row['title'], $row['body_md'], $editorEmail, $pageId]);
                 if ($upd->rowCount() === 0) { throw new Exception('page_not_found'); }
 

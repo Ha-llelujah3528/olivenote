@@ -109,7 +109,7 @@ function useMentionSuggest(members) {
   return { state, detectMention, insertMention, handleKeyDown, reset };
 }
 
-function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast }) {
+function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast, aiModelAdvisor = AI_MODEL_DEFAULT, onAdvisorModelChange = () => {} }) {
       const isNew = !task || !task.id;
 
       // この課題への共有用ディープリンクをクリップボードへコピー
@@ -408,7 +408,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
         try {
           // ★ 注目：formData（入力中のタスク情報）をそのまま文脈としてAIに渡す！
-          const res = await api.chatWithOliveAI('advisor', updatedHistory, formData);
+          const res = await api.chatWithOliveAI('advisor', updatedHistory, formData, null, aiModelAdvisor);
           
           if (res.success) {
             setAdvisorMessages(prev => [...prev, { role: 'model', text: res.reply }]);
@@ -2064,6 +2064,23 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         <ImageIcon size={12} /> 画像生成
                       </button>
                     </div>
+                  </div>
+
+                  {/* AIモデル選択 */}
+                  <div className="px-3 py-1.5 bg-olive-50 border-b border-olive-100 flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] text-olive-700 font-bold whitespace-nowrap flex items-center gap-1">
+                      <Bot size={12} /> AIモデル
+                    </span>
+                    <select
+                      value={aiModelAdvisor}
+                      onChange={(e) => onAdvisorModelChange(e.target.value)}
+                      disabled={isAdvisorTyping}
+                      className="flex-1 text-xs border border-olive-200 rounded px-2 py-1 bg-white outline-none focus:ring-1 focus:ring-olive-400 focus:border-olive-600 disabled:bg-gray-50 disabled:opacity-60"
+                    >
+                      {AI_MODEL_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
                   </div>
 
                   {/* メッセージエリア */}

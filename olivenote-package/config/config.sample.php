@@ -47,6 +47,18 @@ define('MICROSOFT_CLIENT_ID',     '__MICROSOFT_CLIENT_ID__');
 define('MICROSOFT_CLIENT_SECRET', '__MICROSOFT_CLIENT_SECRET__');
 
 // ============================================================
+// Pusher（ホワイトボード／ドキュメントのリアルタイム同時編集／任意）
+// ============================================================
+// 同時編集を使う場合のみ設定。取得元: https://dashboard.pusher.com/
+//   Channels → アプリ → 「App Keys」タブ（app_id / key / secret / cluster）
+//   ※「App Settings」タブで「Enable client events」を ON にすること。
+// 空欄のままなら同時編集は無効（単独編集＋DB保存で通常どおり動作）。
+define('PUSHER_APP_ID',  '');
+define('PUSHER_KEY',     '');
+define('PUSHER_SECRET',  '');
+define('PUSHER_CLUSTER', 'ap3');
+
+// ============================================================
 // Google Drive 用 サービスアカウント
 // ============================================================
 define('CLIENT_EMAIL', '__DRIVE_SA_EMAIL__');

@@ -1,0 +1,658 @@
+// ============================================================
+// WhiteboardView — ホワイトボード（フリーボード）
+//   - Excalidraw を「タブを開いてボードを開いたときだけ」動的 import（低スペック対策＝起動を軽く保つ）
+//   - 正本データは MySQL(whiteboards.scene_json)。serializeAsJSON で保存、debounce 自動保存。
+//   - AI 解析: 盤面を PNG 化 → analyzeWhiteboardImage → 課題候補/ドキュメントをプレビューし、
+//     ユーザー確認後に課題追加（onCreateTask）/ Wiki 出力（api.saveWikiPage）。
+//   - リアルタイム同時編集（Pusher 中継）は後続ステップで本コンポーネントに追加する。
+// ============================================================
+function WhiteboardView({ currentUser, members, categories, onCreateTask, showToast }) {
+  const [boards, setBoards] = useState(null);            // null = ロード中
+  const [activeBoard, setActiveBoard] = useState(null);  // 開いているボード {id,title,...}
+  const [sceneInitialData, setSceneInitialData] = useState(null);
+  const [ExcaliLib, setExcaliLib] = useState(null);      // 遅延ロードした Excalidraw モジュール
+  const [libError, setLibError] = useState(null);
+  const [loadingBoard, setLoadingBoard] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [proposal, setProposal] = useState(null);        // {summary, tasks:[{title,description,priority,_pick}], docMarkdown}
+  const [creatingDoc, setCreatingDoc] = useState(false);
+
+  const excalidrawApiRef = useRef(null);
+  const saveTimerRef = useRef(null);
+
+  // ---- リアルタイム同時編集（Pusher presence channel）----
+  const [presence, setPresence] = useState([]);          // 同時接続メンバー [{id,name,color}]
+  const [remoteCursors, setRemoteCursors] = useState({}); // {uid:{x,y,name,color,t}}
+  const pusherRef           = useRef(null);
+  const channelRef          = useRef(null);
+  const myIdRef             = useRef(null);
+  const applyingRemoteRef   = useRef(false);              // 受信反映中は再配信しない（エコー防止）
+  const lastNoncesRef       = useRef(new Map());          // elementId -> 配信済み versionNonce
+  const appStateRef         = useRef({ scrollX: 0, scrollY: 0, zoom: { value: 1 } });
+  const cursorThrottleRef   = useRef(0);
+  const sceneThrottleRef    = useRef(0);
+  const sceneTrailingRef    = useRef(null);
+  const latestElsRef        = useRef(null);
+  const fullBroadcastTimerRef = useRef(null);
+  const membersInfoRef      = useRef(new Map());          // uid -> {id,name,color}
+  const seenImageFilesRef   = useRef(new Set());          // 即DB保存済みの画像 fileId（送信側）
+  const fetchFilesTimerRef  = useRef(null);              // 受信側: 不足 files のDB取得 debounce
+  const activeBoardRef      = useRef(null);              // Pusher ハンドラ(バインド時クロージャ)が最新ボードを参照するため
+
+  // activeBoard(state) を常に ref に反映。setupCollab で一度だけ束ねたイベントハンドラからは
+  // クロージャが古くなる(開いた瞬間は null)ので、id/title はこの ref 経由で読む。
+  useEffect(() => { activeBoardRef.current = activeBoard; }, [activeBoard]);
+
+  const CURSOR_THROTTLE_MS = 60;
+  const SCENE_THROTTLE_MS  = 140;
+  const MAX_EVENT_BYTES    = 9000;                        // Pusher client event の 10KB 上限の安全圏
+
+  const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+
+  // ---- 一覧ロード ----
+  const reloadBoards = useCallback(async () => {
+    try { const d = await api.listWhiteboards(); setBoards(d.boards || []); }
+    catch (e) { showToast('ボード一覧の取得に失敗: ' + e.message, 'error'); setBoards([]); }
+  }, [showToast]);
+  useEffect(() => { reloadBoards(); }, [reloadBoards]);
+
+  // ---- Excalidraw 遅延ロード ----
+  const ensureLib = useCallback(async () => {
+    if (ExcaliLib) return ExcaliLib;
+    const mod = await import('@excalidraw/excalidraw');
+    const lib = (mod && mod.default && typeof mod.default === 'object') ? mod.default : mod;
+    if (!lib || !lib.Excalidraw) throw new Error('Excalidraw の読み込みに失敗しました');
+    setExcaliLib(lib);
+    return lib;
+  }, [ExcaliLib]);
+
+  // ---- ボードを開く ----
+  const openBoard = async (board) => {
+    // 別ボードを連続で開いたとき、前ボード宛の保留 save タイマーが残らないよう掃除
+    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+    setLoadingBoard(true);
+    try {
+      await ensureLib();
+      const d = await api.getWhiteboard(board.id);
+      const b = d.board;
+      let initial = { elements: [], files: undefined };
+      if (b.sceneJson) {
+        try {
+          const parsed = JSON.parse(b.sceneJson);
+          initial = { elements: parsed.elements || [], files: parsed.files || undefined };
+        } catch (_) { /* 壊れた scene は空で開く */ }
+      }
+      // 配信差分の基準を初期シーンに合わせる（初回 onChange で全要素を誤配信しないため）
+      lastNoncesRef.current = new Map((initial.elements || []).map(el => [el.id, el.versionNonce]));
+      // 既存の画像 fileId は「保存済み」扱い（再オープン時に無駄な即保存を出さない）
+      seenImageFilesRef.current = new Set((initial.elements || []).filter(el => el.type === 'image' && el.fileId).map(el => el.fileId));
+      activeBoardRef.current = b;   // effect 反映前でもイベントハンドラが最新ボードを読めるように
+      setSceneInitialData(initial);
+      setActiveBoard(b);
+      setupCollab(b.id);   // Pusher 無効なら内部で no-op
+    } catch (e) {
+      setLibError(String(e.message || e));
+      showToast('ボードを開けませんでした: ' + e.message, 'error');
+    } finally {
+      setLoadingBoard(false);
+    }
+  };
+
+  // ---- 新規作成 ----
+  const createBoard = async () => {
+    try {
+      const empty = JSON.stringify({ type: 'excalidraw', version: 2, source: 'olivenote', elements: [], appState: {}, files: {} });
+      const d = await api.saveWhiteboard({ title: '新しいボード', sceneJson: empty, sceneVersion: 0 });
+      await reloadBoards();
+      openBoard({ id: d.id, title: d.title });
+    } catch (e) { showToast('作成に失敗: ' + e.message, 'error'); }
+  };
+
+  // ---- 削除 ----
+  const deleteBoard = async (board, ev) => {
+    ev.stopPropagation();
+    if (!window.confirm(`「${board.title}」を削除しますか？`)) return;
+    try { await api.deleteWhiteboard(board.id); await reloadBoards(); }
+    catch (e) { showToast('削除に失敗: ' + e.message, 'error'); }
+  };
+
+  // ---- 自動保存（debounce 2.5s）----
+  const scheduleSave = useCallback((elements, appState, files) => {
+    if (!activeBoard || !ExcaliLib) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const sceneJson = ExcaliLib.serializeAsJSON(elements, appState, files || {}, 'database');
+        const sceneVersion = ExcaliLib.getSceneVersion ? ExcaliLib.getSceneVersion(elements) : 0;
+        setSaving(true);
+        await api.saveWhiteboard({ id: activeBoard.id, title: activeBoard.title, sceneJson, sceneVersion });
+      } catch (e) {
+        showToast('保存に失敗: ' + e.message, 'error');
+      } finally {
+        setSaving(false);
+      }
+    }, 2500);
+  }, [activeBoard, ExcaliLib, showToast]);
+
+  // ============================================================
+  // リアルタイム同期ヘルパ
+  //   - 高頻度な描画差分/カーソルは Pusher の client events（端末間 P2P）で流す。
+  //   - 受信要素は version/versionNonce で決定的に reconcile（衝突は version 大、
+  //     同点は nonce 小を採用）。両端末が同じ勝者を選ぶので収束する。
+  //   - 正本は従来どおり MySQL（saveWhiteboard の debounce 保存）。
+  // ============================================================
+  // version 大きい方／同点は versionNonce 小さい方を勝者に（決定的）
+  const pickWinner = (a, b) => {
+    if (!a) return b; if (!b) return a;
+    if (a.version > b.version) return a;
+    if (a.version < b.version) return b;
+    return (a.versionNonce <= b.versionNonce) ? a : b;
+  };
+
+  // 受信要素をローカルシーンへ反映（エコー防止フラグを立てて updateScene）
+  const applyRemoteElements = (incoming) => {
+    const apiObj = excalidrawApiRef.current;
+    if (!apiObj || !Array.isArray(incoming) || incoming.length === 0) return;
+    const local = apiObj.getSceneElementsIncludingDeleted();
+    const map = new Map(local.map(el => [el.id, el]));
+    let changed = false;
+    for (const el of incoming) {
+      if (!el || !el.id) continue;                        // 壊れた受信要素は無視
+      const cur = map.get(el.id);
+      const winner = pickWinner(el, cur);
+      if (winner !== cur) { map.set(el.id, winner); changed = true; }
+      // 反映済み要素は再配信しないよう、配信基準 nonce を勝者に合わせる
+      lastNoncesRef.current.set(el.id, (map.get(el.id)).versionNonce);
+    }
+    if (!changed) return;
+    // 既存の並び順を保持しつつ新規要素を末尾に積む（z-index の安定）
+    const ordered = []; const seen = new Set();
+    for (const el of local)    { ordered.push(map.get(el.id)); seen.add(el.id); }
+    for (const el of incoming) { if (!seen.has(el.id)) { ordered.push(map.get(el.id)); seen.add(el.id); } }
+    applyingRemoteRef.current = true;
+    apiObj.updateScene({ elements: ordered });
+    setTimeout(() => { applyingRemoteRef.current = false; }, 0);
+    // 受信要素に画像があれば、足りない files を正本DBから取得して補完
+    if (incoming.some(el => el.type === 'image')) setTimeout(() => fetchMissingFiles(false), 0);
+  };
+
+  // 要素配列を 10KB 上限に収まるようチャンク分割して client event 送信
+  const sendSceneChunks = (elements) => {
+    const ch = channelRef.current;
+    if (!ch || !elements || elements.length === 0) return;
+    let batch = [], size = 2;
+    const flush = () => { if (batch.length) { ch.trigger('client-scene-update', { elements: batch }); batch = []; size = 2; } };
+    for (const el of elements) {
+      const s = JSON.stringify(el).length + 1;
+      if (size + s > MAX_EVENT_BYTES && batch.length) flush();
+      batch.push(el); size += s;
+    }
+    flush();
+  };
+
+  // 前回配信からの差分（versionNonce 変化）だけを配信
+  const broadcastChanges = (elements) => {
+    if (!channelRef.current || !elements) return;
+    const changed = [];
+    for (const el of elements) {
+      if (lastNoncesRef.current.get(el.id) !== el.versionNonce) {
+        changed.push(el);
+        lastNoncesRef.current.set(el.id, el.versionNonce);
+      }
+    }
+    if (changed.length) sendSceneChunks(changed);
+  };
+
+  // 新規参加者を現状へ収束させるため全要素を再送
+  const broadcastFullScene = () => {
+    const apiObj = excalidrawApiRef.current;
+    if (!apiObj || !channelRef.current) return;
+    const all = apiObj.getSceneElementsIncludingDeleted();
+    for (const el of all) lastNoncesRef.current.set(el.id, el.versionNonce);
+    sendSceneChunks(all);
+  };
+
+  // 画像のバイナリ(files)は Pusher の差分(10KB上限)に乗せられないため、正本DBを介して共有する。
+  //   送信側: 画像挿入を検知したら debounce を待たず即保存（受信側がすぐDBから取れるように）
+  const flushSaveNow = useCallback(async () => {
+    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+    const apiObj = excalidrawApiRef.current;
+    const board  = activeBoardRef.current;
+    if (!board || !ExcaliLib || !apiObj) return;
+    try {
+      const elements = apiObj.getSceneElementsIncludingDeleted();
+      const appState = apiObj.getAppState();
+      const files    = apiObj.getFiles();
+      const sceneJson = ExcaliLib.serializeAsJSON(elements, appState, files || {}, 'database');
+      const sceneVersion = ExcaliLib.getSceneVersion ? ExcaliLib.getSceneVersion(elements) : 0;
+      setSaving(true);
+      await api.saveWhiteboard({ id: board.id, title: board.title, sceneJson, sceneVersion });
+    } catch (e) {
+      showToast('保存に失敗: ' + e.message, 'error');
+    } finally { setSaving(false); }
+  }, [ExcaliLib, showToast]);
+
+  //   受信側: シーンに image 要素があるのに files が手元に無ければ、DB から取得して addFiles。
+  //   送信側の即保存が間に合わない初回のために、1度だけ追っかけ取得する。
+  const fetchMissingFiles = useCallback((retry) => {
+    const apiObj = excalidrawApiRef.current;
+    const board  = activeBoardRef.current;
+    if (!apiObj || !board) return;
+    const have = apiObj.getFiles() || {};
+    const missing = apiObj.getSceneElementsIncludingDeleted()
+      .some(el => el.type === 'image' && el.fileId && !el.isDeleted && !have[el.fileId]);
+    if (!missing) return;
+    if (fetchFilesTimerRef.current) clearTimeout(fetchFilesTimerRef.current);
+    fetchFilesTimerRef.current = setTimeout(async () => {
+      try {
+        const d = await api.getWhiteboard(board.id);
+        const parsed = (d && d.board && d.board.sceneJson) ? JSON.parse(d.board.sceneJson) : null;
+        const files = parsed && parsed.files ? parsed.files : null;
+        if (files) {
+          const have2 = apiObj.getFiles() || {};
+          const add = [];
+          for (const el of apiObj.getSceneElementsIncludingDeleted()) {
+            if (el.type === 'image' && el.fileId && !have2[el.fileId] && files[el.fileId]) add.push(files[el.fileId]);
+          }
+          if (add.length) apiObj.addFiles(add);
+        }
+        const still = apiObj.getSceneElementsIncludingDeleted()
+          .some(el => el.type === 'image' && el.fileId && !el.isDeleted && !(apiObj.getFiles() || {})[el.fileId]);
+        if (still && !retry) setTimeout(() => fetchMissingFiles(true), 1600);
+      } catch (_) { /* 取得失敗時は次の更新時に再試行される */ }
+    }, 500);
+  }, []);
+
+  // Excalidraw onChange: appState 追跡 + 自編集の差分配信（leading+trailing）+ DB保存
+  const handleChange = useCallback((elements, appState, files) => {
+    if (appState) {
+      appStateRef.current = {
+        scrollX: appState.scrollX || 0,
+        scrollY: appState.scrollY || 0,
+        zoom: appState.zoom || { value: 1 },
+      };
+    }
+    if (!applyingRemoteRef.current && channelRef.current) {
+      latestElsRef.current = elements;
+      const now = Date.now();
+      if (now - sceneThrottleRef.current > SCENE_THROTTLE_MS) {
+        sceneThrottleRef.current = now;
+        broadcastChanges(elements);
+      } else {
+        if (sceneTrailingRef.current) clearTimeout(sceneTrailingRef.current);
+        sceneTrailingRef.current = setTimeout(() => {
+          sceneThrottleRef.current = Date.now();
+          broadcastChanges(latestElsRef.current);
+        }, SCENE_THROTTLE_MS);
+      }
+      // 画像挿入を検知したら即DB保存（受信側がDBから files を取得できるように）
+      for (const el of elements) {
+        if (el.type === 'image' && el.fileId && !el.isDeleted && !seenImageFilesRef.current.has(el.fileId)) {
+          seenImageFilesRef.current.add(el.fileId);
+          flushSaveNow();
+        }
+      }
+    }
+    scheduleSave(elements, appState, files);
+  }, [scheduleSave, flushSaveNow]);
+
+  // Excalidraw onPointerUpdate: カーソル位置（シーン座標）を配信（スロットル）
+  const handlePointerUpdate = useCallback((p) => {
+    const ch = channelRef.current;
+    if (!ch || !p || !p.pointer) return;
+    const now = Date.now();
+    if (now - cursorThrottleRef.current < CURSOR_THROTTLE_MS) return;
+    cursorThrottleRef.current = now;
+    ch.trigger('client-cursor', { uid: myIdRef.current, x: p.pointer.x, y: p.pointer.y });
+  }, []);
+
+  // presence channel に接続。Pusher 無効時（PUSHER_KEY 未設定）は何もしない。
+  const setupCollab = async (boardId) => {
+    let pusher;
+    try { pusher = await ensurePusher(); } catch (_) { pusher = null; }
+    if (!pusher) return;                        // 同期無効＝単独編集にフォールバック
+    pusherRef.current = pusher;
+    const channel = pusher.subscribe('presence-wb-' + boardId);
+    channelRef.current = channel;
+
+    channel.bind('pusher:subscription_succeeded', (membersObj) => {
+      myIdRef.current = membersObj && membersObj.me ? membersObj.me.id : null;
+      const map = new Map();
+      try {
+        membersObj.each((m) => {
+          map.set(m.id, { id: m.id, name: (m.info && m.info.name) || 'ゲスト', color: (m.info && m.info.color) || '#3b82f6' });
+        });
+      } catch (_) {}
+      membersInfoRef.current = map;
+      setPresence(Array.from(map.values()));
+    });
+    channel.bind('pusher:member_added', (m) => {
+      membersInfoRef.current.set(m.id, { id: m.id, name: (m.info && m.info.name) || 'ゲスト', color: (m.info && m.info.color) || '#3b82f6' });
+      setPresence(Array.from(membersInfoRef.current.values()));
+      // 参加者に現状を渡す（連続参加をまとめるため debounce）
+      if (fullBroadcastTimerRef.current) clearTimeout(fullBroadcastTimerRef.current);
+      fullBroadcastTimerRef.current = setTimeout(broadcastFullScene, 500);
+    });
+    channel.bind('pusher:member_removed', (m) => {
+      membersInfoRef.current.delete(m.id);
+      setPresence(Array.from(membersInfoRef.current.values()));
+      setRemoteCursors((c) => { const n = { ...c }; delete n[m.id]; return n; });
+    });
+    channel.bind('client-scene-update', (data) => {
+      if (data && Array.isArray(data.elements)) applyRemoteElements(data.elements);
+    });
+    channel.bind('client-cursor', (data) => {
+      if (!data || data.uid == null) return;
+      const info = membersInfoRef.current.get(data.uid) || {};
+      setRemoteCursors((c) => ({ ...c, [data.uid]: { x: data.x, y: data.y, name: info.name || '', color: info.color || '#3b82f6', t: Date.now() } }));
+    });
+  };
+
+  const teardownCollab = () => {
+    if (channelRef.current) {
+      try { channelRef.current.unbind_all(); } catch (_) {}
+      if (pusherRef.current) { try { pusherRef.current.unsubscribe(channelRef.current.name); } catch (_) {} }
+      channelRef.current = null;
+    }
+    if (fullBroadcastTimerRef.current) { clearTimeout(fullBroadcastTimerRef.current); fullBroadcastTimerRef.current = null; }
+    if (sceneTrailingRef.current) { clearTimeout(sceneTrailingRef.current); sceneTrailingRef.current = null; }
+    if (fetchFilesTimerRef.current) { clearTimeout(fetchFilesTimerRef.current); fetchFilesTimerRef.current = null; }
+    lastNoncesRef.current = new Map();
+    membersInfoRef.current = new Map();
+    myIdRef.current = null;
+    setPresence([]);
+    setRemoteCursors({});
+  };
+
+  // アンマウント時に確実に切断
+  useEffect(() => () => teardownCollab(), []);
+
+  // 古いカーソル（操作の止まった他者）を間引く
+  useEffect(() => {
+    if (!activeBoard) return;
+    const t = setInterval(() => {
+      setRemoteCursors((c) => {
+        const now = Date.now(); let dirty = false; const n = {};
+        for (const k in c) { if (now - c[k].t < 4000) n[k] = c[k]; else dirty = true; }
+        return dirty ? n : c;
+      });
+    }, 2000);
+    return () => clearInterval(t);
+  }, [activeBoard]);
+
+  // 開いているボードを閉じるときは保留中の保存を確定
+  const closeBoard = async () => {
+    // debounce 待機中の最終変更を取りこぼさないよう、閉じる前に確定保存する
+    await flushSaveNow();
+    teardownCollab();
+    setActiveBoard(null);
+    setSceneInitialData(null);
+    reloadBoards();
+  };
+
+  const renameBoard = async (title) => {
+    if (!activeBoard) return;
+    const next = { ...activeBoard, title };
+    setActiveBoard(next);
+    try { await api.saveWhiteboard({ id: activeBoard.id, title }); } catch (_) {}
+  };
+
+  // ---- AI 解析 ----
+  const analyze = async () => {
+    if (!excalidrawApiRef.current || !ExcaliLib) return;
+    try {
+      setAnalyzing(true);
+      const elements = excalidrawApiRef.current.getSceneElements();
+      const appState = excalidrawApiRef.current.getAppState();
+      const files = excalidrawApiRef.current.getFiles();
+      if (!elements || elements.length === 0) { showToast('ボードが空です', 'error'); return; }
+      const blob = await ExcaliLib.exportToBlob({
+        elements,
+        appState: { ...appState, exportBackground: true, exportWithDarkMode: false },
+        files,
+        mimeType: 'image/png',
+        quality: 0.92,
+      });
+      const base64 = await blobToBase64(blob);
+      const d = await api.analyzeWhiteboardImage({ imageBase64: base64, mimeType: 'image/png' });
+      const tasks = (d.tasks || []).map(t => ({ ...t, _pick: true }));
+      setProposal({ summary: d.summary || '', tasks, docMarkdown: d.docMarkdown || '' });
+    } catch (e) {
+      showToast('AI解析に失敗: ' + e.message, 'error');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const togglePick = (idx) => {
+    setProposal(p => ({ ...p, tasks: p.tasks.map((t, i) => i === idx ? { ...t, _pick: !t._pick } : t) }));
+  };
+
+  const confirmCreateTasks = async () => {
+    if (!proposal) return;
+    const picked = proposal.tasks.filter(t => t._pick);
+    if (picked.length === 0) { showToast('追加する課題を選択してください', 'error'); return; }
+    try {
+      for (const t of picked) {
+        await onCreateTask({ id: '', title: t.title, description: t.description || '', status: 'todo', priority: t.priority || 'medium' }, false);
+      }
+      showToast(`${picked.length}件の課題を追加しました`);
+      setProposal(null);
+    } catch (e) { showToast('課題追加に失敗: ' + e.message, 'error'); }
+  };
+
+  const createDocFromProposal = async () => {
+    if (!proposal || !proposal.docMarkdown) { showToast('ドキュメント本文がありません', 'error'); return; }
+    try {
+      setCreatingDoc(true);
+      const title = (activeBoard?.title || 'ホワイトボード') + ' のまとめ';
+      await api.saveWikiPage({ title, bodyMd: proposal.docMarkdown });
+      showToast('ドキュメント（Wiki）に出力しました');
+    } catch (e) { showToast('ドキュメント出力に失敗: ' + e.message, 'error'); }
+    finally { setCreatingDoc(false); }
+  };
+
+  // ============================================================
+  // 描画
+  // ============================================================
+  // --- 一覧（ボード未選択時）---
+  if (!activeBoard) {
+    return (
+      <div className="flex-1 overflow-y-auto p-4 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Palette size={20} /> ホワイトボード</h2>
+          <button onClick={createBoard} className="bg-olive-600 hover:bg-olive-700 text-white px-4 py-2 rounded-full text-sm font-bold flex items-center gap-1 shadow-sm">
+            <Plus size={16} /> 新規ボード
+          </button>
+        </div>
+
+        {loadingBoard && <div className="text-sm text-gray-500 mb-3 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> ボードを開いています…</div>}
+        {libError && <div className="text-sm text-red-600 mb-3">読み込みエラー: {libError}</div>}
+
+        {boards === null ? (
+          <div className="text-center text-gray-400 py-12 flex items-center justify-center gap-2"><Loader2 size={16} className="animate-spin" /> 読み込み中…</div>
+        ) : boards.length === 0 ? (
+          <div className="border-2 border-dashed border-gray-300 rounded-xl py-16 text-center text-gray-400">
+            まだボードがありません。「新規ボード」から作成してください。
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {boards.map(b => (
+              <button key={b.id} onClick={() => openBoard(b)}
+                className="group text-left bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md hover:border-olive-300 transition-all relative">
+                <div className="aspect-video bg-gray-50 rounded-lg mb-2 flex items-center justify-center text-gray-300">
+                  <Palette size={28} />
+                </div>
+                <div className="font-bold text-sm text-gray-800 truncate group-hover:text-olive-600">{b.title}</div>
+                <div className="text-[11px] text-gray-400 mt-0.5">更新: {b.updatedAt ? String(b.updatedAt).substring(0, 16) : '-'}</div>
+                <span onClick={(e) => deleteBoard(b, e)}
+                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500 p-1 rounded-full hover:bg-red-50"
+                  title="削除">
+                  <Trash2 size={14} />
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- ボードを開いている時 ---
+  const Excalidraw = ExcaliLib ? ExcaliLib.Excalidraw : null;
+  const MainMenu   = ExcaliLib ? ExcaliLib.MainMenu : null;
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* ツールバー */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 bg-white shrink-0">
+        <button onClick={closeBoard} className="text-gray-600 hover:text-gray-900 p-1.5 rounded hover:bg-gray-100 flex items-center gap-1 text-sm shrink-0" title="一覧に戻る">
+          <ChevronLeft size={16} /> <span className="hidden sm:inline">一覧</span>
+        </button>
+        <input
+          value={activeBoard.title}
+          onChange={(e) => setActiveBoard({ ...activeBoard, title: e.target.value })}
+          onBlur={(e) => renameBoard(e.target.value.trim() || '(無題ボード)')}
+          className="font-bold text-sm text-gray-800 border border-transparent hover:border-gray-200 focus:border-olive-300 rounded px-2 py-1 outline-none min-w-0 flex-1 max-w-[38vw] sm:max-w-xs"
+        />
+        <span className="text-[11px] text-gray-400 flex items-center gap-1 shrink-0 sm:min-w-[64px]">
+          {saving ? (<><Loader2 size={12} className="animate-spin" /> <span className="hidden sm:inline">保存中</span></>) : (<><Check size={12} className="text-green-500" /> <span className="hidden sm:inline">保存済</span></>)}
+        </span>
+        {/* 同時接続メンバー（自分以外を頭文字アバターで表示） */}
+        {presence.filter(p => p.id !== myIdRef.current).length > 0 && (
+          <div className="flex items-center -space-x-1.5 ml-1 shrink-0">
+            {presence.filter(p => p.id !== myIdRef.current).slice(0, 3).map((p) => (
+              <span key={p.id} title={p.name}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold border-2 border-white shadow-sm"
+                style={{ backgroundColor: p.color }}>
+                {(p.name || '?').trim().charAt(0).toUpperCase()}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <button onClick={analyze} disabled={analyzing}
+            className="bg-olive-600 hover:bg-olive-700 disabled:opacity-50 text-white px-2.5 sm:px-3 py-1.5 rounded-full text-sm font-bold flex items-center gap-1 shadow-sm shrink-0"
+            title="AIで課題化・整理">
+            {analyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            <span className="hidden sm:inline">AIで課題化・整理</span>
+          </button>
+        </div>
+      </div>
+
+      {/* キャンバス（親に明示的な寸法が必要なので絶対配置で埋める） */}
+      <div className="relative flex-1 min-h-0">
+        {Excalidraw ? (
+          <div style={{ position: 'absolute', inset: 0 }}>
+            <Excalidraw
+              key={activeBoard.id}
+              initialData={sceneInitialData || { elements: [] }}
+              excalidrawAPI={(apiObj) => { excalidrawApiRef.current = apiObj; }}
+              onChange={handleChange}
+              onPointerUpdate={handlePointerUpdate}
+              langCode="ja-JP"
+            >
+              {/* メニューを自前定義して「Excalidraw links(Socials)」と標準のLive collaboration
+                  （自前Pusherと二重になる）を除外する */}
+              {MainMenu && (
+                <MainMenu>
+                  <MainMenu.DefaultItems.LoadScene />
+                  <MainMenu.DefaultItems.SaveToActiveFile />
+                  <MainMenu.DefaultItems.Export />
+                  <MainMenu.DefaultItems.SaveAsImage />
+                  <MainMenu.Separator />
+                  <MainMenu.DefaultItems.Help />
+                  <MainMenu.DefaultItems.ClearCanvas />
+                  <MainMenu.Separator />
+                  <MainMenu.DefaultItems.ToggleTheme />
+                  <MainMenu.DefaultItems.ChangeCanvasBackground />
+                </MainMenu>
+              )}
+            </Excalidraw>
+            {/* 他参加者のカーソル（シーン座標→コンテナ内ビューポート座標へ変換） */}
+            {Object.keys(remoteCursors).map((uid) => {
+              const c = remoteCursors[uid];
+              const z = (appStateRef.current.zoom && appStateRef.current.zoom.value) || 1;
+              const left = (c.x + appStateRef.current.scrollX) * z;
+              const top  = (c.y + appStateRef.current.scrollY) * z;
+              return (
+                <div key={uid} style={{ position: 'absolute', left, top, transform: 'translate(-2px,-2px)', pointerEvents: 'none', zIndex: 5, transition: 'left .05s linear, top .05s linear' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill={c.color} stroke="white" strokeWidth="1.5" style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.3))' }}>
+                    <path d="M5.5 3.5l13 6.5-5.5 1.5-1.5 5.5z" />
+                  </svg>
+                  {c.name && (
+                    <span style={{ position: 'absolute', left: 14, top: 12, background: c.color, color: 'white', fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 6, whiteSpace: 'nowrap' }}>{c.name}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-gray-400 gap-2">
+            <Loader2 size={18} className="animate-spin" /> ホワイトボードを読み込み中…
+          </div>
+        )}
+      </div>
+
+      {/* AI 提案モーダル */}
+      {proposal && (
+        <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4" onClick={() => setProposal(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2"><Sparkles size={18} className="text-olive-600" /> AI 解析結果</h3>
+              <button onClick={() => setProposal(null)} className="text-gray-400 hover:text-gray-700 p-1"><X size={18} /></button>
+            </div>
+            <div className="overflow-y-auto p-5 space-y-4">
+              {proposal.summary && (
+                <div className="text-sm text-gray-700 bg-gray-50 border border-gray-100 rounded-lg p-3">{proposal.summary}</div>
+              )}
+              <div>
+                <div className="text-xs font-bold text-gray-500 mb-2">課題候補（チェックしたものを追加）</div>
+                {proposal.tasks.length === 0 ? (
+                  <div className="text-sm text-gray-400">課題候補は見つかりませんでした。</div>
+                ) : (
+                  <div className="space-y-2">
+                    {proposal.tasks.map((t, i) => (
+                      <label key={i} className="flex items-start gap-2 p-2 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+                        <input type="checkbox" checked={t._pick} onChange={() => togglePick(i)} className="mt-1 w-4 h-4 text-olive-600 rounded" />
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-gray-800">{t.title}
+                            <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${t.priority === 'high' ? 'bg-red-100 text-red-700' : t.priority === 'low' ? 'bg-gray-100 text-gray-600' : 'bg-yellow-100 text-yellow-700'}`}>{t.priority || 'medium'}</span>
+                          </div>
+                          {t.description && <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">{t.description}</div>}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {proposal.docMarkdown && (
+                <div>
+                  <div className="text-xs font-bold text-gray-500 mb-2">整理ドキュメント（プレビュー）</div>
+                  <pre className="text-xs text-gray-700 bg-gray-50 border border-gray-100 rounded-lg p-3 max-h-48 overflow-auto whitespace-pre-wrap">{proposal.docMarkdown}</pre>
+                </div>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t flex items-center justify-end gap-2">
+              {proposal.docMarkdown && (
+                <button onClick={createDocFromProposal} disabled={creatingDoc}
+                  className="px-3 py-2 rounded-lg text-sm font-bold border border-olive-200 text-olive-700 hover:bg-olive-50 flex items-center gap-1 disabled:opacity-50">
+                  {creatingDoc ? <Loader2 size={14} className="animate-spin" /> : <BookOpen size={14} />} ドキュメント化(Wiki)
+                </button>
+              )}
+              <button onClick={confirmCreateTasks}
+                className="px-4 py-2 rounded-lg text-sm font-bold bg-olive-600 hover:bg-olive-700 text-white flex items-center gap-1">
+                <Plus size={14} /> 選択した課題を追加
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

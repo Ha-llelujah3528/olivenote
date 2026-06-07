@@ -28,16 +28,35 @@ if (!is_file($__authProviderFile)) {
 require_once $__authProviderFile;
 unset($__authProviderFile);
 
+// ログイン/セッションの有効期限（30日）。
+// ブラウザ再起動・タブ復元・PHP 一時エラー後でも Cookie が生きていれば再ログインを求めない。
+if (!defined('OLIVENOTE_SESSION_LIFETIME')) {
+    define('OLIVENOTE_SESSION_LIFETIME', 30 * 24 * 60 * 60); // 2592000秒 = 30日
+}
+
 function auth_start_session(): void {
     if (session_status() === PHP_SESSION_ACTIVE) return;
+    // サーバー側セッションファイルの寿命も Cookie と揃える（共有ホスティングの GC による早期回収を防ぐ）。
+    // 恒久設定は .user.ini 側にもあり、ここはフォールバック。
+    @ini_set('session.gc_maxlifetime', (string) OLIVENOTE_SESSION_LIFETIME);
     session_set_cookie_params([
-        'lifetime' => 0,
+        'lifetime' => OLIVENOTE_SESSION_LIFETIME,
         'path'     => '/',
         'secure'   => true,
         'httponly' => true,
         'samesite' => 'Lax',
     ]);
     session_start();
+    // スライド更新：アクセスのたびに Cookie の有効期限を 30 日先へ延ばす（使い続ける限り切れない）。
+    if (!headers_sent() && !empty($_SESSION['user_email'])) {
+        setcookie(session_name(), session_id(), [
+            'expires'  => time() + OLIVENOTE_SESSION_LIFETIME,
+            'path'     => '/',
+            'secure'   => true,
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+    }
 }
 
 function auth_is_logged_in(): bool {
@@ -78,9 +97,14 @@ function auth_logout(): void {
     $_SESSION = [];
     if (ini_get('session.use_cookies')) {
         $params = session_get_cookie_params();
-        setcookie(session_name(), '', time() - 42000,
-            $params['path'], $params['domain'],
-            $params['secure'], $params['httponly']);
+        setcookie(session_name(), '', [
+            'expires'  => time() - 42000,
+            'path'     => $params['path'],
+            'domain'   => $params['domain'],
+            'secure'   => $params['secure'],
+            'httponly' => $params['httponly'],
+            'samesite' => 'Lax',
+        ]);
     }
     session_destroy();
 }
