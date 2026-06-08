@@ -509,7 +509,7 @@ if (!auth_is_logged_in()) {
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
       UploadCloud, Check, Edit3, Table, Palette,
       Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown,
-      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown
+      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown, StickyNote, User
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
@@ -2047,12 +2047,14 @@ if (!auth_is_logged_in()) {
     const AI_MODEL_OPTIONS = [
       { value: 'gemini-3.5-flash',  label: 'Gemini 3.5 Flash' },
       { value: 'gemini-2.5-pro',    label: 'Gemini 2.5 Pro' },
-      // --- third-party (Claude) は G-gen の契約確認が取れるまで一時無効化（2026-06-05）---
-      //   バックエンド（OLIVE_AI_MODELS / callVertexClaude / callOliveAiModel）は休眠状態で残置。
-      //   ここのコメントを外せば即復活（選択肢を戻すだけ。サーバ側レジストリは触らない）。
+      // --- third-party (Claude) は G-gen 契約確認 OK で再有効化（2026-06-08）---
+      //   バックエンド（OLIVE_AI_MODELS / callVertexClaude / callOliveAiModel）と同期。
+      // Opus 4.8 は Vertex のモデル別クォータが未付与で 429（RESOURCE_EXHAUSTED）になるため
+      //   G-gen にクォータ増枠を申請中。枠が付くまで選択肢から一時非表示（2026-06-08）。
+      //   バックエンドの OLIVE_AI_MODELS 側は休眠残置（このコメントを外せば即復活）。
       // { value: 'claude-opus-4-8',   label: 'Claude Opus 4.8' },
-      // { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      // { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
+      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
     ];
     const AI_MODEL_DEFAULT = 'gemini-2.5-pro';
     // 永続prefs（userPrefs.aiModelAdvisor / aiModelConciergeTasks）に、現在は選択肢に無い

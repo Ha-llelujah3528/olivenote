@@ -17,9 +17,37 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
   const [analyzing, setAnalyzing] = useState(false);
   const [proposal, setProposal] = useState(null);        // {summary, tasks:[{title,description,priority,_pick}], docMarkdown}
   const [creatingDoc, setCreatingDoc] = useState(false);
+  const [stickySel, setStickySel] = useState(false);     // 付箋を選択中か（色パレット表示）
+  const [stickyNotes, setStickyNotes] = useState([]);    // オーバーレイ描画用の付箋射影
+  const [viewT, setViewT] = useState({ sx: 0, sy: 0, z: 1 }); // ビュー変換（pan/zoom 追従）
+  const [editing, setEditing] = useState(null);          // 編集中 {id, field:'title'|'body'}
+  const [editBuf, setEditBuf] = useState('');            // 編集中フィールドのローカルバッファ
 
   const excalidrawApiRef = useRef(null);
   const saveTimerRef = useRef(null);
+  const stickySelSigRef    = useRef('');                 // 選択シグネチャ（setState 抑制用）
+  const selStickyIdsRef    = useRef([]);                 // 選択中の付箋 element id
+  const overlayRafRef      = useRef(0);                  // オーバーレイ更新の rAF スロットル
+  const overlayPendRef     = useRef(null);               // rAF 保留中の {els, st}
+  const stickyNotesRef     = useRef([]);                 // stickyNotes の最新値（イベントハンドラ用）
+  const viewTRef           = useRef({ sx: 0, sy: 0, z: 1 });
+  const editingRef         = useRef(null);               // editing の最新値（document リスナ用）
+  const editBufRef         = useRef('');                 // editBuf の最新値（blur 時の確定用・stale回避）
+  const editCommitTimerRef = useRef(null);               // 編集バッファ→customData の debounce
+  const fixingAngleRef     = useRef(false);              // 付箋の角度0リセット中（再入防止）
+
+  // 付箋カラー 6 色プリセット（bg=本体 / band=タイトル帯）
+  const STICKY_PRESETS = [
+    { name: '黄',   bg: '#FEF9C3', band: '#FDE68A' },
+    { name: 'ピンク', bg: '#FCE7F3', band: '#F9A8D4' },
+    { name: '水色', bg: '#DBEAFE', band: '#93C5FD' },
+    { name: '緑',   bg: '#DCFCE7', band: '#86EFAC' },
+    { name: '橙',   bg: '#FFEDD5', band: '#FDBA74' },
+    { name: '紫',   bg: '#EDE9FE', band: '#C4B5FD' },
+  ];
+  const stickyPreset = (name) => STICKY_PRESETS.find((p) => p.name === name) || STICKY_PRESETS[0];
+  const STICKY_W = 230, STICKY_H = 180, STICKY_TITLE_H = 34, STICKY_AUTHOR_H = 22;
+  const rNonce = () => Math.floor(Math.random() * 2147483647);
 
   // ---- リアルタイム同時編集（Pusher presence channel）----
   const [presence, setPresence] = useState([]);          // 同時接続メンバー [{id,name,color}]
@@ -43,6 +71,11 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
   // activeBoard(state) を常に ref に反映。setupCollab で一度だけ束ねたイベントハンドラからは
   // クロージャが古くなる(開いた瞬間は null)ので、id/title はこの ref 経由で読む。
   useEffect(() => { activeBoardRef.current = activeBoard; }, [activeBoard]);
+  useEffect(() => { editingRef.current = editing; }, [editing]);
+  useEffect(() => () => {
+    if (overlayRafRef.current) cancelAnimationFrame(overlayRafRef.current);
+    if (editCommitTimerRef.current) clearTimeout(editCommitTimerRef.current);
+  }, []);
 
   const CURSOR_THROTTLE_MS = 60;
   const SCENE_THROTTLE_MS  = 140;
@@ -269,6 +302,31 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
     }, 500);
   }, []);
 
+  // 付箋オーバーレイの座標/内容を rAF スロットルで再計算（pan/zoom/move 追従）
+  const scheduleOverlay = (elements, appState) => {
+    overlayPendRef.current = {
+      els: elements || (excalidrawApiRef.current ? excalidrawApiRef.current.getSceneElementsIncludingDeleted() : []),
+      st: appState || appStateRef.current,
+    };
+    if (overlayRafRef.current) return;
+    overlayRafRef.current = requestAnimationFrame(() => {
+      overlayRafRef.current = 0;
+      const pend = overlayPendRef.current; overlayPendRef.current = null;
+      if (!pend) return;
+      const z = (pend.st.zoom && pend.st.zoom.value) || 1;
+      const vt = { sx: pend.st.scrollX || 0, sy: pend.st.scrollY || 0, z };
+      viewTRef.current = vt; setViewT(vt);
+      const notes = [];
+      for (const el of (pend.els || [])) {
+        if (!el || el.isDeleted) continue;
+        if (el.customData && el.customData.stickyNote) {
+          notes.push({ id: el.id, x: el.x, y: el.y, w: el.width, h: el.height, cd: el.customData });
+        }
+      }
+      stickyNotesRef.current = notes; setStickyNotes(notes);
+    });
+  };
+
   // Excalidraw onChange: appState 追跡 + 自編集の差分配信（leading+trailing）+ DB保存
   const handleChange = useCallback((elements, appState, files) => {
     if (appState) {
@@ -277,6 +335,34 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
         scrollY: appState.scrollY || 0,
         zoom: appState.zoom || { value: 1 },
       };
+      // 選択中の付箋 element を抽出（色パレットの表示／対象判定に使う）
+      const sel = appState.selectedElementIds || {};
+      const selSticky = [];
+      for (const el of (elements || [])) {
+        if (sel[el.id] && el.customData && el.customData.stickyNote && !el.isDeleted) selSticky.push(el.id);
+      }
+      const sig = selSticky.slice().sort().join(',');
+      if (sig !== stickySelSigRef.current) {
+        stickySelSigRef.current = sig;
+        selStickyIdsRef.current = selSticky;
+        setStickySel(selSticky.length > 0);
+      }
+      scheduleOverlay(elements, appState);
+      // 付箋は回転不可。角度が付いたら 0 に戻す（オーバーレイと矩形のズレ防止）
+      if (!fixingAngleRef.current) {
+        const rotated = (elements || []).filter((el) => el.customData && el.customData.stickyNote && !el.isDeleted && el.angle);
+        if (rotated.length) {
+          const apiObj = excalidrawApiRef.current;
+          if (apiObj) {
+            const ids = new Set(rotated.map((el) => el.id));
+            const next = apiObj.getSceneElementsIncludingDeleted().map((el) =>
+              ids.has(el.id) ? { ...el, angle: 0, version: (el.version || 1) + 1, versionNonce: rNonce() } : el);
+            fixingAngleRef.current = true;
+            apiObj.updateScene({ elements: next });
+            fixingAngleRef.current = false;
+          }
+        }
+      }
     }
     if (!applyingRemoteRef.current && channelRef.current) {
       latestElsRef.current = elements;
@@ -391,6 +477,12 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
     // debounce 待機中の最終変更を取りこぼさないよう、閉じる前に確定保存する
     await flushSaveNow();
     teardownCollab();
+    setEditing(null);
+    setStickyNotes([]);
+    setStickySel(false);
+    stickyNotesRef.current = [];
+    selStickyIdsRef.current = [];
+    stickySelSigRef.current = '';
     setActiveBoard(null);
     setSceneInitialData(null);
     reloadBoards();
@@ -401,6 +493,160 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
     const next = { ...activeBoard, title };
     setActiveBoard(next);
     try { await api.saveWhiteboard({ id: activeBoard.id, title }); } catch (_) {}
+  };
+
+  // ============================================================
+  // 付箋（Excalidraw 矩形 ＋ HTMLオーバーレイ）
+  //   - 位置/サイズ/移動/同時編集同期/保存は Excalidraw 矩形（customData.stickyNote）に乗せる。
+  //   - タイトル・本文・作成者の UI は HTMLオーバーレイで描画し、編集結果を customData に書き戻す。
+  //   - 書き戻しは version/versionNonce を bump → onChange 経由で差分配信＆自動保存される。
+  //   - 操作: クリック＝編集 / ドラッグ＝移動 / Excalidraw のハンドルでリサイズ。
+  // ============================================================
+  // 付箋を 1 枚追加（ビューポート中央）。直後にタイトル編集へ。
+  const addStickyNote = () => {
+    const apiObj = excalidrawApiRef.current;
+    if (!apiObj || !ExcaliLib || !ExcaliLib.convertToExcalidrawElements) {
+      showToast('付箋を追加できませんでした', 'error'); return;
+    }
+    const st = apiObj.getAppState();
+    const zoom = (st.zoom && st.zoom.value) || 1;
+    const cx = (st.width / 2) / zoom - (st.scrollX || 0);
+    const cy = (st.height / 2) / zoom - (st.scrollY || 0);
+    const x = Math.round(cx - STICKY_W / 2);
+    const y = Math.round(cy - STICKY_H / 2);
+    const p = STICKY_PRESETS[0];
+    let els;
+    try {
+      els = ExcaliLib.convertToExcalidrawElements([
+        { type: 'rectangle', x, y, width: STICKY_W, height: STICKY_H,
+          backgroundColor: p.bg, strokeColor: '#e5e7eb', fillStyle: 'solid', strokeWidth: 1 },
+      ]);
+    } catch (e) { showToast('付箋の作成に失敗: ' + e.message, 'error'); return; }
+    const rect = {
+      ...els[0],
+      customData: { stickyNote: true, title: '', body: '', author: (currentUser && currentUser.name) || '', color: p.name },
+    };
+    const cur = apiObj.getSceneElementsIncludingDeleted();
+    apiObj.updateScene({ elements: [...cur, rect], appState: { selectedElementIds: { [rect.id]: true } } });
+    stickySelSigRef.current = rect.id;
+    selStickyIdsRef.current = [rect.id];
+    setStickySel(true);
+    setEditing({ id: rect.id, field: 'title' });
+    editingRef.current = { id: rect.id, field: 'title' };
+    setEditBuf('');
+    editBufRef.current = '';
+  };
+
+  // customData を部分更新（color 指定時は backgroundColor も追従）
+  const commitSticky = (id, patch) => {
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const next = apiObj.getSceneElementsIncludingDeleted().map((el) => {
+      if (el.id === id && el.customData && el.customData.stickyNote) {
+        const bg = patch.color ? stickyPreset(patch.color).bg : el.backgroundColor;
+        return { ...el, backgroundColor: bg, customData: { ...el.customData, ...patch },
+                 version: (el.version || 1) + 1, versionNonce: rNonce() };
+      }
+      return el;
+    });
+    apiObj.updateScene({ elements: next });
+  };
+
+  // 付箋の移動（カスタムドラッグ）。位置のみ更新。
+  const moveStickyTo = (id, nx, ny) => {
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const next = apiObj.getSceneElementsIncludingDeleted().map((el) =>
+      el.id === id ? { ...el, x: nx, y: ny, version: (el.version || 1) + 1, versionNonce: rNonce() } : el);
+    apiObj.updateScene({ elements: next, appState: { selectedElementIds: { [id]: true } } });
+  };
+
+  // 付箋を削除（ソフトデリート）
+  const deleteSticky = (id) => {
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const next = apiObj.getSceneElementsIncludingDeleted().map((el) =>
+      el.id === id ? { ...el, isDeleted: true, version: (el.version || 1) + 1, versionNonce: rNonce() } : el);
+    apiObj.updateScene({ elements: next, appState: { selectedElementIds: {} } });
+    if (editingRef.current && editingRef.current.id === id) setEditing(null);
+  };
+
+  // 選択中の付箋の色を一括変更
+  const recolorSticky = (preset) => {
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const ids = new Set(selStickyIdsRef.current);
+    if (ids.size === 0) return;
+    const next = apiObj.getSceneElementsIncludingDeleted().map((el) => {
+      if (ids.has(el.id) && el.customData && el.customData.stickyNote) {
+        return { ...el, backgroundColor: preset.bg, customData: { ...el.customData, color: preset.name },
+                 version: (el.version || 1) + 1, versionNonce: rNonce() };
+      }
+      return el;
+    });
+    apiObj.updateScene({ elements: next });
+  };
+
+  // 選択中の付箋の重なり順を変更（true=最前面 / false=最背面）。配列順 = z 順。
+  const reorderSticky = (toFront) => {
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const ids = new Set(selStickyIdsRef.current);
+    if (ids.size === 0) return;
+    const all = apiObj.getSceneElementsIncludingDeleted();
+    const sel = all.filter((el) => ids.has(el.id));
+    const rest = all.filter((el) => !ids.has(el.id));
+    if (sel.length === 0) return;
+    const ordered = toFront ? [...rest, ...sel] : [...sel, ...rest];
+    // 順序変更を保存・配信に乗せるため versionNonce を bump
+    const next = ordered.map((el) => ids.has(el.id) ? { ...el, version: (el.version || 1) + 1, versionNonce: rNonce() } : el);
+    apiObj.updateScene({ elements: next });
+  };
+
+  // 付箋上で mousedown → 4px超ドラッグで移動 / 移動なし（クリック）で編集開始
+  const onStickyMouseDown = (e, note) => {
+    if (e.button !== 0) return;
+    // アクティブな textarea / select / 削除ボタンは onMouseDown で stopPropagation 済（ここには来ない）
+    const apiObj = excalidrawApiRef.current; if (!apiObj) return;
+    const startX = e.clientX, startY = e.clientY;
+    // クリック位置は付箋内ローカル座標(Y)で保持（ページ座標とのズレを排除し title/body 判定を正す）
+    const box = e.currentTarget.getBoundingClientRect();
+    const localY = e.clientY - box.top;
+    const baseX = note.x, baseY = note.y;
+    apiObj.updateScene({ appState: { selectedElementIds: { [note.id]: true } } });
+    let moved = false;
+    const onMove = (ev) => {
+      const z = viewTRef.current.z || 1;
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) moved = true;
+      if (moved) moveStickyTo(note.id, baseX + (ev.clientX - startX) / z, baseY + (ev.clientY - startY) / z);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!moved) {
+        const n = stickyNotesRef.current.find((s) => s.id === note.id) || note;
+        const field = localY < (STICKY_TITLE_H * (viewTRef.current.z || 1)) ? 'title' : 'body';
+        const val = (n.cd && n.cd[field]) || '';
+        editingRef.current = { id: note.id, field };   // 直後の参照/blur 競合を避けるため即時反映
+        editBufRef.current = val;
+        setEditing({ id: note.id, field });
+        setEditBuf(val);
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  };
+
+  // 編集中フィールドの入力 → ローカルバッファ更新＋debounceでcustomDataへ反映
+  const onStickyEditChange = (e) => {
+    const v = e.target.value;
+    editBufRef.current = v;
+    setEditBuf(v);
+    const cur = editingRef.current; if (!cur) return;
+    if (editCommitTimerRef.current) clearTimeout(editCommitTimerRef.current);
+    editCommitTimerRef.current = setTimeout(() => { commitSticky(cur.id, { [cur.field]: v }); }, 400);
+  };
+  const onStickyEditBlur = () => {
+    if (editCommitTimerRef.current) { clearTimeout(editCommitTimerRef.current); editCommitTimerRef.current = null; }
+    const cur = editingRef.current;
+    if (cur) commitSticky(cur.id, { [cur.field]: editBufRef.current });
+    setEditing(null);
   };
 
   // ---- AI 解析 ----
@@ -507,6 +753,7 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
   // --- ボードを開いている時 ---
   const Excalidraw = ExcaliLib ? ExcaliLib.Excalidraw : null;
   const MainMenu   = ExcaliLib ? ExcaliLib.MainMenu : null;
+  const memberNames = (members || []).map((m) => m && m.name).filter(Boolean);
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* ツールバー */}
@@ -591,6 +838,107 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
                 </div>
               );
             })}
+
+            {/* 付箋オーバーレイ（Excalidraw 矩形の上に描く実体UI） */}
+            {stickyNotes.map((n) => {
+              const left = (n.x + viewT.sx) * viewT.z;
+              const top  = (n.y + viewT.sy) * viewT.z;
+              const w = n.w * viewT.z, h = n.h * viewT.z;
+              const pre = stickyPreset(n.cd && n.cd.color);
+              const isEdit = editing && editing.id === n.id;
+              const titleBandPx = Math.max(18, STICKY_TITLE_H * viewT.z);
+              const authorBarPx = Math.max(16, STICKY_AUTHOR_H * viewT.z);
+              const titleFont = Math.max(9, Math.round(14 * viewT.z));
+              const bodyFont  = Math.max(8, Math.round(12.5 * viewT.z));
+              const authorFont = Math.max(7, Math.round(10.5 * viewT.z));
+              const pad = Math.max(3, Math.round(6 * viewT.z));
+              const author = (n.cd && n.cd.author) || '';
+              const authorExtra = author && !memberNames.includes(author);
+              const tArea = { width: '100%', height: '100%', border: 'none', outline: 'none', resize: 'none', background: 'transparent', fontFamily: 'inherit', padding: 0, margin: 0 };
+              return (
+                <div key={n.id} onMouseDown={(e) => onStickyMouseDown(e, n)}
+                  style={{ position: 'absolute', left, top, width: w, height: h, zIndex: 4,
+                           background: pre.bg, borderRadius: Math.round(8 * viewT.z), overflow: 'hidden',
+                           boxShadow: isEdit ? '0 0 0 2px #f59e0b, 0 4px 10px rgba(0,0,0,.22)' : '0 2px 6px rgba(0,0,0,.18)',
+                           display: 'flex', flexDirection: 'column', pointerEvents: 'auto',
+                           cursor: isEdit ? 'default' : 'move', userSelect: isEdit ? 'text' : 'none' }}>
+                  {/* タイトル帯 */}
+                  <div style={{ flex: `0 0 ${titleBandPx}px`, height: titleBandPx, background: pre.band,
+                                display: 'flex', alignItems: 'center', padding: `0 ${pad}px`, overflow: 'hidden' }}>
+                    {isEdit && editing.field === 'title' ? (
+                      <textarea autoFocus value={editBuf} onChange={onStickyEditChange} onBlur={onStickyEditBlur}
+                        onMouseDown={(e) => e.stopPropagation()} placeholder="タイトル"
+                        onKeyDown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }}
+                        style={{ ...tArea, fontSize: titleFont, fontWeight: 700, color: '#1f2937', lineHeight: 1.2, overflow: 'hidden' }} />
+                    ) : (
+                      <div style={{ fontSize: titleFont, fontWeight: 700, color: (n.cd && n.cd.title) ? '#1f2937' : '#9ca3af',
+                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
+                        {(n.cd && n.cd.title) || 'タイトル'}
+                      </div>
+                    )}
+                  </div>
+                  {/* 本文 */}
+                  <div style={{ flex: '1 1 auto', minHeight: 0, padding: pad, overflow: 'hidden' }}>
+                    {isEdit && editing.field === 'body' ? (
+                      <textarea autoFocus value={editBuf} onChange={onStickyEditChange} onBlur={onStickyEditBlur}
+                        onMouseDown={(e) => e.stopPropagation()} placeholder="内容を入力"
+                        onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.target.blur(); } }}
+                        style={{ ...tArea, fontSize: bodyFont, color: '#374151', lineHeight: 1.35, textAlign: 'left' }} />
+                    ) : (
+                      <div style={{ fontSize: bodyFont, color: (n.cd && n.cd.body) ? '#374151' : '#9ca3af', lineHeight: 1.35,
+                                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left', height: '100%', overflow: 'hidden' }}>
+                        {(n.cd && n.cd.body) || '内容を入力'}
+                      </div>
+                    )}
+                  </div>
+                  {/* 作成者（メンバーから選択） */}
+                  <div style={{ flex: `0 0 ${authorBarPx}px`, height: authorBarPx, display: 'flex', alignItems: 'center',
+                                gap: 4, padding: `0 ${pad}px`, borderTop: '1px solid rgba(0,0,0,.06)' }}>
+                    <User size={Math.max(8, Math.round(11 * viewT.z))} style={{ color: '#6b7280', flex: '0 0 auto' }} />
+                    <select value={author} onMouseDown={(e) => e.stopPropagation()}
+                      onChange={(e) => commitSticky(n.id, { author: e.target.value })}
+                      style={{ flex: '1 1 auto', minWidth: 0, border: 'none', outline: 'none', background: 'transparent',
+                               fontSize: authorFont, color: '#4b5563', fontFamily: 'inherit', cursor: 'pointer', pointerEvents: 'auto' }}>
+                      <option value="">（未設定）</option>
+                      {authorExtra && <option value={author}>{author}</option>}
+                      {memberNames.map((nm) => (<option key={nm} value={nm}>{nm}</option>))}
+                    </select>
+                  </div>
+                  {/* 削除 */}
+                  <button onMouseDown={(e) => e.stopPropagation()} onClick={() => deleteSticky(n.id)} title="付箋を削除"
+                    style={{ position: 'absolute', top: 2, right: 2, width: Math.max(14, Math.round(18 * viewT.z)),
+                             height: Math.max(14, Math.round(18 * viewT.z)), borderRadius: '9999px', border: 'none',
+                             background: 'rgba(255,255,255,.75)', color: '#6b7280', cursor: 'pointer', padding: 0,
+                             display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <X size={Math.max(9, Math.round(12 * viewT.z))} />
+                  </button>
+                </div>
+              );
+            })}
+
+            {/* 付箋ツールバー（Excalidraw 標準ツールバーと重ならない位置・白基調で統一） */}
+            <div style={{ position: 'absolute', top: 70, left: '50%', transform: 'translateX(-50%)', zIndex: 7, pointerEvents: 'auto' }}
+                 className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg shadow-md px-1.5 py-1">
+              <button onClick={addStickyNote} title="付箋を追加"
+                className="flex items-center gap-1 text-gray-700 hover:bg-gray-100 rounded-md px-2 py-1 text-sm font-medium">
+                <StickyNote size={15} className="text-amber-500" /> 付箋を追加
+              </button>
+              {stickySel && (
+                <>
+                  <span className="w-px h-5 bg-gray-200 mx-0.5" />
+                  {STICKY_PRESETS.map((p) => (
+                    <button key={p.name} onClick={() => recolorSticky(p)} title={p.name}
+                      className="w-5 h-5 rounded-full border border-black/10 hover:scale-110 transition-transform"
+                      style={{ backgroundColor: p.bg }} />
+                  ))}
+                  <span className="w-px h-5 bg-gray-200 mx-0.5" />
+                  <button onClick={() => reorderSticky(true)} title="最前面へ"
+                    className="text-gray-600 hover:bg-gray-100 rounded-md p-1"><ArrowUp size={16} /></button>
+                  <button onClick={() => reorderSticky(false)} title="最背面へ"
+                    className="text-gray-600 hover:bg-gray-100 rounded-md p-1"><ArrowDown size={16} /></button>
+                </>
+              )}
+            </div>
           </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-gray-400 gap-2">
