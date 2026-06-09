@@ -158,6 +158,10 @@ function render_step3(): void {
     $prevMicrosoft = !empty($authMethods['microsoft']);
     $prevEmail = !empty($authMethods['email']);
 
+    // セットアップモード（production = Supabase 認証 / demo = 共通パスワード）
+    $prevMode = $_SESSION['install']['setup_mode'] ?? 'production';
+    $prevDemoPass = $_SESSION['install']['demo_password'] ?? '';
+
     // Email は初期値 ON
     if (empty($authMethods)) {
         $prevEmail = true;
@@ -178,6 +182,39 @@ function render_step3(): void {
     <form method="post" onsubmit="return validateAuthMethods()">
         <input type="hidden" name="_token" value="<?= h($_SESSION['_token']) ?>">
 
+        <fieldset>
+            <legend>セットアップモード</legend>
+            <label style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px;">
+                <input type="radio" name="setup_mode" value="production" id="mode-production" <?= $prevMode !== 'demo' ? 'checked' : '' ?> onchange="setMode('production')">
+                <span style="flex: 1;">
+                    <strong>本番セットアップ</strong>
+                    <span class="hint" style="display: block; margin-top: 4px;">Supabase 認証（Google / Microsoft / メール）を使う。Supabase・Google Drive の情報が必要。</span>
+                </span>
+            </label>
+            <label style="display: flex; gap: 8px; align-items: flex-start;">
+                <input type="radio" name="setup_mode" value="demo" id="mode-demo" <?= $prevMode === 'demo' ? 'checked' : '' ?> onchange="setMode('demo')">
+                <span style="flex: 1;">
+                    <strong>デモセットアップ</strong>
+                    <span class="hint" style="display: block; margin-top: 4px;">共通パスワードだけで試用。Supabase / Google Drive / Vertex の設定は不要。営業デモ向け。</span>
+                </span>
+            </label>
+        </fieldset>
+
+        <div id="demo-fields">
+            <fieldset>
+                <legend>デモ用ログイン設定</legend>
+                <p style="font-size: 13px; color: #6b7280; margin: 0 0 12px 0;">
+                    登録済みメールアドレスと、ここで決めた共通パスワードでログインできます。外部サービスの設定は不要です。
+                    （ドキュメント / 添付ファイル / AI 機能は Drive・Vertex 未設定のため動作しません。タスク・ボード・ガント等の中核機能は利用可能です。）
+                </p>
+                <label>デモ用共通パスワード
+                    <span class="hint">顧客に伝える共通パスワード（4文字以上）</span>
+                    <input type="text" name="demo_password" id="demo_password" value="<?= h($prevDemoPass) ?>" placeholder="例: olivenote2026">
+                </label>
+            </fieldset>
+        </div>
+
+        <div id="production-fields">
         <fieldset>
             <legend>① 認証方法の選択（最低1つは選択必須）</legend>
             <p style="font-size: 13px; color: #6b7280; margin: 0 0 8px 0;">顧客の組織が使っている認証方式を選択してください。複数選択も可能です。</p>
@@ -285,6 +322,7 @@ function render_step3(): void {
                 <textarea name="vertex_sa_pk" rows="6"><?= h($prev['vertex_sa_pk']) ?></textarea>
             </label>
         </fieldset>
+        </div><!-- /#production-fields -->
 
         <div class="actions">
             <a class="btn-secondary" href="install.php?step=2">← 戻る</a>
@@ -293,33 +331,79 @@ function render_step3(): void {
     </form>
 
     <script>
-    // 認証方法チェックボックスと入力フォームの連動
-    document.getElementById('chk-google').addEventListener('change', (e) => {
-        const div = document.getElementById('google-creds');
-        const inputs = div.querySelectorAll('input');
-        if (e.target.checked) {
-            div.classList.remove('hidden');
-            inputs.forEach(inp => { inp.disabled = false; inp.required = true; });
-        } else {
-            div.classList.add('hidden');
-            inputs.forEach(inp => { inp.disabled = true; inp.required = false; });
-        }
+    // CSS for .hidden class
+    const style = document.createElement('style');
+    style.textContent = '.hidden { display: none !important; }';
+    document.head.appendChild(style);
+
+    // 本番フィールドの required 初期状態をスナップショット。
+    // demo へ切替時に required を全て外すため、本番へ戻すとき正しく復元できるよう保存しておく。
+    const prodContainer = document.getElementById('production-fields');
+    prodContainer.querySelectorAll('input, textarea, select').forEach(el => {
+        el.dataset.req = el.required ? '1' : '0';
     });
 
-    document.getElementById('chk-microsoft').addEventListener('change', (e) => {
-        const div = document.getElementById('microsoft-creds');
+    // Google / Microsoft の資格情報入力欄を、チェック状態に同期する
+    function syncCred(name) {
+        const chk = document.getElementById('chk-' + name);
+        const div = document.getElementById(name + '-creds');
+        if (!chk || !div) return;
         const inputs = div.querySelectorAll('input');
-        if (e.target.checked) {
+        // 本番モードでないときは資格情報欄は常に無効（demo では production-fields ごと無効化）
+        const productionMode = document.getElementById('mode-demo') && !document.getElementById('mode-demo').checked;
+        if (chk.checked && productionMode) {
             div.classList.remove('hidden');
             inputs.forEach(inp => { inp.disabled = false; inp.required = true; });
         } else {
             div.classList.add('hidden');
             inputs.forEach(inp => { inp.disabled = true; inp.required = false; });
         }
-    });
+    }
+
+    document.getElementById('chk-google').addEventListener('change', () => syncCred('google'));
+    document.getElementById('chk-microsoft').addEventListener('change', () => syncCred('microsoft'));
+
+    // セットアップモード切替：production / demo でフォームの有効範囲を切り替える
+    function setMode(mode) {
+        const prod = document.getElementById('production-fields');
+        const demo = document.getElementById('demo-fields');
+        const demoPass = document.getElementById('demo_password');
+        if (mode === 'demo') {
+            prod.classList.add('hidden');
+            demo.classList.remove('hidden');
+            // 本番用フィールドは disabled にして HTML5 検証・送信から除外する
+            prod.querySelectorAll('input, textarea, select').forEach(el => { el.disabled = true; el.required = false; });
+            demoPass.disabled = false;
+            demoPass.required = true;
+        } else {
+            prod.classList.remove('hidden');
+            demo.classList.add('hidden');
+            demoPass.disabled = true;
+            demoPass.required = false;
+            // 本番用フィールドを再有効化し、required をスナップショットから復元する
+            // （Supabase / Drive は必須・Vertex は任意。data-req に初期状態を保存済み）
+            prod.querySelectorAll('input, textarea, select').forEach(el => {
+                el.disabled = false;
+                el.required = (el.dataset.req === '1');
+            });
+            // Google / Microsoft の資格情報欄はチェック状態に従って再同期（required を上書き）
+            syncCred('google');
+            syncCred('microsoft');
+        }
+    }
 
     // フォーム送信時のバリデーション
     function validateAuthMethods() {
+        const demoSelected = document.getElementById('mode-demo').checked;
+        if (demoSelected) {
+            const dp = document.getElementById('demo_password').value.trim();
+            if (dp.length < 4) {
+                alert('デモ用共通パスワードは4文字以上で入力してください');
+                return false;
+            }
+            return true;
+        }
+
         const google = document.getElementById('chk-google').checked;
         const microsoft = document.getElementById('chk-microsoft').checked;
         const email = document.getElementById('chk-email').checked;
@@ -352,20 +436,20 @@ function render_step3(): void {
         return true;
     }
 
-    // CSS for .hidden class
-    const style = document.createElement('style');
-    style.textContent = '.hidden { display: none !important; }';
-    document.head.appendChild(style);
+    // 初期表示：選択中モードに合わせてフォーム状態を確定する
+    setMode(document.getElementById('mode-demo').checked ? 'demo' : 'production');
     </script>
     <?php
 }
 
 function render_step4(): void {
     $prev = $_SESSION['install']['admin'] ?? ['email' => '', 'name' => '', 'avatar' => '🦄'];
+    $mode = $_SESSION['install']['setup_mode'] ?? 'production';
     ?>
     <h1>④ 初期管理者の登録</h1>
     <p>最初の管理者ユーザー（is_admin = 1）を登録します。<br>
-       <strong>このメールアドレスでログインしないとシステムに入れません。</strong>（Google / Microsoft / Magic Link いずれの方法でもOK）</p>
+       <strong>このメールアドレスでログインしないとシステムに入れません。</strong>
+       <?php if ($mode === 'demo'): ?>（デモモード：このメールアドレス＋共通パスワードでログインします）<?php else: ?>（Google / Microsoft / Magic Link いずれの方法でもOK）<?php endif; ?></p>
 
     <form method="post">
         <input type="hidden" name="_token" value="<?= h($_SESSION['_token']) ?>">
@@ -393,9 +477,16 @@ function render_step5(): void {
     $admin  = $_SESSION['install']['admin']  ?? [];
     $authMethods = $_SESSION['install']['auth_methods'] ?? [];
     $authCreds = $_SESSION['install']['auth_creds'] ?? [];
+    $mode = $_SESSION['install']['setup_mode'] ?? 'production';
     ?>
     <h1>⑤ 確認と実行</h1>
     <p>以下の内容で <code>config/config.php</code> を生成し、データベースを初期化します。</p>
+
+    <?php if ($mode === 'demo'): ?>
+    <div class="alert info" style="background:#fef3c7; border-color:#fde68a; color:#92400e;">
+        <strong>🧪 デモセットアップ</strong> — 共通パスワードでログインできる試用モードです。Supabase / Google Drive / Vertex は設定されません。本番導入時は再セットアップして本番モードを選んでください。
+    </div>
+    <?php endif; ?>
 
     <h3>データベース</h3>
     <ul class="summary">
@@ -405,6 +496,12 @@ function render_step5(): void {
     </ul>
 
     <h3>認証方法</h3>
+    <?php if ($mode === 'demo'): ?>
+    <ul class="summary">
+        <li>🧪 デモログイン（共通パスワード）</li>
+        <li>共通パスワード: <code><?= !empty($_SESSION['install']['demo_password']) ? '設定済' : '(未設定)' ?></code></li>
+    </ul>
+    <?php else: ?>
     <ul class="summary">
         <?php foreach (['google', 'microsoft', 'email'] as $method): ?>
             <?php if (!empty($authMethods[$method])): ?>
@@ -422,7 +519,9 @@ function render_step5(): void {
             <?php endif; ?>
         <?php endforeach; ?>
     </ul>
+    <?php endif; ?>
 
+    <?php if ($mode !== 'demo'): ?>
     <h3>Supabase Auth</h3>
     <ul class="summary">
         <li>Project URL: <code><?= h($google['supabase_url']  ?? '') ?></code></li>
@@ -438,6 +537,7 @@ function render_step5(): void {
         <li>AI_DOC_FOLDER_ID: <code><?= h($google['ai_folder'] ?? '') ?></code></li>
         <li>Vertex Project: <code><?= h($google['vertex_project'] ?? '(未設定)') ?></code></li>
     </ul>
+    <?php endif; ?>
 
     <h3>初期管理者</h3>
     <ul class="summary">
@@ -448,8 +548,12 @@ function render_step5(): void {
     <div class="alert info">
         <strong>⚠️ 確認事項</strong>
         <ul style="margin:8px 0 0 18px">
+            <?php if ($mode !== 'demo'): ?>
             <li>Drive サービスアカウントが上記3フォルダに編集権限を持っているか</li>
             <li>Supabase の「Authentication → URL Configuration」に本ドメイン (<code>https://<?= h($_SERVER['HTTP_HOST']) ?>/</code>) が Site URL / Redirect URLs として登録されているか</li>
+            <?php else: ?>
+            <li>デモ用ログインは「初期管理者のメールアドレス＋共通パスワード」で行います。他の利用者を追加する場合はログイン後に「設定 → メンバー管理」で登録してください</li>
+            <?php endif; ?>
             <li>HTTPS でアクセスしているか</li>
         </ul>
     </div>
@@ -521,6 +625,34 @@ function handle_step2_db(array $post): void {
 }
 
 function handle_step3_google(array $post): void {
+    // ---- セットアップモード判定 ----
+    $mode = (($post['setup_mode'] ?? 'production') === 'demo') ? 'demo' : 'production';
+    $_SESSION['install']['setup_mode'] = $mode;
+
+    if ($mode === 'demo') {
+        $demoPass = (string)($post['demo_password'] ?? '');
+        $_SESSION['install']['demo_password'] = $demoPass;
+
+        // 本番用フィールドは空で確定（finalize / step5 のキー参照を安全にする）
+        $_SESSION['install']['google'] = [
+            'supabase_url'    => '', 'supabase_anon'   => '', 'supabase_jwt' => '',
+            'sa_email'        => '', 'sa_pk'           => '',
+            'doc_folder'      => '', 'att_folder'      => '', 'ai_folder'    => '',
+            'vertex_project'  => '', 'vertex_location' => 'us-central1',
+            'vertex_sa_email' => '', 'vertex_sa_pk'    => '',
+        ];
+        $_SESSION['install']['auth_methods'] = [];
+        $_SESSION['install']['auth_creds']   = [];
+
+        if (strlen($demoPass) < 4) {
+            $_SESSION['install']['errors']['auth'] = 'デモ用共通パスワードは4文字以上で入力してください';
+            header('Location: install.php?step=3');
+            exit;
+        }
+        return;
+    }
+
+    // ---- 以下、本番（production）フロー ----
     $_SESSION['install']['google'] = [
         'supabase_url'    => trim($post['supabase_url']  ?? ''),
         'supabase_anon'   => trim($post['supabase_anon'] ?? ''),
@@ -594,10 +726,16 @@ function handle_step5_finalize(): void {
     $admin  = $_SESSION['install']['admin'];
     $authMethods = $_SESSION['install']['auth_methods'] ?? [];
     $authCreds = $_SESSION['install']['auth_creds'] ?? [];
+    $mode = $_SESSION['install']['setup_mode'] ?? 'production';
 
-    // セッション切れ等で認証方法が空の場合はエラー
-    if (empty($authMethods)) {
+    // セッション切れ等で認証方法が空の場合はエラー（demo モードは認証方法不要なので除外）
+    if ($mode !== 'demo' && empty($authMethods)) {
         die('セッションが切れたか無効な状態です。ステップ3からやり直してください。');
+    }
+    // demo モードは config 生成の直前に共通パスワードを再検証する
+    // （ステップ間の改ざん・直接 POST で短いパスワードがすり抜けるのを防ぐ最終ゲート）
+    if ($mode === 'demo' && strlen((string)($_SESSION['install']['demo_password'] ?? '')) < 4) {
+        die('デモ用共通パスワードが未設定または短すぎます。ステップ3からやり直してください。');
     }
 
     $root = dirname(__DIR__);
@@ -616,7 +754,13 @@ function handle_step5_finalize(): void {
     if (!empty($authMethods['email'])) $providers[] = 'email';
     $providersStr = '[' . implode(', ', array_map(fn($p) => "'$p'", $providers)) . ']';
 
+    // セットアップモードに応じて認証プロバイダ／デモパスワードを確定
+    $authProvider = ($mode === 'demo') ? 'demo' : 'supabase';
+    $demoPassword = ($mode === 'demo') ? ($_SESSION['install']['demo_password'] ?? '') : '';
+
     $repl = [
+        '__AUTH_PROVIDER__'          => $authProvider,
+        '__DEMO_PASSWORD__'          => addslashes_php($demoPassword),
         '__DB_HOST__'                => addslashes_php($db['host']),
         '__DB_NAME__'                => addslashes_php($db['name']),
         '__DB_USER__'                => addslashes_php($db['user']),
@@ -647,7 +791,9 @@ function handle_step5_finalize(): void {
         die('config/config.php への書き込みに失敗しました');
     }
     @chmod($root . '/config/config.php', 0640);
-    $log[] = '✅ config/config.php を生成（認証方法: ' . implode(', ', $providers) . '）';
+    $log[] = ($mode === 'demo')
+        ? '✅ config/config.php を生成（デモモード・共通パスワード認証）'
+        : '✅ config/config.php を生成（認証方法: ' . implode(', ', $providers) . '）';
 
     // ---- 2. データベース migration を実行 ----
     require_once $root . '/app/lib/bootstrap.php';

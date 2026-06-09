@@ -20,12 +20,13 @@ define('DB_PASS', '__DB_PASS__');
 // 'supabase' : 本番。Supabase Auth 経由で Google / Microsoft / Email を扱う（既定）
 // 'demo'     : 営業デモ用。共通パスワードだけで入れる簡易ログイン（外部設定不要）。
 //              ※ 本番運用では絶対に使わないこと。
-// この行をコメントアウトすると既定の 'supabase' になる。
-define('OLIVENOTE_AUTH_PROVIDER', 'supabase');
+// インストーラがセットアップモードに応じて 'supabase' / 'demo' を埋め込む。
+// 手動編集する場合は 'supabase' か 'demo' を直接書く。
+define('OLIVENOTE_AUTH_PROVIDER', '__AUTH_PROVIDER__');
 
 // デモログイン用の共通パスワード（OLIVENOTE_AUTH_PROVIDER が 'demo' のときのみ使用）。
 // 顧客には「members に登録済みのメールアドレス ＋ このパスワード」でログインしてもらう。
-define('OLIVENOTE_DEMO_PASSWORD', '');
+define('OLIVENOTE_DEMO_PASSWORD', '__DEMO_PASSWORD__');
 
 // ============================================================
 // Supabase Auth (認証基盤)
