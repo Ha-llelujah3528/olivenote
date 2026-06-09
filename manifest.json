@@ -1,9 +1,9 @@
 {
-  "latest": "1.2.9",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.9/olivenote-1.2.9.zip",
-  "sha256": "8d3f926f66117499130ca8a2662f8a6317b25d16f328f0bbe545c07d3c205c20",
-  "size_bytes": 2847889,
+  "latest": "1.2.10",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.10/olivenote-1.2.10.zip",
+  "sha256": "5526655cecedb7f36e714ee85563014424147ce7862e4aacf984b71ee1313356",
+  "size_bytes": 2850001,
   "min_php_version": "8.0",
-  "changelog": "\n### 新機能\n- **デモ用の簡易ログインを追加（営業デモ向け）** — Supabase / Google / Microsoft などの外部設定をせずに、登録済みメールアドレスと共通パスワードだけでログインできる「デモモード」を追加した。`config.php` で `OLIVENOTE_AUTH_PROVIDER` を `'demo'` にし、`OLIVENOTE_DEMO_PASSWORD` に共通パスワードを設定すると有効になる。ログイン画面に「デモ環境」バッジが表示される。誰がログインできるかは従来どおりメンバー管理（members）で制御し、未登録メールは弾く。本番運用では `'supabase'`（既定）に戻して使う。既定値は従来どおり Supabase Auth のままなので、既存環境の動作に影響はない。\n\n",
-  "published_at": "2026-06-09T14:48:04Z"
+  "changelog": "\n### 新機能\n- **インストーラに「デモセットアップ」モードを追加** — セットアップ時に「本番セットアップ（Supabase 認証）」か「デモセットアップ（共通パスワード）」を選べるようになった。デモを選ぶと Supabase・Google Drive・Vertex の情報入力が不要になり、共通パスワードを1つ決めるだけでセットアップが完了する。営業デモ用に、外部サービスの準備なしですぐ試用環境を立てられる。デモ環境では登録済みメールアドレスと共通パスワードでログインする（タスク・ボード・ガント等の中核機能が利用可能。ドキュメント／添付／AI は外部サービス未設定のため動作しない）。本番導入時は再セットアップで「本番セットアップ」を選ぶ。\n\n",
+  "published_at": "2026-06-09T15:07:49Z"
 }
