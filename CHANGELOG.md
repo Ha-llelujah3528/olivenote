@@ -2,6 +2,11 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.2.9] - 2026-06-09
+
+### 新機能
+- **デモ用の簡易ログインを追加（営業デモ向け）** — Supabase / Google / Microsoft などの外部設定をせずに、登録済みメールアドレスと共通パスワードだけでログインできる「デモモード」を追加した。`config.php` で `OLIVENOTE_AUTH_PROVIDER` を `'demo'` にし、`OLIVENOTE_DEMO_PASSWORD` に共通パスワードを設定すると有効になる。ログイン画面に「デモ環境」バッジが表示される。誰がログインできるかは従来どおりメンバー管理（members）で制御し、未登録メールは弾く。本番運用では `'supabase'`（既定）に戻して使う。既定値は従来どおり Supabase Auth のままなので、既存環境の動作に影響はない。
+
 ## [1.2.8] - 2026-06-08
 
 ### 新機能

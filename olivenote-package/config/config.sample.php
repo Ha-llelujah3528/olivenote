@@ -15,6 +15,19 @@ define('DB_USER', '__DB_USER__');
 define('DB_PASS', '__DB_PASS__');
 
 // ============================================================
+// 認証プロバイダの選択
+// ============================================================
+// 'supabase' : 本番。Supabase Auth 経由で Google / Microsoft / Email を扱う（既定）
+// 'demo'     : 営業デモ用。共通パスワードだけで入れる簡易ログイン（外部設定不要）。
+//              ※ 本番運用では絶対に使わないこと。
+// この行をコメントアウトすると既定の 'supabase' になる。
+define('OLIVENOTE_AUTH_PROVIDER', 'supabase');
+
+// デモログイン用の共通パスワード（OLIVENOTE_AUTH_PROVIDER が 'demo' のときのみ使用）。
+// 顧客には「members に登録済みのメールアドレス ＋ このパスワード」でログインしてもらう。
+define('OLIVENOTE_DEMO_PASSWORD', '');
+
+// ============================================================
 // Supabase Auth (認証基盤)
 // ============================================================
 // Olive Note は Supabase Auth を通じて Email Magic Link / Google / Microsoft
@@ -29,9 +42,10 @@ define('SUPABASE_ANON_KEY',   '__SUPABASE_ANON_KEY__');
 define('SUPABASE_JWT_SECRET', '__SUPABASE_JWT_SECRET__');
 
 // ============================================================
-// 認証プロバイダの選択
+// Supabase OAuth プロバイダの選択
 // ============================================================
-// セットアップ時に選択した認証方法をここに列記
+// OLIVENOTE_AUTH_PROVIDER が 'supabase' のとき、Supabase 側で有効化した
+// 認証方法をここに列記する。
 // 有効な値: 'google', 'microsoft', 'email'
 // 例: ['google', 'email']
 define('SUPABASE_PROVIDERS', __SUPABASE_PROVIDERS__);

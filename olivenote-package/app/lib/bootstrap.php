@@ -11,13 +11,6 @@
 if (defined('OLIVENOTE_BOOTSTRAPPED')) return;
 define('OLIVENOTE_BOOTSTRAPPED', true);
 
-// 認証プロバイダ: dist パッケージ版は Supabase Auth 固定。
-// （stg/prd は config.php 直 require で 'google'（デフォルト）を使用）
-// lib/auth/auth.php より前に定義しておく必要がある。
-if (!defined('OLIVENOTE_AUTH_PROVIDER')) {
-    define('OLIVENOTE_AUTH_PROVIDER', 'supabase');
-}
-
 // ---- パス定数 ----
 define('OLIVENOTE_APP',     dirname(__DIR__));               // .../app
 define('OLIVENOTE_ROOT',    dirname(OLIVENOTE_APP));         // .../ (project root)
@@ -37,6 +30,15 @@ if (!is_file($configFile)) {
     exit;
 }
 require_once $configFile;
+
+// 認証プロバイダの確定。config.php が OLIVENOTE_AUTH_PROVIDER を定義していれば
+// それを優先する（'demo' で営業デモ用の共通パスワードログイン）。未定義なら
+// dist パッケージ版の既定 'supabase' を使う。
+// （stg/prd は config.php 直 require で 'google'（auth.php デフォルト）を使用）
+// lib/auth/auth.php より前（＝この bootstrap 内）で確定している必要がある。
+if (!defined('OLIVENOTE_AUTH_PROVIDER')) {
+    define('OLIVENOTE_AUTH_PROVIDER', 'supabase');
+}
 
 // ---- PDO 接続（グローバル $pdo を提供） ----
 try {
