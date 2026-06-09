@@ -1,9 +1,9 @@
 {
-  "latest": "1.2.8",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.8/olivenote-1.2.8.zip",
-  "sha256": "c91c4b3b56b2b2193b8164a033dd1a473ad36d1dd0369de64113042d313c908b",
-  "size_bytes": 2843641,
+  "latest": "1.2.9",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.9/olivenote-1.2.9.zip",
+  "sha256": "8d3f926f66117499130ca8a2662f8a6317b25d16f328f0bbe545c07d3c205c20",
+  "size_bytes": 2847889,
   "min_php_version": "8.0",
-  "changelog": "\n### 新機能\n- **ホワイトボードに付箋機能を追加** — ボード上部のツールバーの「付箋を追加」から付箋を貼れるようになった。付箋にはタイトル枠・本文枠があり、枠のどこをクリックしてもその場で入力できる（本文は上揃え・左揃え）。作成者欄は OliveNote 登録メンバーからプルダウンで選べる（初期値はログインユーザー、変更可）。付箋カラーは6色プリセットから選択でき、ドラッグで移動・Excalidrawのハンドルでサイズ変更・「最前面へ／最背面へ」で重なり順を変更できる。付箋の位置・内容・色はリアルタイム同時編集で共有される。\n\n",
-  "published_at": "2026-06-08T04:21:27Z"
+  "changelog": "\n### 新機能\n- **デモ用の簡易ログインを追加（営業デモ向け）** — Supabase / Google / Microsoft などの外部設定をせずに、登録済みメールアドレスと共通パスワードだけでログインできる「デモモード」を追加した。`config.php` で `OLIVENOTE_AUTH_PROVIDER` を `'demo'` にし、`OLIVENOTE_DEMO_PASSWORD` に共通パスワードを設定すると有効になる。ログイン画面に「デモ環境」バッジが表示される。誰がログインできるかは従来どおりメンバー管理（members）で制御し、未登録メールは弾く。本番運用では `'supabase'`（既定）に戻して使う。既定値は従来どおり Supabase Auth のままなので、既存環境の動作に影響はない。\n\n",
+  "published_at": "2026-06-09T14:48:04Z"
 }
