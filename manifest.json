@@ -1,9 +1,9 @@
 {
-  "latest": "1.2.10",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.10/olivenote-1.2.10.zip",
-  "sha256": "5526655cecedb7f36e714ee85563014424147ce7862e4aacf984b71ee1313356",
-  "size_bytes": 2850001,
+  "latest": "1.2.11",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.11/olivenote-1.2.11.zip",
+  "sha256": "4ffb07bbe7a22af44b1f480552c286e3406e177e6a1d64cad0562dc0b08443cc",
+  "size_bytes": 2850467,
   "min_php_version": "8.0",
-  "changelog": "\n### 新機能\n- **インストーラに「デモセットアップ」モードを追加** — セットアップ時に「本番セットアップ（Supabase 認証）」か「デモセットアップ（共通パスワード）」を選べるようになった。デモを選ぶと Supabase・Google Drive・Vertex の情報入力が不要になり、共通パスワードを1つ決めるだけでセットアップが完了する。営業デモ用に、外部サービスの準備なしですぐ試用環境を立てられる。デモ環境では登録済みメールアドレスと共通パスワードでログインする（タスク・ボード・ガント等の中核機能が利用可能。ドキュメント／添付／AI は外部サービス未設定のため動作しない）。本番導入時は再セットアップで「本番セットアップ」を選ぶ。\n\n",
-  "published_at": "2026-06-09T15:07:49Z"
+  "changelog": "\n### 変更点\n- **デモセットアップでも Google Drive / Vertex AI を任意設定できるように** — デモモードで無効化するのはログイン（Supabase 認証）だけになった。Google Drive と Vertex AI はデモモードでも任意入力欄として残り、入力すればファイル・ドキュメント・AI 機能も本番同様に動作する。空欄ならその機能のみ無効になる（例: Drive を空にすればファイル機能だけ無効にして、AI を含む他機能は使える）。これにより「ログインだけ簡易にして、それ以外はフルに試用してもらう」デモ構成が可能になった。\n\n",
+  "published_at": "2026-06-10T01:52:27Z"
 }
