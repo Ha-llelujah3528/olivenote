@@ -22,13 +22,51 @@ function base64url_encode(string $data): string {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
 }
 
+// ================================================================
+// Drive / Vertex 設定ガード
+// ================================================================
+// デモ環境では config.php の Drive 用サービスアカウントを空のまま運用できる。
+// その状態で Drive API へ進むと「PRIVATE_KEY のパースに失敗」という内部エラーに
+// なるため、各エントリポイントの入口で設定有無を判定し、ユーザーには
+// 「受け取った内容」と「この環境では実行できない理由」を返す。
+// 値が空文字、または config.sample.php のプレースホルダ（__XXX__）のままなら未設定扱い。
+function isConfigValueSet(?string $value): bool {
+    $v = trim((string)$value);
+    return $v !== '' && !preg_match('/^__[A-Za-z0-9_]+__$/', $v);
+}
+
+function isDriveConfigured(): bool {
+    return defined('CLIENT_EMAIL') && defined('PRIVATE_KEY')
+        && isConfigValueSet(CLIENT_EMAIL) && isConfigValueSet(PRIVATE_KEY);
+}
+
+// 受け取った内容（ファイル名・プロンプト等）を明示したうえで、
+// この環境では Drive が使えないことを伝える定型文を組み立てる。
+// $aiSkipped=true のときは「AI 実行前に中止＝コスト未発生」も明記する。
+function driveDisabledNotice(string $received, bool $aiSkipped = false): string {
+    $msg = $received
+         . ' ただし、この環境では Google Drive 連携が設定されていないため、Drive への保存・作成は行えません（デモ環境の制限です）。';
+    if ($aiSkipped) {
+        $msg .= ' AI は実行していないため、AI 利用料金は発生していません。';
+    }
+    return $msg;
+}
+
 function getGoogleAccessToken(
     string $scope = 'https://www.googleapis.com/auth/drive.file',
     ?string $clientEmail = null,
     ?string $privateKey = null
 ): string {
+    // 引数なし＝Drive 用デフォルト資格情報を使うケース。未設定なら PEM パース失敗の
+    // 内部エラーではなく、利用者向けの理由が分かるメッセージで止める（最後の砦）。
+    $isDriveCredential = ($clientEmail === null && $privateKey === null);
     $clientEmail = $clientEmail ?? CLIENT_EMAIL;
     $privateKey  = $privateKey  ?? PRIVATE_KEY;
+    if (!isConfigValueSet($clientEmail) || !isConfigValueSet($privateKey)) {
+        throw new Exception($isDriveCredential
+            ? 'この環境では Google Drive 連携が設定されていないため、この操作は実行できません（デモ環境の制限です）。'
+            : 'この環境では AI 連携（Vertex AI）が設定されていないため、この操作は実行できません（デモ環境の制限です）。');
+    }
 
     // ===== アクセストークンのキャッシュ =====
     // 以前は呼び出しごとに OAuth トークンを新規取得しており、画像アップロード 1 枚
@@ -1519,6 +1557,19 @@ try {
             $mimeType = $payload['mimeType'] ?? '';
             $data     = $payload['data']     ?? '';
 
+            // Drive 未設定環境（デモ等）では、受け取ったファイル名・サイズを明示して即返す。
+            // base64 のままサイズを概算し、デコードや Drive 呼び出しには進まない。
+            if (!isDriveConfigured() || !defined('ATTACHMENT_FOLDER_ID') || !isConfigValueSet(ATTACHMENT_FOLDER_ID)) {
+                $approxBytes = (int) round(strlen($data) * 3 / 4);
+                $sizeLabel   = $approxBytes >= 1024 * 1024
+                    ? sprintf('%.1f MB', $approxBytes / (1024 * 1024))
+                    : sprintf('%d KB', max(1, (int) round($approxBytes / 1024)));
+                echo json_encode(['success' => false, 'error' => driveDisabledNotice(
+                    "ファイル「{$name}」（約{$sizeLabel}）は受け取りました。"
+                )]);
+                break;
+            }
+
             // ブラウザが MIME を判定できなかった場合は Drive 側で推定させるため octet-stream を渡す
             if (trim($mimeType) === '') {
                 $mimeType = 'application/octet-stream';
@@ -1569,6 +1620,15 @@ try {
                 echo json_encode(['success' => false, 'error' => 'タイトルを入力してください']);
                 break;
             }
+            // Drive 未設定環境では、受け取ったタイトルを明示して即返す。
+            // $parentId は未指定時に DOC_FOLDER_ID へフォールバック済みなので、
+            // デモ環境（DOC_FOLDER_ID が空）では空文字となりここで止まる。
+            if (!isDriveConfigured() || !isConfigValueSet($parentId)) {
+                echo json_encode(['success' => false, 'error' => driveDisabledNotice(
+                    "ドキュメント「{$title}」の作成依頼は受け取りました。"
+                )]);
+                break;
+            }
 
             $token = getGoogleAccessToken();
             $file  = createGoogleDoc($title, $parentId, $token);
@@ -1600,6 +1660,14 @@ try {
             if ($parentId === '') $parentId = DOC_FOLDER_ID;
             if ($title === '') {
                 echo json_encode(['success' => false, 'error' => 'フォルダ名を入力してください']);
+                break;
+            }
+            // Drive 未設定環境では、受け取ったフォルダ名を明示して即返す
+            // （$parentId のフォールバック評価は createDocument と同じ理屈）
+            if (!isDriveConfigured() || !isConfigValueSet($parentId)) {
+                echo json_encode(['success' => false, 'error' => driveDisabledNotice(
+                    "フォルダ「{$title}」の作成依頼は受け取りました。"
+                )]);
                 break;
             }
 
@@ -2110,6 +2178,14 @@ try {
             $templateUrl  = $payload['templateUrl'] ?? '';
             $commentText  = $payload['commentText'] ?? '';
 
+            // Drive 未設定環境では、受け取ったテンプレート名を明示して即返す
+            if (!isDriveConfigured()) {
+                echo json_encode(['success' => false, 'error' => driveDisabledNotice(
+                    "テンプレート「{$templateName}」からのドキュメント生成依頼は受け取りました。"
+                )]);
+                break;
+            }
+
             if (!preg_match('#[-\w]{25,}#', $templateUrl, $m)) {
                 throw new Exception('テンプレートURLからファイルIDを取得できませんでした。');
             }
@@ -2293,6 +2369,11 @@ PROMPT;
             }
             if (!preg_match('#[-\w]{25,}#', $docUrl, $mm1)) throw new Exception('リリースノートURLが不正です。');
             $releaseDocId = $mm1[0];
+
+            // Drive 未設定環境では、AI（リリースノート生成）に進む前に即返す
+            if (!isDriveConfigured()) {
+                throw new Exception(driveDisabledNotice('リリースノート生成のご依頼（メモ）は受け取りました。', true));
+            }
 
             // Drive(read) と Docs(read+write) の両スコープ（リリースノートDoc用）
             $token = getGoogleAccessToken('https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents');
@@ -2551,6 +2632,16 @@ PROMPT;
                     break;
                 }
 
+                // Drive 未設定環境では Vertex（コスト発生）に進む前に、受け取った指示内容を明示して即返す。
+                // ここで止めないと「AI 実行→Drive 保存で失敗」となり AI コストだけ消費してしまう。
+                if (!isDriveConfigured()) {
+                    $shortFormat = mb_substr($formatPrompt, 0, 60) . (mb_strlen($formatPrompt) > 60 ? '…' : '');
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => driveDisabledNotice(
+                        "ドキュメント生成のご依頼（形式指定:「{$shortFormat}」）は受け取りました。", true
+                    )]]);
+                    break;
+                }
+
                 // 壁打ち履歴を整形
                 $historyLines = [];
                 foreach ($chatHistory as $msg) {
@@ -2697,6 +2788,15 @@ PROMPT;
                 $allowedRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
                 if (!in_array($aspectRatio, $allowedRatios, true)) {
                     $aspectRatio = '1:1';
+                }
+
+                // Drive 未設定環境では Imagen（コスト発生）に進む前に、受け取ったプロンプトを明示して即返す
+                if (!isDriveConfigured()) {
+                    $shortPrompt = mb_substr($imgPrompt, 0, 60) . (mb_strlen($imgPrompt) > 60 ? '…' : '');
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => driveDisabledNotice(
+                        "画像生成のご依頼（プロンプト:「{$shortPrompt}」）は受け取りました。", true
+                    )]]);
+                    break;
                 }
 
                 // Imagen 呼び出し（1枚ずつ生成）
