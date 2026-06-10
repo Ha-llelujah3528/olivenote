@@ -102,7 +102,13 @@ function FilesView({ docs, setDocs, docTags, docFileTags, setDocFileTags, curren
           setNewDocTitle('');
           window.open(newDoc.url, '_blank');
         } catch (e) {
-          alert("ドキュメントの作成に失敗しました。フォルダIDの設定などを確認してください。");
+          const detail = (e && e.message) ? e.message : '不明なエラー';
+          alert(
+            "ドキュメントの作成に失敗しました。\n\n詳細: " + detail +
+            "\n\nヒント: サービスアカウントでの Google ドキュメント新規作成にはストレージ容量が必要です。" +
+            "マイドライブ上のフォルダでは容量不足で失敗することがあり（フォルダ作成は容量を使わないため成功します）、" +
+            "その場合は共有ドライブ（要 Google Workspace）に保管フォルダを置いてください。フォルダIDやSAの権限もあわせてご確認ください。"
+          );
         } finally {
           setIsCreating(false);
         }
