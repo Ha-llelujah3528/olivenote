@@ -1,9 +1,9 @@
 {
-  "latest": "1.2.11",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.11/olivenote-1.2.11.zip",
-  "sha256": "4ffb07bbe7a22af44b1f480552c286e3406e177e6a1d64cad0562dc0b08443cc",
-  "size_bytes": 2850467,
+  "latest": "1.2.12",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.12/olivenote-1.2.12.zip",
+  "sha256": "bb8caebd005b01177567455826ff2effe9f25c7ccf289c01675571622a8b4ce7",
+  "size_bytes": 2919716,
   "min_php_version": "8.0",
-  "changelog": "\n### 変更点\n- **デモセットアップでも Google Drive / Vertex AI を任意設定できるように** — デモモードで無効化するのはログイン（Supabase 認証）だけになった。Google Drive と Vertex AI はデモモードでも任意入力欄として残り、入力すればファイル・ドキュメント・AI 機能も本番同様に動作する。空欄ならその機能のみ無効になる（例: Drive を空にすればファイル機能だけ無効にして、AI を含む他機能は使える）。これにより「ログインだけ簡易にして、それ以外はフルに試用してもらう」デモ構成が可能になった。\n\n",
-  "published_at": "2026-06-10T01:52:27Z"
+  "changelog": "\n### 修正\n- **ファビコンが表示されない問題を修正** — パッケージ版はアプリを `app/` 配下から配信する一方、ファビコンが `app/` 内にしか無く、ブラウザが要求する Web ルートの `favicon.svg` / `favicon.png` が 404 になっていた。ファビコンをパッケージのルートにも配置して表示されるようにした（あわせて巨大だった favicon.png を 128px の軽量版に作り直し）。\n- **ドキュメント作成エラーの原因が分かるようにした** — これまでドキュメント作成に失敗すると固定文言「フォルダIDの設定などを確認してください」だけを表示し、サーバーが返す実際のエラー内容を握り潰していた。失敗時に実際のエラー（Google Drive API の応答）を表示し、サービスアカウントのストレージ容量や共有ドライブに関するヒントも案内するようにした。\n\n> ℹ️ サービスアカウントは Google ドキュメント（Google ネイティブ形式）の新規作成にストレージ容量を必要とします。マイドライブ上のフォルダだと容量不足で失敗することがあります（フォルダ作成は容量を消費しないため成功します）。その場合は保管フォルダを**共有ドライブ**（要 Google Workspace）に置いてください。\n\n",
+  "published_at": "2026-06-10T02:36:07Z"
 }
