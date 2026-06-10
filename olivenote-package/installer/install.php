@@ -195,7 +195,7 @@ function render_step3(): void {
                 <input type="radio" name="setup_mode" value="demo" id="mode-demo" <?= $prevMode === 'demo' ? 'checked' : '' ?> onchange="setMode('demo')">
                 <span style="flex: 1;">
                     <strong>デモセットアップ</strong>
-                    <span class="hint" style="display: block; margin-top: 4px;">共通パスワードだけで試用。Supabase / Google Drive / Vertex の設定は不要。営業デモ向け。</span>
+                    <span class="hint" style="display: block; margin-top: 4px;">ログインを共通パスワードで簡易化（Supabase 不要）。Google Drive / Vertex AI は下で任意に設定でき、入れれば本番同様にファイル・AI も使えます。営業デモ向け。</span>
                 </span>
             </label>
         </fieldset>
@@ -204,17 +204,17 @@ function render_step3(): void {
             <fieldset>
                 <legend>デモ用ログイン設定</legend>
                 <p style="font-size: 13px; color: #6b7280; margin: 0 0 12px 0;">
-                    登録済みメールアドレスと、ここで決めた共通パスワードでログインできます。外部サービスの設定は不要です。
-                    （ドキュメント / 添付ファイル / AI 機能は Drive・Vertex 未設定のため動作しません。タスク・ボード・ガント等の中核機能は利用可能です。）
+                    登録済みメールアドレスと、ここで決めた共通パスワードでログインできます。Supabase の設定は不要です。
+                    （ファイル／ドキュメント機能は下の <strong>③ Google Drive</strong> を、AI 機能は <strong>④ Vertex AI</strong> を入力すれば動作します。空欄ならその機能のみ無効になり、タスク・ボード・ガント等の中核機能は利用できます。）
                 </p>
                 <label>デモ用共通パスワード
                     <span class="hint">顧客に伝える共通パスワード（4文字以上）</span>
-                    <input type="text" name="demo_password" id="demo_password" value="<?= h($prevDemoPass) ?>" placeholder="例: olivenote2026">
+                    <input type="text" name="demo_password" id="demo_password" value="<?= h($prevDemoPass) ?>" placeholder="例: olivenote2026" autocomplete="off">
                 </label>
             </fieldset>
         </div>
 
-        <div id="production-fields">
+        <div id="login-prod-fields">
         <fieldset>
             <legend>① 認証方法の選択（最低1つは選択必須）</legend>
             <p style="font-size: 13px; color: #6b7280; margin: 0 0 8px 0;">顧客の組織が使っている認証方式を選択してください。複数選択も可能です。</p>
@@ -286,9 +286,12 @@ function render_step3(): void {
                 <input name="supabase_jwt" required value="<?= h($prev['supabase_jwt']) ?>" placeholder="super-secret-jwt-key">
             </label>
         </fieldset>
+        </div><!-- /#login-prod-fields -->
 
-        <fieldset>
-            <legend>③ Google Drive サービスアカウント（必須）</legend>
+        <div id="optional-services">
+        <fieldset id="drive-fields">
+            <legend>③ Google Drive サービスアカウント（本番では必須／デモでは任意）</legend>
+            <p style="font-size: 12px; color: #6b7280; margin: 0 0 12px 0;">ファイル・ドキュメント機能で使います。デモセットアップでは空欄でも進めます（その場合ファイル機能のみ無効）。</p>
             <label>SA メールアドレス
                 <input name="sa_email" required value="<?= h($prev['sa_email']) ?>" placeholder="xxx@xxx.iam.gserviceaccount.com">
             </label>
@@ -322,7 +325,7 @@ function render_step3(): void {
                 <textarea name="vertex_sa_pk" rows="6"><?= h($prev['vertex_sa_pk']) ?></textarea>
             </label>
         </fieldset>
-        </div><!-- /#production-fields -->
+        </div><!-- /#optional-services -->
 
         <div class="actions">
             <a class="btn-secondary" href="install.php?step=2">← 戻る</a>
@@ -336,11 +339,15 @@ function render_step3(): void {
     style.textContent = '.hidden { display: none !important; }';
     document.head.appendChild(style);
 
-    // 本番フィールドの required 初期状態をスナップショット。
-    // demo へ切替時に required を全て外すため、本番へ戻すとき正しく復元できるよう保存しておく。
-    const prodContainer = document.getElementById('production-fields');
-    prodContainer.querySelectorAll('input, textarea, select').forEach(el => {
-        el.dataset.req = el.required ? '1' : '0';
+    // required 初期状態をスナップショット。
+    // demo へ切替時に required を外すため、本番へ戻すとき正しく復元できるよう保存しておく。
+    // 対象: ログイン本番欄（#login-prod-fields）と Drive 欄（#drive-fields。demo では任意化）。
+    ['login-prod-fields', 'drive-fields'].forEach(id => {
+        const c = document.getElementById(id);
+        if (!c) return;
+        c.querySelectorAll('input, textarea, select').forEach(el => {
+            el.dataset.req = el.required ? '1' : '0';
+        });
     });
 
     // Google / Microsoft の資格情報入力欄を、チェック状態に同期する
@@ -349,8 +356,8 @@ function render_step3(): void {
         const div = document.getElementById(name + '-creds');
         if (!chk || !div) return;
         const inputs = div.querySelectorAll('input');
-        // 本番モードでないときは資格情報欄は常に無効（demo では production-fields ごと無効化）
-        const productionMode = document.getElementById('mode-demo') && !document.getElementById('mode-demo').checked;
+        // demo モードのときは（ログイン本番欄ごと無効化されるため）資格情報欄も常に無効
+        const productionMode = !document.getElementById('mode-demo').checked;
         if (chk.checked && productionMode) {
             div.classList.remove('hidden');
             inputs.forEach(inp => { inp.disabled = false; inp.required = true; });
@@ -363,27 +370,36 @@ function render_step3(): void {
     document.getElementById('chk-google').addEventListener('change', () => syncCred('google'));
     document.getElementById('chk-microsoft').addEventListener('change', () => syncCred('microsoft'));
 
-    // セットアップモード切替：production / demo でフォームの有効範囲を切り替える
+    // セットアップモード切替：
+    //   demo       = ログイン本番欄（Supabase/認証方法）を無効化し共通パスワードのみ。
+    //                Drive/Vertex は任意入力として残す（入れればファイル・AIも動く）。
+    //   production = ログイン本番欄を有効化し、Supabase/Drive を必須に戻す。
     function setMode(mode) {
-        const prod = document.getElementById('production-fields');
+        const loginProd = document.getElementById('login-prod-fields');
+        const drive = document.getElementById('drive-fields');
         const demo = document.getElementById('demo-fields');
         const demoPass = document.getElementById('demo_password');
         if (mode === 'demo') {
-            prod.classList.add('hidden');
+            // ログイン本番欄は disabled にして HTML5 検証・送信から除外
+            loginProd.classList.add('hidden');
+            loginProd.querySelectorAll('input, textarea, select').forEach(el => { el.disabled = true; el.required = false; });
             demo.classList.remove('hidden');
-            // 本番用フィールドは disabled にして HTML5 検証・送信から除外する
-            prod.querySelectorAll('input, textarea, select').forEach(el => { el.disabled = true; el.required = false; });
             demoPass.disabled = false;
             demoPass.required = true;
+            // Drive は入力欄を残したまま「任意」にする（required を外すが送信はされる）
+            drive.querySelectorAll('input, textarea, select').forEach(el => { el.required = false; });
         } else {
-            prod.classList.remove('hidden');
+            loginProd.classList.remove('hidden');
             demo.classList.add('hidden');
             demoPass.disabled = true;
             demoPass.required = false;
-            // 本番用フィールドを再有効化し、required をスナップショットから復元する
-            // （Supabase / Drive は必須・Vertex は任意。data-req に初期状態を保存済み）
-            prod.querySelectorAll('input, textarea, select').forEach(el => {
+            // ログイン本番欄を再有効化し required をスナップショットから復元
+            loginProd.querySelectorAll('input, textarea, select').forEach(el => {
                 el.disabled = false;
+                el.required = (el.dataset.req === '1');
+            });
+            // Drive も必須に戻す
+            drive.querySelectorAll('input, textarea, select').forEach(el => {
                 el.required = (el.dataset.req === '1');
             });
             // Google / Microsoft の資格情報欄はチェック状態に従って再同期（required を上書き）
@@ -484,7 +500,7 @@ function render_step5(): void {
 
     <?php if ($mode === 'demo'): ?>
     <div class="alert info" style="background:#fef3c7; border-color:#fde68a; color:#92400e;">
-        <strong>🧪 デモセットアップ</strong> — 共通パスワードでログインできる試用モードです。Supabase / Google Drive / Vertex は設定されません。本番導入時は再セットアップして本番モードを選んでください。
+        <strong>🧪 デモセットアップ</strong> — ログインを共通パスワードで簡易化した試用モードです（Supabase 不要）。Google Drive / Vertex を入力していればファイル・AI も本番同様に動作します。本番導入（Supabase 認証）に切り替える場合は再セットアップして本番モードを選んでください。
     </div>
     <?php endif; ?>
 
@@ -528,16 +544,16 @@ function render_step5(): void {
         <li>anon Key: <code><?= h(mb_substr((string)($google['supabase_anon'] ?? ''), 0, 32)) ?>…(省略)</code></li>
         <li>JWT Secret: <code><?= !empty($google['supabase_jwt']) ? '設定済' : '(未設定)' ?></code></li>
     </ul>
+    <?php endif; ?>
 
-    <h3>Google Drive / Vertex</h3>
+    <h3>Google Drive / Vertex<?= $mode === 'demo' ? '（任意）' : '' ?></h3>
     <ul class="summary">
-        <li>Drive SA: <code><?= h($google['sa_email'] ?? '') ?></code></li>
+        <li>Drive SA: <code><?= !empty($google['sa_email']) ? h($google['sa_email']) : '(未設定 → ファイル機能は無効)' ?></code></li>
         <li>DOC_FOLDER_ID: <code><?= h($google['doc_folder'] ?? '') ?></code></li>
         <li>ATTACHMENT_FOLDER_ID: <code><?= h($google['att_folder'] ?? '') ?></code></li>
         <li>AI_DOC_FOLDER_ID: <code><?= h($google['ai_folder'] ?? '') ?></code></li>
-        <li>Vertex Project: <code><?= h($google['vertex_project'] ?? '(未設定)') ?></code></li>
+        <li>Vertex Project: <code><?= !empty($google['vertex_project']) ? h($google['vertex_project']) : '(未設定 → AI 機能は無効)' ?></code></li>
     </ul>
-    <?php endif; ?>
 
     <h3>初期管理者</h3>
     <ul class="summary">
@@ -553,6 +569,9 @@ function render_step5(): void {
             <li>Supabase の「Authentication → URL Configuration」に本ドメイン (<code>https://<?= h($_SERVER['HTTP_HOST']) ?>/</code>) が Site URL / Redirect URLs として登録されているか</li>
             <?php else: ?>
             <li>デモ用ログインは「初期管理者のメールアドレス＋共通パスワード」で行います。他の利用者を追加する場合はログイン後に「設定 → メンバー管理」で登録してください</li>
+            <?php if (!empty($google['sa_email'])): ?>
+            <li>Drive サービスアカウントが上記3フォルダに編集権限を持っているか（ファイル機能を使う場合）</li>
+            <?php endif; ?>
             <?php endif; ?>
             <li>HTTPS でアクセスしているか</li>
         </ul>
@@ -633,13 +652,19 @@ function handle_step3_google(array $post): void {
         $demoPass = (string)($post['demo_password'] ?? '');
         $_SESSION['install']['demo_password'] = $demoPass;
 
-        // 本番用フィールドは空で確定（finalize / step5 のキー参照を安全にする）
+        // Supabase は使わないので空。Drive / Vertex はデモでも任意で受け付ける
+        // （入力があればファイル・AI も本番同様に動作する）。
         $_SESSION['install']['google'] = [
             'supabase_url'    => '', 'supabase_anon'   => '', 'supabase_jwt' => '',
-            'sa_email'        => '', 'sa_pk'           => '',
-            'doc_folder'      => '', 'att_folder'      => '', 'ai_folder'    => '',
-            'vertex_project'  => '', 'vertex_location' => 'us-central1',
-            'vertex_sa_email' => '', 'vertex_sa_pk'    => '',
+            'sa_email'        => trim($post['sa_email']  ?? ''),
+            'sa_pk'           => trim($post['sa_pk']     ?? ''),
+            'doc_folder'      => trim($post['doc_folder']?? ''),
+            'att_folder'      => trim($post['att_folder']?? ''),
+            'ai_folder'       => trim($post['ai_folder'] ?? ''),
+            'vertex_project'  => trim($post['vertex_project']  ?? ''),
+            'vertex_location' => trim($post['vertex_location'] ?? 'us-central1'),
+            'vertex_sa_email' => trim($post['vertex_sa_email'] ?? ''),
+            'vertex_sa_pk'    => trim($post['vertex_sa_pk']    ?? ''),
         ];
         $_SESSION['install']['auth_methods'] = [];
         $_SESSION['install']['auth_creds']   = [];
