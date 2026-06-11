@@ -1910,8 +1910,13 @@ if (!auth_is_logged_in()) {
       // ---- 通知 ----
       getMyNotifications:    (email)                                   => callApi('getMyNotifications', { email }),
       markNotificationAsRead:(notificationId)                          => callApi('markNotificationAsRead', { notificationId }),
-      createNotification:    (targetEmail, senderName, taskId, taskTitle, message) =>
-                               callApi('createNotification', { targetEmail, senderName, taskId, taskTitle, message }),
+      createNotification:    (targetEmail, senderName, taskId, taskTitle, message, kind = '', excerpt = '') =>
+                               callApi('createNotification', { targetEmail, senderName, taskId, taskTitle, message, kind, excerpt }),
+
+      // ---- LINE WORKS 通知設定（自分用） ----
+      getMyLineWorksStatus:  ()        => callApi('getMyLineWorksStatus'),
+      getMyLineWorksPrefs:   ()        => callApi('getMyLineWorksPrefs'),
+      saveMyLineWorksPrefs:  (prefs)   => callApi('saveMyLineWorksPrefs', { prefs }),
 
       // ---- Google Drive ----
       uploadFile:                 (fileData)         => callApi('uploadFile', fileData),

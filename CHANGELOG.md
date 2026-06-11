@@ -2,6 +2,16 @@
 
 このファイルは Olive Note の変更履歴です。Semantic Versioning ([https://semver.org/lang/ja/](https://semver.org/lang/ja/)) に従います。
 
+## [1.2.14] - 2026-06-11
+
+### 追加
+- **LINE WORKS 連携** — OliveNote と LINE WORKS を双方向につなぐ連携を追加した。
+  - **通知（送信）**: コメント追加・課題での自分宛メンションを LINE WORKS のトークに通知。さらに、期限／開始日のリマインドと週次サマリを定期通知（cron）で配信する。
+  - **課題作成 bot（受信）**: LINE WORKS のチャットに送ったメッセージから OliveNote の課題を作成できる bot に対応。
+  - **通知設定 UI**: 設定画面に、ユーザーごと・通知種別ごとの ON/OFF を切り替えられる項目を追加。
+- **管理画面に「LINE WORKS 接続設定」を追加** — `config.php` を直接編集しなくても、管理画面から LINE WORKS の接続情報（Bot ID・API キー等）を設定できるようにした。
+- **LINE WORKS セットアップ手順書を同梱** — 連携の初期設定手順をまとめたドキュメントを同梱し、管理画面のドキュメントビュー（`docs/view.php`）から閲覧できるようにした。
+
 ## [1.2.13] - 2026-06-10
 
 ### 変更点

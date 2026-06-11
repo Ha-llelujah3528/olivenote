@@ -384,10 +384,19 @@ function writeTaskToUrl(taskId) {
   try {
     const url = new URL(window.location.href);
     if (taskId) url.searchParams.set(TASK_URL_PARAM, taskId);
-    else url.searchParams.delete(TASK_URL_PARAM);
+    else { url.searchParams.delete(TASK_URL_PARAM); url.searchParams.delete('pane'); }
     window.history.replaceState(null, '', url.toString());
   } catch (e) {
     /* 古い環境では URL API が無い等。サイレントに無視 */
+  }
+}
+// LINE WORKS 等の通知リンク（?task=...&pane=comments）からコメント欄を開くためのヒント。
+function readPaneFromUrl() {
+  try {
+    const p = new URLSearchParams(window.location.search).get('pane');
+    return p && p.trim() ? p.trim() : null;
+  } catch (e) {
+    return null;
   }
 }
 
@@ -557,6 +566,8 @@ function App() {
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  // 通知リンク（?pane=comments）から開いたときに、モーダルへ初期表示ペインを伝える。
+  const [modalInitialPane, setModalInitialPane] = useState(null);
   const isFirstRender = useRef(true);
 
   const [notifications, setNotifications] = useState([]);
@@ -691,6 +702,7 @@ function App() {
       if (initialTaskId) {
         const target = loadedTasks.find(t => t.id === initialTaskId);
         if (target) {
+          setModalInitialPane(readPaneFromUrl());
           setEditingTask(target);
           setIsModalOpen(true);
         } else {
@@ -711,7 +723,7 @@ function App() {
       const id = readTaskFromUrl();
       if (!id) { setIsModalOpen(false); return; }
       const target = tasks.find(t => t.id === id);
-      if (target) { setEditingTask(target); setIsModalOpen(true); }
+      if (target) { setModalInitialPane(readPaneFromUrl()); setEditingTask(target); setIsModalOpen(true); }
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -888,6 +900,7 @@ function App() {
   };
   
   const handleOpenTask = (task) => {
+    setModalInitialPane(null); // 通常クリックで開くときはペイン指定なし
     setEditingTask(task);
     setIsModalOpen(true);
     writeTaskToUrl(task?.id ?? null); // 新規(null)では URL に載せない
@@ -1911,7 +1924,7 @@ function App() {
       {isModalOpen && (
         <TaskModal
           task={editingTask} tasks={tasks} setTasks={setTasks} categories={categories} taskTypes={taskTypes}
-          members={members} currentUser={currentUser} onClose={closeTaskModal}
+          members={members} currentUser={currentUser} onClose={closeTaskModal} initialPane={modalInitialPane}
           onSave={handleSaveTask} onAutoSave={handleAutoSave} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
           taskTemplates={taskTemplates}
           docTemplates={docTemplates}

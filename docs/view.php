@@ -18,6 +18,7 @@ $allowed = [
     'INSTALL_GUIDE.md',
     'UPDATE_GUIDE.md',
     'CLIENT_DEPLOYMENT.md',
+    'LINEWORKS_SETUP.md',
 ];
 
 // ドキュメント名が指定されていない場合は一覧を表示

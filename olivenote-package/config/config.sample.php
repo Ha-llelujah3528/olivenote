@@ -91,6 +91,24 @@ define('VERTEX_CLIENT_EMAIL', '__VERTEX_SA_EMAIL__');
 define('VERTEX_PRIVATE_KEY',  '__VERTEX_SA_PRIVATE_KEY__');
 
 // ============================================================
+// LINE WORKS（ビジネスチャット連携／オプション、空欄でもアプリは起動可能）
+// ============================================================
+// LINE WORKS Developer Console でアプリ＋Bot を作成し、OAuth Scope に
+//   bot / bot.message / user.read を付与。Service Account と Private Key を取得する。
+// LINEWORKS_BOT_ID が空欄のままなら連携機能は丸ごと無効（通知・受信bot ともに動かない）。
+//   - LINEWORKS_SERVICE_ACCOUNT : サービスアカウント（例: xxxxx.serviceaccount@domain）
+//   - LINEWORKS_PRIVATE_KEY     : ★秘密。RS256 PEM
+//   - LINEWORKS_BOT_SECRET      : ★秘密。Callback(webhook) の署名検証用
+//   - LINEWORKS_CRON_TOKEN      : ★秘密。定期通知エンドポイント保護用の共有トークン
+define('LINEWORKS_BOT_ID',          '');
+define('LINEWORKS_CLIENT_ID',       '');
+define('LINEWORKS_CLIENT_SECRET',   '');
+define('LINEWORKS_SERVICE_ACCOUNT', '');
+define('LINEWORKS_PRIVATE_KEY',     '');
+define('LINEWORKS_BOT_SECRET',      '');
+define('LINEWORKS_CRON_TOKEN',      '');
+
+// ============================================================
 // アップデート関連
 // ============================================================
 // マニフェスト（最新版情報）の取得URL

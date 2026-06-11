@@ -89,6 +89,11 @@ function render_step1(): void {
     ?>
     <h1>① 環境チェック</h1>
     <p>サーバー環境が Olive Note の動作要件を満たしているか確認します。</p>
+    <div class="alert info" style="text-align:left">
+        💬 <strong>LINE WORKS 連携（任意）</strong>：通知や、チャットからの課題作成を使えます。
+        セットアップ後に <strong>管理画面 →「LINE WORKS 接続設定」</strong>（<code>app/admin/lineworks_settings.php</code>）から設定できます。
+        事前準備は <a href="../docs/view.php?doc=LINEWORKS_SETUP.md" target="_blank">LINE WORKS セットアップ手順書</a> をご確認ください。
+    </div>
     <table class="check-table">
         <?php foreach ($checks as $c): ?>
             <tr class="<?= $c['ok'] ? 'ok' : 'ng' ?>">

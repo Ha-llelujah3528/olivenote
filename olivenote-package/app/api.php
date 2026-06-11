@@ -7,9 +7,21 @@ auth_start_session();
 
 header('Content-Type: application/json; charset=utf-8');
 
-$input   = json_decode(file_get_contents('php://input'), true) ?? [];
+$rawBody = file_get_contents('php://input');
+$input   = json_decode($rawBody, true) ?? [];
 $action  = $input['action'] ?? '';
 $payload = $input['payload'] ?? [];
+
+// ----------------------------------------------------------------
+// LINE WORKS の cron / webhook は独自ゲート（セッション認証をバイパス）。
+//   - ?lw=cron&token=XXXX … 定期通知（共有トークンで保護）
+//   - ?lw=callback        … Bot webhook（X-WORKS-Signature で検証）
+// いずれもセッションを必要としないため、auth_require_session より前で処理して exit する。
+// 関数定義は同ファイル内のトップレベル宣言（巻き上げ）で利用可能。
+// ----------------------------------------------------------------
+$__lwEntry = $_GET['lw'] ?? '';
+if ($__lwEntry === 'cron')     { lwRunScheduledNotifications($pdo); exit; }
+if ($__lwEntry === 'callback') { lwHandleCallback($pdo, $rawBody);  exit; }
 
 // 認証ガード（provider が公開しているアクション + logout 以外はセッション必須）
 auth_require_session($action);
@@ -1044,6 +1056,19 @@ function files_has_ai_flag(PDO $pdo): bool {
     return $cached;
 }
 
+// migration 008 未適用環境（members.lineworks_id 列が無い）でも壊れないようにするための列存在ガード。
+function members_has_lineworks_id(PDO $pdo): bool {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM members LIKE 'lineworks_id'");
+        $cached = (bool)$stmt->fetch();
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
 // ================================================================
 // Pusher（リアルタイム同時編集）— composer 不使用の軽量 REST 実装
 //   - 描画差分/カーソルなど高頻度なデータは、フロントの client events
@@ -1141,6 +1166,722 @@ function pusher_trigger(array $channels, string $event, array $data): bool {
 }
 
 // ================================================================
+// LINE WORKS 連携ヘルパー
+// ----------------------------------------------------------------
+// 送信(Bot push)・受信(callback)・定期通知(cron) で共有する基盤。
+// LINEWORKS_BOT_ID 等が未設定なら全機能 no-op（デモ環境を壊さない）。
+// 送信失敗はすべて握りつぶしてログのみ＝メイン処理を絶対に壊さない。
+// ================================================================
+
+function lwEnabled(): bool {
+    return defined('LINEWORKS_BOT_ID')          && isConfigValueSet(LINEWORKS_BOT_ID)
+        && defined('LINEWORKS_CLIENT_ID')       && isConfigValueSet(LINEWORKS_CLIENT_ID)
+        && defined('LINEWORKS_CLIENT_SECRET')   && isConfigValueSet(LINEWORKS_CLIENT_SECRET)
+        && defined('LINEWORKS_SERVICE_ACCOUNT') && isConfigValueSet(LINEWORKS_SERVICE_ACCOUNT)
+        && defined('LINEWORKS_PRIVATE_KEY')     && isConfigValueSet(LINEWORKS_PRIVATE_KEY);
+}
+
+// アプリのベースURL（課題ディープリンク用）。
+// 例: https://stg.shodoshima.work/ や https://prd.shodoshima.work/olivenote/
+function appBaseUrl(): string {
+    $host = $_SERVER['HTTP_HOST'] ?? 'stg.shodoshima.work';
+    // api.php は index.php と同じディレクトリ。SCRIPT_NAME のディレクトリ部を採用。
+    $dir = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/'));
+    if ($dir === '/' || $dir === '.' || $dir === '') $dir = '';
+    return 'https://' . $host . $dir . '/';
+}
+
+function lwTaskUrl(string $taskId, bool $commentsPane = false): string {
+    $u = appBaseUrl() . '?task=' . rawurlencode($taskId);
+    if ($commentsPane) $u .= '&pane=comments';
+    return $u;
+}
+
+// Service Account JWT → アクセストークン（scope+client単位でファイルキャッシュ）。
+function getLineWorksAccessToken(string $scope = 'bot bot.message'): string {
+    if (!lwEnabled()) throw new Exception('LINE WORKS 連携が設定されていません');
+
+    $privateBase = dirname(__DIR__, 3);            // config.php と同階層（ドキュメントルート外）
+    $sessionPath = session_save_path();
+    $dir = (is_dir($privateBase) && is_writable($privateBase))
+        ? $privateBase
+        : (($sessionPath !== '' && is_dir($sessionPath) && is_writable($sessionPath)) ? $sessionPath : sys_get_temp_dir());
+    $cacheFile = rtrim($dir, '/\\') . '/.olivenote_lwtoken_' . md5($scope . '|' . LINEWORKS_CLIENT_ID) . '.json';
+    if (is_readable($cacheFile)) {
+        $c = json_decode((string)@file_get_contents($cacheFile), true);
+        if (is_array($c) && !empty($c['access_token']) && isset($c['expires_at']) && $c['expires_at'] > time() + 120) {
+            return $c['access_token'];
+        }
+    }
+
+    $now     = time();
+    $header  = base64url_encode(json_encode(['alg' => 'RS256', 'typ' => 'JWT']));
+    $payload = base64url_encode(json_encode([
+        'iss' => LINEWORKS_CLIENT_ID,
+        'sub' => LINEWORKS_SERVICE_ACCOUNT,
+        'iat' => $now,
+        'exp' => $now + 3600,
+    ]));
+    $signingInput = $header . '.' . $payload;
+    // config.php でシングルクォート定義のため \n はリテラル。実改行に直す。
+    $pem = str_replace('\n', "\n", LINEWORKS_PRIVATE_KEY);
+    $pk  = openssl_pkey_get_private($pem);
+    if ($pk === false) throw new Exception('LINEWORKS_PRIVATE_KEY のパースに失敗: ' . openssl_error_string());
+    if (!openssl_sign($signingInput, $sig, $pk, 'SHA256')) throw new Exception('LINE WORKS JWT署名に失敗: ' . openssl_error_string());
+    $jwt = $signingInput . '.' . base64url_encode($sig);
+
+    $ch = curl_init('https://auth.worksmobile.com/oauth2/v2.0/token');
+    curl_setopt_array($ch, [
+        CURLOPT_POST       => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'assertion'     => $jwt,
+            'grant_type'    => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'client_id'     => LINEWORKS_CLIENT_ID,
+            'client_secret' => LINEWORKS_CLIENT_SECRET,
+            'scope'         => $scope,
+        ]),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/x-www-form-urlencoded'],
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $resp = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $j = json_decode((string)$resp, true);
+    if ($code < 200 || $code >= 300 || empty($j['access_token'])) {
+        throw new Exception('LINE WORKS アクセストークン取得に失敗 (HTTP ' . $code . '): ' . substr((string)$resp, 0, 300));
+    }
+    $expiresIn = (int)($j['expires_in'] ?? 3600);
+    @file_put_contents($cacheFile, json_encode(['access_token' => $j['access_token'], 'expires_at' => time() + $expiresIn]), LOCK_EX);
+    @chmod($cacheFile, 0600);
+    return $j['access_token'];
+}
+
+// LINE WORKS API への汎用リクエスト。戻り: ['code'=>int, 'body'=>string, 'json'=>?array]
+function lwApiRequest(string $method, string $url, ?array $body = null, string $scope = 'bot bot.message'): array {
+    $token   = getLineWorksAccessToken($scope);
+    $headers = ['Authorization: Bearer ' . $token];
+    $opts = [
+        CURLOPT_CUSTOMREQUEST  => $method,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ];
+    if ($body !== null) {
+        $headers[] = 'Content-Type: application/json';
+        $opts[CURLOPT_POSTFIELDS] = json_encode($body, JSON_UNESCAPED_UNICODE);
+    }
+    $opts[CURLOPT_HTTPHEADER] = $headers;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, $opts);
+    $resp = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['code' => $code, 'body' => (string)$resp, 'json' => json_decode((string)$resp, true)];
+}
+
+// OliveNote email → LINE WORKS userId（members.lineworks_id のみ。email フォールバックなし）。
+function lwResolveUserId(PDO $pdo, string $email): ?string {
+    if ($email === '') return null;
+    try {
+        $st = $pdo->prepare("SELECT lineworks_id FROM members WHERE email = ?");
+        $st->execute([$email]);
+        $id = trim((string)($st->fetchColumn() ?: ''));
+        return $id !== '' ? $id : null;
+    } catch (Throwable $e) { return null; }  // 列未適用環境では送らない
+}
+
+// LINE WORKS userId → OliveNote email（受信bot の送信者特定用）。
+function lwResolveEmailByUserId(PDO $pdo, string $lwUserId): ?string {
+    if ($lwUserId === '') return null;
+    try {
+        $st = $pdo->prepare("SELECT email FROM members WHERE lineworks_id = ? LIMIT 1");
+        $st->execute([$lwUserId]);
+        $e = trim((string)($st->fetchColumn() ?: ''));
+        return $e !== '' ? $e : null;
+    } catch (Throwable $e) { return null; }
+}
+
+// 受信(callback)用の送信者→OliveNoteメンバー解決。
+// LINE WORKS の callback `source.userId` は常に内部 canonical userId（メールではない）。
+// 一方 lineworks_id にはメール(ログインID)/userId のどちらを登録しているか分からないため、両対応する:
+//   1) lineworks_id にそのまま一致（canonical userId を登録しているケース）
+//   2) Directory API で userId→email を逆引きし、members の lineworks_id か email と突き合わせる
+//      （ログインID=メールを登録しているケース。送信は email でも通るためこちらが多い）
+function lwResolveMemberEmailFromCallback(PDO $pdo, string $lwUserId): ?string {
+    if ($lwUserId === '') return null;
+    $direct = lwResolveEmailByUserId($pdo, $lwUserId);
+    if ($direct !== null) return $direct;
+    if (!lwEnabled()) return null;
+    try {
+        $res = lwApiRequest('GET', 'https://www.worksapis.com/v1.0/users/' . rawurlencode($lwUserId), null, 'user.read');
+        if ($res['code'] >= 200 && $res['code'] < 300 && is_array($res['json'])) {
+            $lwEmail = trim((string)($res['json']['email'] ?? ''));
+            if ($lwEmail !== '') {
+                $st = $pdo->prepare("SELECT email FROM members WHERE lineworks_id = ? OR email = ? LIMIT 1");
+                $st->execute([$lwEmail, $lwEmail]);
+                $m = trim((string)($st->fetchColumn() ?: ''));
+                if ($m !== '') return $m;
+            }
+        } else {
+            error_log('[lineworks] callback user lookup HTTP ' . $res['code'] . ' user=' . $lwUserId . ' body=' . substr($res['body'], 0, 200));
+        }
+    } catch (Throwable $e) {
+        error_log('[lineworks] callback user lookup exception: ' . $e->getMessage());
+    }
+    return null;
+}
+
+function lwTextContent(string $text): array {
+    return ['content' => ['type' => 'text', 'text' => $text]];
+}
+// 課題リンク付きメッセージ。v1 はテキスト＋URL（LINE WORKS は URL を自動リンク化）。
+// 実機検証後に button_template へ差し替え可能。
+function lwLinkContent(string $text, string $url): array {
+    return lwTextContent($text . "\n" . $url);
+}
+
+function lwSendToUserId(string $lwUserId, array $content): bool {
+    if (!lwEnabled() || $lwUserId === '') return false;
+    try {
+        $url = 'https://www.worksapis.com/v1.0/bots/' . rawurlencode((string)LINEWORKS_BOT_ID)
+             . '/users/' . rawurlencode($lwUserId) . '/messages';
+        $res = lwApiRequest('POST', $url, $content, 'bot bot.message');
+        if ($res['code'] < 200 || $res['code'] >= 300) {
+            error_log('[lineworks] send failed HTTP ' . $res['code'] . ' user=' . $lwUserId . ' body=' . substr($res['body'], 0, 300));
+            return false;
+        }
+        return true;
+    } catch (Throwable $e) {
+        error_log('[lineworks] send exception: ' . $e->getMessage());
+        return false;
+    }
+}
+
+function lwSendToEmail(PDO $pdo, string $email, array $content): bool {
+    $uid = lwResolveUserId($pdo, $email);
+    if ($uid === null) return false;
+    return lwSendToUserId($uid, $content);
+}
+
+// ---- 通知 prefs（ユーザーごと・種別ごと粒度） ----
+function lwDefaultPrefs(): array {
+    return [
+        'enabled'        => true,
+        'mentionComment' => true,
+        'mentionTask'    => true,
+        'due'            => ['d5' => true, 'd3' => true, 'd1' => true, 'd0' => true, 'overdue' => true],
+        'start'          => ['d3' => true, 'd1' => true, 'd0' => true],
+        'weeklySummary'  => true,
+        'summaryWeekday' => 'mon',
+    ];
+}
+function lwMergePrefs(array $def, array $p): array {
+    $out = $def;
+    foreach ($p as $k => $v) {
+        if (is_array($v) && isset($def[$k]) && is_array($def[$k])) {
+            $out[$k] = array_merge($def[$k], $v);
+        } else {
+            $out[$k] = $v;
+        }
+    }
+    return $out;
+}
+function lwGetPrefs(PDO $pdo, string $email): array {
+    $def = lwDefaultPrefs();
+    if ($email === '') return $def;
+    try {
+        $st = $pdo->prepare("SELECT prefs FROM lineworks_user_prefs WHERE email = ?");
+        $st->execute([$email]);
+        $raw = $st->fetchColumn();
+        if ($raw === false) return $def;
+        $p = json_decode((string)$raw, true);
+        return is_array($p) ? lwMergePrefs($def, $p) : $def;
+    } catch (Throwable $e) { return $def; }
+}
+function lwSavePrefs(PDO $pdo, string $email, array $prefs): void {
+    $pdo->prepare("INSERT INTO lineworks_user_prefs (email, prefs, updated_at) VALUES (?,?,NOW())
+        ON DUPLICATE KEY UPDATE prefs = VALUES(prefs), updated_at = VALUES(updated_at)")
+        ->execute([$email, json_encode($prefs, JSON_UNESCAPED_UNICODE)]);
+}
+
+// ---- lineworks_id の有効性（Directory ユーザー照会でキャッシュ付き検証） ----
+function lwStatusCacheFile(string $uid): string {
+    $privateBase = dirname(__DIR__, 3);
+    $dir = (is_dir($privateBase) && is_writable($privateBase)) ? $privateBase : sys_get_temp_dir();
+    return rtrim($dir, '/\\') . '/.olivenote_lwstatus_' . md5($uid) . '.json';
+}
+function lwStatusCacheGet(string $uid): ?bool {
+    $f = lwStatusCacheFile($uid);
+    if (!is_readable($f)) return null;
+    $c = json_decode((string)@file_get_contents($f), true);
+    if (is_array($c) && isset($c['valid'], $c['expires_at']) && $c['expires_at'] > time()) return (bool)$c['valid'];
+    return null;
+}
+function lwStatusCacheSet(string $uid, bool $valid): void {
+    @file_put_contents(lwStatusCacheFile($uid), json_encode(['valid' => $valid, 'expires_at' => time() + 600]), LOCK_EX);
+    @chmod(lwStatusCacheFile($uid), 0600);
+}
+function lwUserIdStatus(PDO $pdo, string $email): array {
+    $uid = lwResolveUserId($pdo, $email);
+    if ($uid === null) return ['hasId' => false, 'valid' => false, 'userId' => ''];
+    if (!lwEnabled()) return ['hasId' => true, 'valid' => false, 'userId' => $uid];
+    $cached = lwStatusCacheGet($uid);
+    if ($cached !== null) return ['hasId' => true, 'valid' => $cached, 'userId' => $uid];
+    $valid = false;
+    try {
+        $res   = lwApiRequest('GET', 'https://www.worksapis.com/v1.0/users/' . rawurlencode($uid), null, 'user.read');
+        $valid = ($res['code'] >= 200 && $res['code'] < 300);
+    } catch (Throwable $e) { $valid = false; }
+    lwStatusCacheSet($uid, $valid);
+    return ['hasId' => true, 'valid' => $valid, 'userId' => $uid];
+}
+
+// ---- activity_log（週次サマリ用） ----
+function lwLogActivity(PDO $pdo, string $email, string $taskId, string $action): void {
+    if ($email === '' || $taskId === '') return;
+    try {
+        $pdo->prepare("INSERT INTO activity_log (email, task_id, action, created_at) VALUES (?,?,?,NOW())")
+            ->execute([$email, $taskId, $action]);
+    } catch (Throwable $e) { /* テーブル未適用環境では黙ってスキップ */ }
+}
+
+// ---- outbox（重複送信防止） ----
+function lwOutboxExists(PDO $pdo, string $email, string $taskId, string $kind, string $date): bool {
+    try {
+        $st = $pdo->prepare("SELECT 1 FROM lineworks_outbox WHERE email=? AND task_id=? AND notify_kind=? AND sent_on=? LIMIT 1");
+        $st->execute([$email, $taskId, $kind, $date]);
+        return (bool)$st->fetchColumn();
+    } catch (Throwable $e) { return false; }
+}
+function lwOutboxClaim(PDO $pdo, string $email, string $taskId, string $kind, string $date): void {
+    try {
+        $pdo->prepare("INSERT INTO lineworks_outbox (email, task_id, notify_kind, sent_on, created_at) VALUES (?,?,?,?,NOW())")
+            ->execute([$email, $taskId, $kind, $date]);
+    } catch (Throwable $e) { /* PK 重複 or テーブル未適用 → スキップ */ }
+}
+
+// M/D・YYYY-MM-DD などをパースして Y-m-d を返す（不正なら null）。要 timezone 設定。
+function lwParseDate(string $s): ?string {
+    $s = trim($s);
+    if ($s === '') return null;
+    if (preg_match('#^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$#', $s, $m)) {
+        return sprintf('%04d-%02d-%02d', $m[1], $m[2], $m[3]);
+    }
+    if (preg_match('#^(\d{1,2})[-/](\d{1,2})$#', $s, $m)) {
+        return sprintf('%04d-%02d-%02d', (int)date('Y'), $m[1], $m[2]);
+    }
+    return null;
+}
+
+// 受信bot が課題を起票する（saveTask と同じ列セット）。
+function lwCreateTask(PDO $pdo, array $draft): string {
+    $id = assignNextTaskId($pdo);
+    $pdo->prepare("
+        INSERT INTO tasks (
+            id, title, description, status, priority, type, category, card_color, parent_id,
+            start_date, due_date, implementation_date, implementation_days,
+            assignee_email, assignee_name, sub_assignees, likes, attachments, sort_order
+        ) VALUES (
+            :id, :title, :description, 'todo', 'medium', '', :category, NULL, NULL,
+            :start_date, :due_date, NULL, 1,
+            :assignee_email, :assignee_name, '[]', '[]', '[]', 0
+        )
+    ")->execute([
+        ':id'             => $id,
+        ':title'          => ($draft['title'] ?? '') !== '' ? $draft['title'] : '(無題)',
+        ':description'    => $draft['description'] ?? '',
+        ':category'       => $draft['category'] ?? '',
+        ':start_date'     => !empty($draft['startDate']) ? $draft['startDate'] : null,
+        ':due_date'       => !empty($draft['dueDate']) ? $draft['dueDate'] : null,
+        ':assignee_email' => $draft['assigneeEmail'] ?? '',
+        ':assignee_name'  => $draft['assigneeName'] ?? '',
+    ]);
+    return $id;
+}
+
+// ================================================================
+// LINE WORKS: 定期通知（cron）— 期限/開始日リマインド ＋ 週次サマリ
+//   入口: api.php?lw=cron&token=XXXX（セッション認証バイパス・トークン保護）
+// ================================================================
+function lwRunScheduledNotifications(PDO $pdo): void {
+    date_default_timezone_set('Asia/Tokyo');
+    $token = (string)($_GET['token'] ?? '');
+    if (!defined('LINEWORKS_CRON_TOKEN') || !isConfigValueSet(LINEWORKS_CRON_TOKEN) || !hash_equals((string)LINEWORKS_CRON_TOKEN, $token)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'forbidden']);
+        return;
+    }
+    if (!lwEnabled()) { echo json_encode(['success' => true, 'data' => ['skipped' => 'lineworks disabled']]); return; }
+
+    $today    = new DateTime('today');
+    $todayStr = $today->format('Y-m-d');
+    $sent     = 0;
+
+    // ---- 日付系（期限・開始日）: ユーザー単位ダイジェスト ----
+    $perUser = [];
+    $stmt = $pdo->query("SELECT id, title, start_date, due_date, status, assignee_email, sub_assignees FROM tasks WHERE deleted_at IS NULL AND status <> 'done'");
+    while ($t = $stmt->fetch()) {
+        $recipients = [];
+        if (!empty($t['assignee_email'])) $recipients[] = $t['assignee_email'];
+        $subs = json_decode($t['sub_assignees'] ?? '[]', true);
+        if (is_array($subs)) foreach ($subs as $se) if ($se) $recipients[] = $se;
+        $recipients = array_values(array_unique($recipients));
+        if (!$recipients) continue;
+
+        $dueBucket = null;
+        if (!empty($t['due_date'])) {
+            $d = new DateTime($t['due_date']); $d->setTime(0, 0, 0);
+            $diff = (int)$today->diff($d)->format('%r%a');
+            if ($diff === 5) $dueBucket = 'd5';
+            elseif ($diff === 3) $dueBucket = 'd3';
+            elseif ($diff === 1) $dueBucket = 'd1';
+            elseif ($diff === 0) $dueBucket = 'd0';
+            elseif ($diff < 0) $dueBucket = 'overdue';
+        }
+        $startBucket = null;
+        if (!empty($t['start_date'])) {
+            $d = new DateTime($t['start_date']); $d->setTime(0, 0, 0);
+            $diff = (int)$today->diff($d)->format('%r%a');
+            if ($diff === 3) $startBucket = 'd3';
+            elseif ($diff === 1) $startBucket = 'd1';
+            elseif ($diff === 0) $startBucket = 'd0';
+        }
+        if ($dueBucket === null && $startBucket === null) continue;
+        foreach ($recipients as $em) {
+            if (!isset($perUser[$em])) $perUser[$em] = ['due' => [], 'start' => []];
+            if ($dueBucket)   $perUser[$em]['due'][$dueBucket][]     = $t;
+            if ($startBucket) $perUser[$em]['start'][$startBucket][] = $t;
+        }
+    }
+
+    $dueLabels   = ['d5' => '期限5日前', 'd3' => '期限3日前', 'd1' => '期限1日前', 'd0' => '本日が期限', 'overdue' => '期限超過'];
+    $startLabels = ['d3' => '開始3日前', 'd1' => '開始1日前', 'd0' => '本日開始'];
+
+    foreach ($perUser as $email => $groups) {
+        $prefs = lwGetPrefs($pdo, $email);
+        if (empty($prefs['enabled'])) continue;
+        $uid = lwResolveUserId($pdo, $email);
+        if ($uid === null) continue;
+
+        $lines  = [];
+        $claims = [];
+        foreach (['d5', 'd3', 'd1', 'd0', 'overdue'] as $b) {
+            if (empty($groups['due'][$b]) || empty($prefs['due'][$b])) continue;
+            $tl = [];
+            foreach ($groups['due'][$b] as $t) {
+                $claims[] = [$email, $t['id'], 'due_' . $b, $todayStr];
+                $tl[] = '・' . $t['title'] . "\n  " . lwTaskUrl($t['id']);
+            }
+            if ($tl) $lines[] = '【' . $dueLabels[$b] . "】\n" . implode("\n", $tl);
+        }
+        foreach (['d3', 'd1', 'd0'] as $b) {
+            if (empty($groups['start'][$b]) || empty($prefs['start'][$b])) continue;
+            $tl = [];
+            foreach ($groups['start'][$b] as $t) {
+                $claims[] = [$email, $t['id'], 'start_' . $b, $todayStr];
+                $tl[] = '・' . $t['title'] . "\n  " . lwTaskUrl($t['id']);
+            }
+            if ($tl) $lines[] = '【' . $startLabels[$b] . "】\n" . implode("\n", $tl);
+        }
+        if (!$lines) continue;
+
+        // 1つでも未送信の (task×bucket) があれば送る。全て既送なら skip（同日再実行で二重送信しない）。
+        $anyNew = false;
+        foreach ($claims as $c) { if (!lwOutboxExists($pdo, $c[0], $c[1], $c[2], $c[3])) { $anyNew = true; break; } }
+        if (!$anyNew) continue;
+
+        $msg = "🫒 OliveNote リマインド（" . $today->format('n/j') . "）\n\n" . implode("\n\n", $lines);
+        if (lwSendToUserId($uid, lwTextContent($msg))) {
+            foreach ($claims as $c) lwOutboxClaim($pdo, $c[0], $c[1], $c[2], $c[3]);
+            $sent++;
+        }
+    }
+
+    // ---- 週次サマリ ----
+    $wdKeys    = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    $todayWd   = $wdKeys[(int)date('N') - 1];  // 1=月..7=日 → 'mon'..'sun'（ロケール非依存）
+    $startRange = (clone $today)->modify('-7 day')->format('Y-m-d 00:00:00');
+    $endRange   = $today->format('Y-m-d 00:00:00');
+    $periodLabel = (clone $today)->modify('-7 day')->format('n/j') . '〜' . (clone $today)->modify('-1 day')->format('n/j');
+
+    $allMembers = $pdo->query("SELECT email, name FROM members")->fetchAll();
+    foreach ($allMembers as $mb) {
+        $email = $mb['email'];
+        $prefs = lwGetPrefs($pdo, $email);
+        if (empty($prefs['enabled']) || empty($prefs['weeklySummary'])) continue;
+        if (($prefs['summaryWeekday'] ?? 'mon') !== $todayWd) continue;
+        if (lwOutboxExists($pdo, $email, '', 'weekly', $todayStr)) continue;
+        $uid = lwResolveUserId($pdo, $email);
+        if ($uid === null) continue;
+
+        $taskIds = [];
+        try {
+            $a = $pdo->prepare("SELECT DISTINCT task_id FROM activity_log WHERE email=? AND created_at >= ? AND created_at < ?");
+            $a->execute([$email, $startRange, $endRange]);
+            while ($r = $a->fetch()) $taskIds[$r['task_id']] = true;
+        } catch (Throwable $e) {}
+        try {
+            $c = $pdo->prepare("SELECT DISTINCT task_id FROM comments WHERE author_email=? AND created_at >= ? AND created_at < ?");
+            $c->execute([$email, $startRange, $endRange]);
+            while ($r = $c->fetch()) $taskIds[$r['task_id']] = true;
+        } catch (Throwable $e) {}
+        if (!$taskIds) continue;
+
+        $ids = array_keys($taskIds);
+        $ph  = implode(',', array_fill(0, count($ids), '?'));
+        $ts  = $pdo->prepare("SELECT id, title FROM tasks WHERE id IN ($ph) AND deleted_at IS NULL");
+        $ts->execute($ids);
+        $tl = [];
+        while ($r = $ts->fetch()) $tl[] = '・' . $r['title'] . "\n  " . lwTaskUrl($r['id']);
+        if (!$tl) continue;
+
+        $msg = "🫒 今週の活動サマリ（{$periodLabel}）\nあなたが更新した課題:\n\n" . implode("\n", $tl);
+        if (lwSendToUserId($uid, lwTextContent($msg))) {
+            lwOutboxClaim($pdo, $email, '', 'weekly', $todayStr);
+            $sent++;
+        }
+    }
+
+    echo json_encode(['success' => true, 'data' => ['sent' => $sent, 'date' => $todayStr]]);
+}
+
+// ================================================================
+// LINE WORKS: 受信（Bot callback / webhook）＋ メモ→課題作成ヒアリング
+//   入口: api.php?lw=callback（X-WORKS-Signature 検証・セッションバイパス）
+// ================================================================
+function lwHandleCallback(PDO $pdo, string $rawBody): void {
+    date_default_timezone_set('Asia/Tokyo');
+    if (!defined('LINEWORKS_BOT_SECRET') || !isConfigValueSet(LINEWORKS_BOT_SECRET)) {
+        http_response_code(503); echo json_encode(['success' => false, 'error' => 'bot secret not configured']); return;
+    }
+    $sig      = $_SERVER['HTTP_X_WORKS_SIGNATURE'] ?? '';
+    $expected = base64_encode(hash_hmac('sha256', $rawBody, LINEWORKS_BOT_SECRET, true));
+    if ($sig === '' || !hash_equals($expected, $sig)) {
+        http_response_code(401); echo json_encode(['success' => false, 'error' => 'invalid signature']); return;
+    }
+    $event = json_decode($rawBody, true);
+    if (!is_array($event)) { echo json_encode(['success' => true]); return; }
+
+    $type     = $event['type'] ?? '';
+    $lwUserId = $event['source']['userId'] ?? '';
+    if ($type !== 'message' || $lwUserId === '') { echo json_encode(['success' => true]); return; }
+
+    $content = $event['content'] ?? [];
+    if (($content['type'] ?? '') !== 'text') {
+        lwSendToUserId($lwUserId, lwTextContent('テキストのメモを送っていただくと、課題化のお手伝いをします。'));
+        echo json_encode(['success' => true]); return;
+    }
+    $text  = trim((string)($content['text'] ?? ''));
+    $email = lwResolveMemberEmailFromCallback($pdo, $lwUserId);
+    if ($email === null) {
+        lwSendToUserId($lwUserId, lwTextContent('OliveNote のアカウントと紐付いていないため操作できません。管理者に LINE WORKS ID の登録を依頼してください。'));
+        echo json_encode(['success' => true]); return;
+    }
+
+    lwBotHandle($pdo, $lwUserId, $email, $text);
+    echo json_encode(['success' => true]);
+}
+
+function lwBotSessionGet(PDO $pdo, string $lwUserId): array {
+    try {
+        $st = $pdo->prepare("SELECT step, draft FROM lineworks_bot_sessions WHERE lw_user_id = ?");
+        $st->execute([$lwUserId]);
+        $r = $st->fetch();
+        if (!$r) return ['step' => '', 'draft' => []];
+        return ['step' => $r['step'] ?? '', 'draft' => json_decode($r['draft'] ?? '[]', true) ?: []];
+    } catch (Throwable $e) { return ['step' => '', 'draft' => []]; }
+}
+function lwBotSessionSet(PDO $pdo, string $lwUserId, string $step, array $draft): void {
+    try {
+        $pdo->prepare("INSERT INTO lineworks_bot_sessions (lw_user_id, step, draft, updated_at) VALUES (?,?,?,NOW())
+            ON DUPLICATE KEY UPDATE step = VALUES(step), draft = VALUES(draft), updated_at = VALUES(updated_at)")
+            ->execute([$lwUserId, $step, json_encode($draft, JSON_UNESCAPED_UNICODE)]);
+    } catch (Throwable $e) {}
+}
+function lwBotSessionClear(PDO $pdo, string $lwUserId): void {
+    try { $pdo->prepare("DELETE FROM lineworks_bot_sessions WHERE lw_user_id = ?")->execute([$lwUserId]); } catch (Throwable $e) {}
+}
+
+function lwCategories(PDO $pdo): array {
+    try {
+        $st = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'categories'");
+        $st->execute();
+        $arr = json_decode((string)$st->fetchColumn(), true);
+        return is_array($arr) ? array_values(array_filter($arr, 'is_string')) : [];
+    } catch (Throwable $e) { return []; }
+}
+function lwMemberByEmail(PDO $pdo, string $email): ?array {
+    try {
+        $st = $pdo->prepare("SELECT email, name FROM members WHERE email = ?");
+        $st->execute([$email]);
+        return $st->fetch() ?: null;
+    } catch (Throwable $e) { return null; }
+}
+function lwMemberByName(PDO $pdo, string $name): ?array {
+    $name = trim($name);
+    if ($name === '') return null;
+    try {
+        $st = $pdo->prepare("SELECT email, name FROM members WHERE name = ? LIMIT 1");
+        $st->execute([$name]);
+        if ($r = $st->fetch()) return $r;
+        $st = $pdo->prepare("SELECT email, name FROM members WHERE name LIKE ? LIMIT 2");
+        $st->execute(['%' . $name . '%']);
+        $rows = $st->fetchAll();
+        return count($rows) === 1 ? $rows[0] : null;
+    } catch (Throwable $e) { return null; }
+}
+function lwMemberNamesHint(PDO $pdo): string {
+    try {
+        $st = $pdo->query("SELECT name FROM members ORDER BY is_admin DESC LIMIT 3");
+        $names = [];
+        while ($n = $st->fetchColumn()) $names[] = $n;
+        return implode('、', $names);
+    } catch (Throwable $e) { return ''; }
+}
+function lwBotSummaryContent(array $draft): array {
+    $assignee = ($draft['assigneeName'] ?? '') !== '' ? $draft['assigneeName'] : '（未定）';
+    $due      = ($draft['dueDate'] ?? '') !== '' ? $draft['dueDate'] : '（なし）';
+    $cat      = ($draft['category'] ?? '') !== '' ? $draft['category'] : '（なし）';
+    $msg = "以下の内容で課題を作成します。\n\n"
+         . "📋 課題名: " . ($draft['title'] ?? '') . "\n"
+         . "👤 担当者: {$assignee}\n"
+         . "📅 期限: {$due}\n"
+         . "🏷 カテゴリ: {$cat}\n\n"
+         . "・確定するなら「作成」\n・やめるなら「キャンセル」";
+    return lwTextContent($msg);
+}
+
+// メモ→課題作成のヒアリング・ステートマシン。
+function lwBotHandle(PDO $pdo, string $lwUserId, string $email, string $text): void {
+    $sess  = lwBotSessionGet($pdo, $lwUserId);
+    $step  = $sess['step'];
+    $draft = $sess['draft'];
+    $low   = mb_strtolower($text);
+
+    if (in_array($low, ['キャンセル', 'cancel', 'やめる', '中止'], true)) {
+        lwBotSessionClear($pdo, $lwUserId);
+        lwSendToUserId($lwUserId, lwTextContent('課題作成をキャンセルしました。'));
+        return;
+    }
+    if ($step === '' && in_array($low, ['ヘルプ', 'help', '使い方'], true)) {
+        lwSendToUserId($lwUserId, lwTextContent("メモを送ると課題化します。\n例:「来週の会議資料を準備する」\nいつでも「キャンセル」で中止できます。"));
+        return;
+    }
+
+    if ($step === '') {
+        $firstLine = trim(preg_split('/\r\n|\r|\n/', $text)[0] ?? $text);
+        if (mb_strlen($firstLine) > 60) $firstLine = mb_substr($firstLine, 0, 60);
+        $draft = ['memo' => $text, 'title' => $firstLine, 'description' => $text,
+                  'assigneeEmail' => '', 'assigneeName' => '', 'dueDate' => '', 'category' => ''];
+        lwBotSessionSet($pdo, $lwUserId, 'confirm_title', $draft);
+        lwSendToUserId($lwUserId, lwTextContent("メモを受け取りました。\n課題名は「{$firstLine}」でよいですか？\n・このままなら「はい」\n・変更するなら新しい課題名を送信\n・やめるなら「キャンセル」"));
+        return;
+    }
+
+    if ($step === 'confirm_title') {
+        if (!in_array($low, ['はい', 'ok', 'ｏｋ', 'yes', 'y', 'うん'], true)) {
+            $draft['title'] = mb_substr($text, 0, 120);
+        }
+        lwBotSessionSet($pdo, $lwUserId, 'ask_assignee', $draft);
+        $names = lwMemberNamesHint($pdo);
+        lwSendToUserId($lwUserId, lwTextContent("担当者を選んでください。\n・自分にするなら「自分」\n・他の人は名前を送信" . ($names ? "（例: {$names}）" : "") . "\n・未定なら「なし」"));
+        return;
+    }
+
+    if ($step === 'ask_assignee') {
+        if (in_array($low, ['自分', 'me', '私'], true)) {
+            $m = lwMemberByEmail($pdo, $email);
+            $draft['assigneeEmail'] = $email;
+            $draft['assigneeName']  = $m['name'] ?? '';
+        } elseif (in_array($low, ['なし', '未定', 'スキップ', 'skip'], true)) {
+            $draft['assigneeEmail'] = '';
+            $draft['assigneeName']  = '';
+        } else {
+            $m = lwMemberByName($pdo, $text);
+            if ($m === null) {
+                lwSendToUserId($lwUserId, lwTextContent("「{$text}」さんが見つかりません。もう一度名前を送るか、「自分」「なし」を送ってください。"));
+                return;
+            }
+            $draft['assigneeEmail'] = $m['email'];
+            $draft['assigneeName']  = $m['name'];
+        }
+        lwBotSessionSet($pdo, $lwUserId, 'ask_due', $draft);
+        lwSendToUserId($lwUserId, lwTextContent("期限はいつにしますか？\n・例: 2026-06-20 または 6/20\n・なければ「なし」"));
+        return;
+    }
+
+    if ($step === 'ask_due') {
+        if (in_array($low, ['なし', '未定', 'スキップ', 'skip'], true)) {
+            $draft['dueDate'] = '';
+        } else {
+            $d = lwParseDate($text);
+            if ($d === null) {
+                lwSendToUserId($lwUserId, lwTextContent("日付を読み取れませんでした。例:「2026-06-20」「6/20」、不要なら「なし」を送ってください。"));
+                return;
+            }
+            $draft['dueDate'] = $d;
+        }
+        $cats = lwCategories($pdo);
+        if ($cats) {
+            lwBotSessionSet($pdo, $lwUserId, 'ask_category', $draft);
+            $list = [];
+            foreach ($cats as $i => $c) $list[] = ($i + 1) . '. ' . $c;
+            lwSendToUserId($lwUserId, lwTextContent("カテゴリを選んでください。\n" . implode("\n", $list) . "\n・番号か名前を送信\n・不要なら「なし」"));
+        } else {
+            $draft['category'] = '';
+            lwBotSessionSet($pdo, $lwUserId, 'confirm_create', $draft);
+            lwSendToUserId($lwUserId, lwBotSummaryContent($draft));
+        }
+        return;
+    }
+
+    if ($step === 'ask_category') {
+        if (in_array($low, ['なし', 'スキップ', 'skip'], true)) {
+            $draft['category'] = '';
+        } else {
+            $cats   = lwCategories($pdo);
+            $picked = null;
+            if (preg_match('/^\d+$/', $text)) {
+                $idx = (int)$text - 1;
+                if ($idx >= 0 && $idx < count($cats)) $picked = $cats[$idx];
+            }
+            if ($picked === null) {
+                foreach ($cats as $c) if (mb_strtolower($c) === $low) { $picked = $c; break; }
+            }
+            if ($picked === null) {
+                lwSendToUserId($lwUserId, lwTextContent("カテゴリを特定できませんでした。番号か正確な名前、または「なし」を送ってください。"));
+                return;
+            }
+            $draft['category'] = $picked;
+        }
+        lwBotSessionSet($pdo, $lwUserId, 'confirm_create', $draft);
+        lwSendToUserId($lwUserId, lwBotSummaryContent($draft));
+        return;
+    }
+
+    if ($step === 'confirm_create') {
+        if (in_array($low, ['作成', 'はい', 'ok', 'ｏｋ', 'yes', '登録', '作る'], true)) {
+            try {
+                $taskId = lwCreateTask($pdo, $draft);
+                lwLogActivity($pdo, $email, $taskId, 'create');
+                lwBotSessionClear($pdo, $lwUserId);
+                lwSendToUserId($lwUserId, lwLinkContent("課題 {$taskId} を作成しました 🎉", lwTaskUrl($taskId)));
+            } catch (Throwable $e) {
+                error_log('[lineworks] bot create task failed: ' . $e->getMessage());
+                lwSendToUserId($lwUserId, lwTextContent('課題の作成に失敗しました。時間をおいて再度お試しください。'));
+            }
+            return;
+        }
+        lwSendToUserId($lwUserId, lwTextContent("確定する場合は「作成」、やめる場合は「キャンセル」を送ってください。"));
+        return;
+    }
+
+    // 想定外 state → リセット
+    lwBotSessionClear($pdo, $lwUserId);
+    lwSendToUserId($lwUserId, lwTextContent("メモを送ると課題化します。もう一度お試しください。"));
+}
+
+// ================================================================
 // メインルーティング
 // ================================================================
 
@@ -1182,6 +1923,7 @@ try {
                     'avatar'          => $row['avatar'],
                     'isAdmin'         => (bool)$row['is_admin'],
                     'defaultCategory' => $row['default_category'],
+                    'lineworksId'     => $row['lineworks_id'] ?? '',
                 ];
                 $members[] = $m;
                 // セッションのemailと完全一致するメンバーをcurrentUserとする
@@ -1341,6 +2083,9 @@ try {
                 ':sort_order'          => (float)($task['order'] ?? 0),
             ]);
 
+            // 週次サマリ用のアクティビティ記録（更新者＝ログイン中ユーザー）。
+            lwLogActivity($pdo, $_SESSION['user_email'] ?? '', $task['id'], $isNew ? 'create' : 'update');
+
             // 保存後の最新行を取得して返す
             $stmt = $pdo->prepare("SELECT * FROM tasks WHERE id = ?");
             $stmt->execute([$task['id']]);
@@ -1371,17 +2116,33 @@ try {
             $pdo->beginTransaction();
             try {
                 // メンバー: 全件洗い替え
+                // lineworks_id 列がある環境では一緒に保存する（無い旧環境では従来5列のまま）。
+                $hasLwId = members_has_lineworks_id($pdo);
                 $pdo->exec("DELETE FROM members");
                 if (!empty($s['members'])) {
-                    $ins = $pdo->prepare("INSERT INTO members (email, name, avatar, is_admin, default_category) VALUES (?,?,?,?,?)");
-                    foreach ($s['members'] as $m) {
-                        $ins->execute([
-                            $m['email'] ?? '',
-                            $m['name'] ?? '',
-                            $m['avatar'] ?? '👤',
-                            !empty($m['isAdmin']) ? 1 : 0,
-                            $m['defaultCategory'] ?? '',
-                        ]);
+                    if ($hasLwId) {
+                        $ins = $pdo->prepare("INSERT INTO members (email, name, avatar, is_admin, default_category, lineworks_id) VALUES (?,?,?,?,?,?)");
+                        foreach ($s['members'] as $m) {
+                            $ins->execute([
+                                $m['email'] ?? '',
+                                $m['name'] ?? '',
+                                $m['avatar'] ?? '👤',
+                                !empty($m['isAdmin']) ? 1 : 0,
+                                $m['defaultCategory'] ?? '',
+                                trim((string)($m['lineworksId'] ?? '')) !== '' ? trim((string)$m['lineworksId']) : null,
+                            ]);
+                        }
+                    } else {
+                        $ins = $pdo->prepare("INSERT INTO members (email, name, avatar, is_admin, default_category) VALUES (?,?,?,?,?)");
+                        foreach ($s['members'] as $m) {
+                            $ins->execute([
+                                $m['email'] ?? '',
+                                $m['name'] ?? '',
+                                $m['avatar'] ?? '👤',
+                                !empty($m['isAdmin']) ? 1 : 0,
+                                $m['defaultCategory'] ?? '',
+                            ]);
+                        }
                     }
                 }
 
@@ -1428,6 +2189,9 @@ try {
                 ':likes'        => json_encode($c['likes'] ?? []),
                 ':read_by'      => json_encode($c['readBy'] ?? []),
             ]);
+
+            // 週次サマリ用のアクティビティ記録（投稿者＝コメント author）。
+            lwLogActivity($pdo, $c['authorEmail'] ?? '', $c['taskId'] ?? '', 'comment');
 
             $stmt = $pdo->prepare("SELECT * FROM comments WHERE id = ?");
             $stmt->execute([$c['id']]);
@@ -1546,8 +2310,105 @@ try {
                     $payload['message']     ?? '',
                     date('Y-m-d H:i:s'),
                 ]);
+
+            // LINE WORKS push（宛先に有効な lineworks_id があり、該当種別の通知がONのときのみ）。
+            // 失敗してもアプリ内通知の作成は成功扱いのまま（push はベストエフォート）。
+            $lwTargetEmail = $payload['targetEmail'] ?? '';
+            $lwKind        = $payload['kind'] ?? '';   // 'mention_comment' | 'mention_task'
+            if ($lwTargetEmail !== '' && lwEnabled()) {
+                try {
+                    $prefs  = lwGetPrefs($pdo, $lwTargetEmail);
+                    $kindOn = ($lwKind === 'mention_comment') ? !empty($prefs['mentionComment'])
+                            : (($lwKind === 'mention_task') ? !empty($prefs['mentionTask']) : true);
+                    if (!empty($prefs['enabled']) && $kindOn) {
+                        $taskId    = $payload['taskId'] ?? '';
+                        $taskTitle = $payload['taskTitle'] ?? '';
+                        // コメントは本文冒頭（excerpt）を優先。無ければ message にフォールバック。
+                        $rawMsg    = trim((string)($payload['excerpt'] ?? ''));
+                        if ($rawMsg === '') $rawMsg = trim((string)($payload['message'] ?? ''));
+                        if ($lwKind === 'mention_comment') {
+                            $excerpt = mb_substr($rawMsg, 0, 80);
+                            if (mb_strlen($rawMsg) > 80) $excerpt .= '…';
+                            $body = "💬 コメントにメンションがありました\n課題: " . $taskTitle
+                                  . ($excerpt !== '' ? "\n「" . $excerpt . "」" : '');
+                            $url  = $taskId !== '' ? lwTaskUrl($taskId, true) : appBaseUrl();
+                        } else {
+                            $body = "📌 課題にメンションがありました\n課題: " . $taskTitle;
+                            $url  = $taskId !== '' ? lwTaskUrl($taskId) : appBaseUrl();
+                        }
+                        lwSendToEmail($pdo, $lwTargetEmail, lwLinkContent($body, $url));
+                    }
+                } catch (Throwable $e) {
+                    error_log('[lineworks] createNotification push failed: ' . $e->getMessage());
+                }
+            }
+
             echo json_encode(['success' => true, 'data' => ['id' => $id]]);
             break;
+
+        // ============================================================
+        // getMyLineWorksStatus — 自分の lineworks_id 有効性（設定画面の活性判定）
+        //   data: { hasId, valid, userId, enabled }
+        // ============================================================
+        case 'getMyLineWorksStatus': {
+            $email  = $_SESSION['user_email'] ?? '';
+            $status = lwUserIdStatus($pdo, $email);
+            echo json_encode(['success' => true, 'data' => array_merge($status, ['enabled' => lwEnabled()])]);
+            break;
+        }
+
+        // ============================================================
+        // getMyLineWorksPrefs — 自分の通知設定＋ID状態を取得
+        // ============================================================
+        case 'getMyLineWorksPrefs': {
+            $email  = $_SESSION['user_email'] ?? '';
+            $status = lwUserIdStatus($pdo, $email);
+            echo json_encode(['success' => true, 'data' => [
+                'prefs'  => lwGetPrefs($pdo, $email),
+                'status' => array_merge($status, ['enabled' => lwEnabled()]),
+            ]]);
+            break;
+        }
+
+        // ============================================================
+        // saveMyLineWorksPrefs — 自分の通知設定を保存
+        //   lineworks_id が未登録/無効なら 403（フロント非活性をすり抜けても保存させない二重ガード）
+        // ============================================================
+        case 'saveMyLineWorksPrefs': {
+            $email = $_SESSION['user_email'] ?? '';
+            if ($email === '') { echo json_encode(['success' => false, 'error' => 'no session']); break; }
+            $status = lwUserIdStatus($pdo, $email);
+            if (empty($status['hasId']) || empty($status['valid'])) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'error' => 'LINE WORKS ID が未登録または無効です。管理者に確認を依頼してください。']);
+                break;
+            }
+            $in = $payload['prefs'] ?? [];
+            // bool/曜日に正規化し、未知キーは捨てる。
+            $clean = [
+                'enabled'        => !empty($in['enabled']),
+                'mentionComment' => !empty($in['mentionComment']),
+                'mentionTask'    => !empty($in['mentionTask']),
+                'due'   => [
+                    'd5'      => !empty($in['due']['d5']),
+                    'd3'      => !empty($in['due']['d3']),
+                    'd1'      => !empty($in['due']['d1']),
+                    'd0'      => !empty($in['due']['d0']),
+                    'overdue' => !empty($in['due']['overdue']),
+                ],
+                'start' => [
+                    'd3' => !empty($in['start']['d3']),
+                    'd1' => !empty($in['start']['d1']),
+                    'd0' => !empty($in['start']['d0']),
+                ],
+                'weeklySummary'  => !empty($in['weeklySummary']),
+                'summaryWeekday' => in_array(($in['summaryWeekday'] ?? 'mon'), ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], true)
+                                    ? $in['summaryWeekday'] : 'mon',
+            ];
+            lwSavePrefs($pdo, $email, $clean);
+            echo json_encode(['success' => true, 'data' => ['prefs' => $clean]]);
+            break;
+        }
 
         // ============================================================
         // uploadFile — Google Drive の指定フォルダにアップロード

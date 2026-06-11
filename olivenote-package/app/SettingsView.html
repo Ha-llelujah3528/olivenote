@@ -1,5 +1,127 @@
 // SettingsView.htmlの更新されたコード
-function SettingsView({ 
+
+// ============================================================
+// LINE WORKS 通知設定（自分用）パネル
+//   - 自分の lineworks_id が未登録/無効なら全トグルを非活性にする
+//     （メール宛送信は行わない。lineworks_id 必須）。
+//   - 通知の種別ごと（メンション/期限5-3-1-当日-超過/開始3-1-当日/週次サマリ）に ON/OFF。
+// ============================================================
+function LineWorksNotifyPanel() {
+  const DEFAULT_PREFS = {
+    enabled: true, mentionComment: true, mentionTask: true,
+    due: { d5: true, d3: true, d1: true, d0: true, overdue: true },
+    start: { d3: true, d1: true, d0: true },
+    weeklySummary: true, summaryWeekday: 'mon',
+  };
+  const WEEKDAYS = [['mon','月'],['tue','火'],['wed','水'],['thu','木'],['fri','金'],['sat','土'],['sun','日']];
+
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus]   = useState(null); // {hasId, valid, userId, enabled}
+  const [prefs, setPrefs]     = useState(DEFAULT_PREFS);
+  const [saving, setSaving]   = useState(false);
+  const [savedMsg, setSavedMsg] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    api.getMyLineWorksPrefs()
+      .then(res => { if (!alive) return; setStatus(res.status || {}); setPrefs({ ...DEFAULT_PREFS, ...(res.prefs || {}) }); setLoading(false); })
+      .catch(() => { if (!alive) return; setStatus({ hasId: false, valid: false, userId: '', enabled: false }); setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const disabled = !status || !status.enabled || !status.hasId || !status.valid;
+  const setDue   = (k, v) => setPrefs(p => ({ ...p, due:   { ...p.due,   [k]: v } }));
+  const setStart = (k, v) => setPrefs(p => ({ ...p, start: { ...p.start, [k]: v } }));
+
+  const save = async () => {
+    setSaving(true); setSavedMsg('');
+    try { const res = await api.saveMyLineWorksPrefs(prefs); if (res?.prefs) setPrefs(res.prefs); setSavedMsg('保存しました ✓'); }
+    catch (e) { setSavedMsg('保存に失敗しました: ' + (e.message || '')); }
+    finally { setSaving(false); }
+  };
+
+  const Toggle = ({ checked, onChange, label }) => (
+    <label className="flex items-center gap-2 cursor-pointer text-sm py-1">
+      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} className="w-4 h-4 rounded text-olive-600" />
+      <span>{label}</span>
+    </label>
+  );
+
+  if (loading) return <div className="text-sm text-gray-500 p-2">読み込み中...</div>;
+
+  return (
+    <div>
+      <h3 className="font-bold text-gray-800 mb-4 border-b border-gray-200 pb-2">LINE WORKS 通知設定（自分用）</h3>
+
+      {!status.enabled && (
+        <div className="mb-4 text-sm bg-gray-50 border border-gray-200 text-gray-600 rounded p-3">
+          この環境では LINE WORKS 連携が無効です。管理者にお問い合わせください。
+        </div>
+      )}
+      {status.enabled && !status.hasId && (
+        <div className="mb-4 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded p-3">
+          あなたの LINE WORKS ID が未登録です。通知を受け取るには、管理者に LINE WORKS ID の登録を依頼してください。
+        </div>
+      )}
+      {status.enabled && status.hasId && !status.valid && (
+        <div className="mb-4 text-sm bg-red-50 border border-red-200 text-red-700 rounded p-3">
+          登録されている LINE WORKS ID（<span className="font-mono">{status.userId}</span>）が無効です。管理者に確認を依頼してください。
+        </div>
+      )}
+      {status.enabled && status.hasId && status.valid && (
+        <div className="mb-4 text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded p-3">
+          通知先: <span className="font-mono">{status.userId}</span>（検証OK）
+        </div>
+      )}
+
+      <fieldset disabled={disabled} className={`max-w-xl ${disabled ? 'opacity-50' : ''}`}>
+        <div className="mb-4 pb-3 border-b border-gray-100">
+          <Toggle checked={prefs.enabled} onChange={v => setPrefs(p => ({ ...p, enabled: v }))} label="LINE WORKS への通知を受け取る（マスター）" />
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-bold text-gray-500 mb-1">メンション</div>
+          <Toggle checked={prefs.mentionComment} onChange={v => setPrefs(p => ({ ...p, mentionComment: v }))} label="コメントでメンションされたとき" />
+          <Toggle checked={prefs.mentionTask}    onChange={v => setPrefs(p => ({ ...p, mentionTask: v }))}    label="課題でメンションされたとき" />
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-bold text-gray-500 mb-1">期限リマインド</div>
+          <Toggle checked={prefs.due.d5}      onChange={v => setDue('d5', v)}      label="期限5日前" />
+          <Toggle checked={prefs.due.d3}      onChange={v => setDue('d3', v)}      label="期限3日前" />
+          <Toggle checked={prefs.due.d1}      onChange={v => setDue('d1', v)}      label="期限1日前" />
+          <Toggle checked={prefs.due.d0}      onChange={v => setDue('d0', v)}      label="期限当日" />
+          <Toggle checked={prefs.due.overdue} onChange={v => setDue('overdue', v)} label="期限超過" />
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-bold text-gray-500 mb-1">開始日リマインド</div>
+          <Toggle checked={prefs.start.d3} onChange={v => setStart('d3', v)} label="開始3日前" />
+          <Toggle checked={prefs.start.d1} onChange={v => setStart('d1', v)} label="開始1日前" />
+          <Toggle checked={prefs.start.d0} onChange={v => setStart('d0', v)} label="開始当日" />
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-bold text-gray-500 mb-1">週次サマリ</div>
+          <Toggle checked={prefs.weeklySummary} onChange={v => setPrefs(p => ({ ...p, weeklySummary: v }))} label="自分が更新した課題を週1でまとめて受け取る" />
+          <div className="flex items-center gap-2 mt-1 text-sm">
+            <span className="text-gray-600">配信曜日:</span>
+            <select value={prefs.summaryWeekday} onChange={e => setPrefs(p => ({ ...p, summaryWeekday: e.target.value }))} className="border border-gray-300 p-1.5 rounded text-sm bg-white focus:ring-2 focus:ring-olive-500">
+              {WEEKDAYS.map(([k, ja]) => <option key={k} value={k}>{ja}曜日</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-2">
+          <button onClick={save} disabled={saving} className="bg-olive-600 text-white px-4 py-2 rounded text-sm font-bold shadow-sm hover:bg-olive-700 disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+          {savedMsg && <span className="text-sm text-gray-600">{savedMsg}</span>}
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+function SettingsView({
   categories, setCategories, taskTypes, setTaskTypes, 
   members, setMembers, tasks, setTasks, 
   taskTemplates, setTaskTemplates, 
@@ -16,6 +138,7 @@ function SettingsView({
   const [editMemberAvatar, setEditMemberAvatar] = useState('');
   const [editMemberIsAdmin, setEditMemberIsAdmin] = useState(false);
   const [editMemberDefaultCat, setEditMemberDefaultCat] = useState('');
+  const [editMemberLwId, setEditMemberLwId] = useState(''); // LINE WORKS ID（管理者が手動マッピング）
   const [newMemberName, setNewMemberName] = useState(''); 
   const [newMemberEmail, setNewMemberEmail] = useState(''); 
   const [newMemberAvatar, setNewMemberAvatar] = useState(typeof AVATARS !== 'undefined' ? AVATARS[0] : '👤');
@@ -257,6 +380,7 @@ function SettingsView({
           <button onClick={() => setActiveMenu('categories')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors ${activeMenu === 'categories' ? 'bg-olive-50 text-olive-600 border border-olive-200 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>カテゴリ管理</button>
           <button onClick={() => setActiveMenu('types')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors ${activeMenu === 'types' ? 'bg-olive-50 text-olive-600 border border-olive-200 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>種別・テンプレート</button>
           <button onClick={() => setActiveMenu('docTags')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors ${activeMenu === 'docTags' ? 'bg-olive-50 text-olive-600 border border-olive-200 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>ドキュメントタグ</button>
+          <button onClick={() => setActiveMenu('lineworks')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors ${activeMenu === 'lineworks' ? 'bg-olive-50 text-olive-600 border border-olive-200 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>LINE WORKS 通知</button>
 
           <button onClick={() => setActiveMenu('docTemplates')} className={`shrink-0 snap-start text-xs md:text-sm font-bold text-left px-3 py-2 rounded whitespace-nowrap transition-colors flex items-center justify-between md:mt-2 ${activeMenu === 'docTemplates' ? 'bg-olive-50 text-olive-700 border border-olive-200 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}>
             <span className="flex items-center gap-1.5"><Sparkles size={14}/> ドキュメント出力管理</span>
@@ -425,6 +549,11 @@ function SettingsView({
                           {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                         </select>
                       </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-bold text-gray-500">LINE WORKS ID（任意・通知の宛先）</label>
+                        <input type="text" value={editMemberLwId} onChange={e => setEditMemberLwId(e.target.value)} placeholder="LINE WORKS のログインID（例: taro@example）" className="border p-1.5 rounded text-sm focus:ring-2 focus:ring-olive-500 min-w-0 font-mono" />
+                        <span className="text-[11px] text-gray-400">未登録だと、このメンバーには LINE WORKS 通知が届きません（メール宛送信は行いません）。</span>
+                      </div>
                       <div className="flex items-center justify-between">
                         <label className="flex items-center gap-2 cursor-pointer text-red-600 font-bold bg-red-50 px-2 py-1 rounded border border-red-100">
                           <input type="checkbox" checked={editMemberIsAdmin} onChange={e => setEditMemberIsAdmin(e.target.checked)} className="w-4 h-4 rounded text-red-600" />
@@ -432,7 +561,7 @@ function SettingsView({
                         </label>
                         <div className="flex items-center gap-2 shrink-0">
                           <button onClick={() => setEditMemberIdx(-1)} className="px-3 py-1.5 text-xs font-bold bg-gray-200 text-gray-700 rounded hover:bg-gray-300">キャンセル</button>
-                          <button onClick={() => { if (editMemberName.trim()) { setMembers(members.map((m, i) => i === idx ? { ...m, name: editMemberName, avatar: editMemberAvatar, isAdmin: editMemberIsAdmin, defaultCategory: editMemberDefaultCat } : m)); setEditMemberIdx(-1); } }} className="px-3 py-1.5 text-xs font-bold bg-olive-600 text-white rounded hover:bg-olive-700 shadow-sm">保存</button>
+                          <button onClick={() => { if (editMemberName.trim()) { setMembers(members.map((m, i) => i === idx ? { ...m, name: editMemberName, avatar: editMemberAvatar, isAdmin: editMemberIsAdmin, defaultCategory: editMemberDefaultCat, lineworksId: editMemberLwId.trim() } : m)); setEditMemberIdx(-1); } }} className="px-3 py-1.5 text-xs font-bold bg-olive-600 text-white rounded hover:bg-olive-700 shadow-sm">保存</button>
                         </div>
                       </div>
                     </div>
@@ -444,9 +573,12 @@ function SettingsView({
                           <span className="font-bold text-gray-800">{member.name}</span>
                           {member.isAdmin && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-200">管理者</span>}
                           {member.defaultCategory && <span className="bg-gray-100 text-gray-600 text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-1 border"><Tag size={10}/>初期:{member.defaultCategory}</span>}
+                          {member.lineworksId
+                            ? <span className="bg-emerald-50 text-emerald-700 text-[10px] px-1.5 py-0.5 rounded font-bold border border-emerald-200">LW連携</span>
+                            : <span className="bg-gray-50 text-gray-400 text-[10px] px-1.5 py-0.5 rounded font-bold border border-gray-200">LW未登録</span>}
                         </div>
                         <div className="flex items-center gap-2">
-                          <button onClick={() => { setEditMemberIdx(idx); setEditMemberName(member.name); setEditMemberAvatar(member.avatar); setEditMemberIsAdmin(member.isAdmin || false); setEditMemberDefaultCat(member.defaultCategory || ''); }} className="p-1 text-gray-400 hover:text-olive-600"><Edit size={16}/></button>
+                          <button onClick={() => { setEditMemberIdx(idx); setEditMemberName(member.name); setEditMemberAvatar(member.avatar); setEditMemberIsAdmin(member.isAdmin || false); setEditMemberDefaultCat(member.defaultCategory || ''); setEditMemberLwId(member.lineworksId || ''); }} className="p-1 text-gray-400 hover:text-olive-600"><Edit size={16}/></button>
                           <button onClick={() => handleDelete(idx, members, setMembers)} className="p-1 text-red-400 hover:text-red-600"><Trash2 size={16}/></button>
                         </div>
                       </div>
@@ -456,6 +588,10 @@ function SettingsView({
                 </li>
               ))}</ul>
             </div>
+          )}
+
+          {activeMenu === 'lineworks' && (
+            <LineWorksNotifyPanel />
           )}
 
           {activeMenu === 'categories' && (
