@@ -746,15 +746,40 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       }, [task, formData, taskTemplates]);
 
-      const generateAndSaveHistoryComment = () => {
+      // 常に最新の formData を参照できる ref（クローズ時の stale closure 対策）。
+      // バックドロップの onMouseDown は古い render のクロージャを掴んだまま発火し得るため、
+      // 保存系は state ではなくこの ref / エディタ実体から最新値を取り直す。
+      const formDataRef = useRef(formData);
+      useEffect(() => { formDataRef.current = formData; }, [formData]);
+
+      // 「今エディタに見えている本文」をそのまま取り出した最新スナップショットを返す。
+      // 最後の入力が React state(formData.description) に反映される前に閉じても、
+      // エディタ実体(TipTap)から直接 markdown を読むことで取りこぼしを防ぐ。
+      const getLiveFormData = () => {
+        const base = formDataRef.current;
+        let description = base.description;
+        try {
+          if (richEditorRef.current?.getMarkdown) {
+            const live = richEditorRef.current.getMarkdown();
+            // 本文があるときだけ live を採用する。空文字が返るのはエディタ破棄中の
+            // 可能性があるため、その場合は state(base) を信頼し空での上書きを避ける
+            // （= データ消失より取りこぼし防止を優先。意図的な全消去は state 側に既に反映済み）。
+            if (live && live.trim() !== '') description = live;
+          }
+        } catch (e) { /* エディタ未初期化等は base にフォールバック */ }
+        return { ...base, description };
+      };
+
+      const generateAndSaveHistoryComment = (snapshot) => {
+        const live = snapshot || getLiveFormData();
         if (isNew || !task) return;
         const changes = [];
-        if (task.title !== formData.title) {
+        if (task.title !== live.title) {
           changes.push(`・件名を変更`);
         }
-        if (task.description !== formData.description) {
+        if (task.description !== live.description) {
           const oldDesc = task.description || '（空）';
-          const newDesc = formData.description || '（空）';
+          const newDesc = live.description || '（空）';
           changes.push(
             `・詳細を更新しました\n` +
             `<details class="mt-2 mb-2 border border-gray-200 rounded-lg overflow-hidden">\n` +
@@ -775,43 +800,43 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             `</details>`
           );
         }
-        if (task.type !== formData.type) {
-          changes.push(`・種別を「${task.type || '未設定'}」から「${formData.type || '未設定'}」に変更`);
+        if (task.type !== live.type) {
+          changes.push(`・種別を「${task.type || '未設定'}」から「${live.type || '未設定'}」に変更`);
         }
-        if (task.parentId !== formData.parentId) {
-          changes.push(`・親課題を「${task.parentId || '未設定'}」から「${formData.parentId || '未設定'}」に変更`);
+        if (task.parentId !== live.parentId) {
+          changes.push(`・親課題を「${task.parentId || '未設定'}」から「${live.parentId || '未設定'}」に変更`);
         }
-        if (task.status !== formData.status) {
+        if (task.status !== live.status) {
           const oldLabel = STATUSES.find(s => s.id === task.status)?.label || '未設定';
-          const newLabel = STATUSES.find(s => s.id === formData.status)?.label || '未設定';
+          const newLabel = STATUSES.find(s => s.id === live.status)?.label || '未設定';
           changes.push(`・状態を「${oldLabel}」から「${newLabel}」に変更`);
         }
-        if (task.priority !== formData.priority) {
+        if (task.priority !== live.priority) {
           const oldLabel = PRIORITIES.find(p => p.id === task.priority)?.label || '未設定';
-          const newLabel = PRIORITIES.find(p => p.id === formData.priority)?.label || '未設定';
+          const newLabel = PRIORITIES.find(p => p.id === live.priority)?.label || '未設定';
           changes.push(`・優先度を「${oldLabel}」から「${newLabel}」に変更`);
         }
-        if (task.assigneeEmail !== formData.assigneeEmail) {
+        if (task.assigneeEmail !== live.assigneeEmail) {
           const oldName = task.assigneeName || '未設定';
-          const newName = formData.assigneeName || '未設定';
+          const newName = live.assigneeName || '未設定';
           changes.push(`・担当者を「${oldName}」から「${newName}」に変更`);
         }
-        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(formData.subAssignees || [])) {
+        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(live.subAssignees || [])) {
           changes.push(`・サブ担当を変更`);
         }
-        if (task.category !== formData.category) {
-          changes.push(`・カテゴリを「${task.category || '未設定'}」から「${formData.category || '未設定'}」に変更`);
+        if (task.category !== live.category) {
+          changes.push(`・カテゴリを「${task.category || '未設定'}」から「${live.category || '未設定'}」に変更`);
         }
-        if (task.dueDate !== formData.dueDate) {
-          changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${formData.dueDate || '未設定'}」に変更`);
+        if (task.dueDate !== live.dueDate) {
+          changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${live.dueDate || '未設定'}」に変更`);
         }
-        if (task.startDate !== formData.startDate) {
-          changes.push(`・開始日を「${task.startDate || '未設定'}」から「${formData.startDate || '未設定'}」に変更`);
+        if (task.startDate !== live.startDate) {
+          changes.push(`・開始日を「${task.startDate || '未設定'}」から「${live.startDate || '未設定'}」に変更`);
         }
         if (changes.length > 0) {
           const historyComment = {
             id: 'comment_hist_' + Date.now().toString(),
-            taskId: formData.id,
+            taskId: live.id,
             authorEmail: currentUser?.email || 'system',
             authorName: currentUser?.name || 'System',
             text: "📝 **【更新履歴】**\n" + changes.join("\n"),
@@ -821,20 +846,20 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           api.saveComment(historyComment).catch(console.error);
           // フロント state にも追記 → モーダル再オープン時に即反映される
           setTasks(prev => prev.map(t =>
-            t.id === formData.id
+            t.id === live.id
               ? { ...t, comments: [...(t.comments || []), historyComment] }
               : t
           ));
         }
-        if (task.description !== formData.description) {
-          const descText = formData.description || '';
+        if (task.description !== live.description) {
+          const descText = live.description || '';
           const mentionedMembers = members.filter(m => descText.includes(`@${m.name}`));
           for (const targetUser of mentionedMembers) {
             api.createNotification(
               targetUser.email,
               currentUser?.name || 'ゲスト',
-              formData.id,
-              formData.title,
+              live.id,
+              live.title,
               "課題の詳細でメンションされました",
               'mention_task'
             ).catch(() => {});
@@ -850,8 +875,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             onClose();
           }
         } else {
-          await flushAutoSave();
-          generateAndSaveHistoryComment();
+          // クローズ時はエディタ実体から最新本文を取り直したスナップショットを使う。
+          // flush と履歴コメントで同一スナップショットを共有し、整合を取る。
+          const live = getLiveFormData();
+          await flushAutoSave(live);
+          generateAndSaveHistoryComment(live);
           localStorage.removeItem(draftKey);
           onClose();
         }
@@ -887,15 +915,31 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         };
       }, [formData, isNew, isDirty]);
 
-      const flushAutoSave = async () => {
+      // task と live スナップショットを比較して、保存すべき変更があるかを判定する。
+      // stale になり得る useMemo の isDirty には依存せず、その場の最新値で再計算する。
+      const computeDirty = (live) => {
+        if (!task) return false;
+        const fields = ['title', 'description', 'status', 'priority', 'type', 'category', 'cardColor', 'parentId', 'startDate', 'dueDate', 'assigneeEmail'];
+        if (fields.some(f => (task[f] ?? null) !== (live[f] ?? null))) return true;
+        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(live.subAssignees || [])) return true;
+        const taskAttachmentIds = (task.attachments || []).map(a => a.id).join(',');
+        const liveAttachmentIds = (live.attachments || []).map(a => a.id).join(',');
+        if (taskAttachmentIds !== liveAttachmentIds) return true;
+        return false;
+      };
+
+      const flushAutoSave = async (snapshot) => {
         if (autoSaveTimerRef.current) {
           clearTimeout(autoSaveTimerRef.current);
           autoSaveTimerRef.current = null;
         }
-        if (!isNew && isDirty && formData.title?.trim()) {
+        if (isNew) return;
+        // stale closure の formData/isDirty ではなく、エディタ実体から取り直した最新値で保存する。
+        const live = snapshot || getLiveFormData();
+        if (live.title?.trim() && computeDirty(live)) {
           setSaveStatus('saving');
           try {
-            await onAutoSave({ ...formData, comments: task?.comments || [] });
+            await onAutoSave({ ...live, comments: task?.comments || [] });
             setSaveStatus('saved');
           } catch {
             setSaveStatus('error');
