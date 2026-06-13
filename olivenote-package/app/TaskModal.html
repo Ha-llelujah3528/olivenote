@@ -947,9 +947,31 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
+      // 詳細本文の「全消去」: 唯一、空での DB 保存を許可する明示動線。
+      // descriptionCleared フラグを付けてサーバの「空上書き拒否ガード」を解除する。
+      const handleClearDescription = async () => {
+        if (isDeletingTask) return;
+        if (!window.confirm('課題の詳細をすべて消去します。元に戻せません。よろしいですか？')) return;
+        // エディタ実体を空に（setMarkdown は emitUpdate=false なので onUpdate の幽霊ガードと干渉しない）
+        if (richEditorRef.current?.setMarkdown) richEditorRef.current.setMarkdown('');
+        setFormData(prev => ({ ...prev, description: '' }));
+        // 既存課題は DB も空にする。明示フラグで空保存を許可（新規課題は保存対象が無いので state だけ）。
+        if (!isNew && task) {
+          if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
+          try {
+            setSaveStatus('saving');
+            await onAutoSave({ ...formDataRef.current, description: '', descriptionCleared: true, comments: task?.comments || [] });
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 3000);
+          } catch (e) {
+            setSaveStatus('error');
+          }
+        }
+      };
+
       const handleChange = (e) => {
         const { name, value } = e.target;
-        
+
         if (name === 'type' && isNew) {
            const oldType = formData.type;
            const oldTemplate = taskTemplates[oldType] || '';
@@ -1499,14 +1521,25 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-sm font-semibold text-olive-900 flex items-center gap-1"><AlignLeft size={16} /> 詳細</label>
-                  <button
-                    type="button"
-                    onClick={insertCurrentTemplate}
-                    disabled={isDeletingTask}
-                    className="text-xs px-2.5 py-1 rounded border border-olive-300 bg-olive-50 text-olive-800 hover:bg-olive-100 flex items-center gap-1 font-bold disabled:opacity-50"
-                  >
-                    <FilePlus size={14}/> テンプレート挿入
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleClearDescription}
+                      disabled={isDeletingTask}
+                      title="詳細本文をすべて消去します（この操作のときだけ空が保存されます）"
+                      className="text-xs px-2.5 py-1 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 flex items-center gap-1 font-bold disabled:opacity-50"
+                    >
+                      <Trash2 size={14}/> 全消去
+                    </button>
+                    <button
+                      type="button"
+                      onClick={insertCurrentTemplate}
+                      disabled={isDeletingTask}
+                      className="text-xs px-2.5 py-1 rounded border border-olive-300 bg-olive-50 text-olive-800 hover:bg-olive-100 flex items-center gap-1 font-bold disabled:opacity-50"
+                    >
+                      <FilePlus size={14}/> テンプレート挿入
+                    </button>
+                  </div>
                 </div>
                 <RichMarkdownEditor
                   ref={richEditorRef}

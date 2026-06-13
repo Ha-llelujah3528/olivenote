@@ -2033,6 +2033,31 @@ try {
                 break;
             }
 
+            // ★ データ消失ガード（最重要）:
+            //   既存課題で「送られてきた description が実質空」なのに DB 側に本文がある場合は、
+            //   空での上書きを拒否して既存本文を維持する。
+            //   背景: iOS Safari で通知URL→課題を開いた直後にエディタが空描画され、その空を
+            //   フロントが autosave してしまうと本文が消し飛ぶ。サーバ側で最終防衛する。
+            //   ※ 空 = 空白 / NBSP / &nbsp; / BOM のみ。意図的な本文置換（非空）は通常どおり保存される。
+            //   ※ ただし「全消去」ボタン由来の明示フラグ descriptionCleared=true のときだけ、
+            //     空での保存を許可する（＝唯一の意図的な全消去動線）。
+            if (!$isNew && empty($task['descriptionCleared'])) {
+                $descIsBlank = function ($s) {
+                    $s = str_replace(["\xEF\xBB\xBF", "\xC2\xA0", "&nbsp;"], '', (string)$s);
+                    return trim($s) === '';
+                };
+                if ($descIsBlank($task['description'] ?? '')) {
+                    $curStmt = $pdo->prepare("SELECT description FROM tasks WHERE id = ?");
+                    $curStmt->execute([$task['id']]);
+                    $curDesc = (string)($curStmt->fetchColumn() ?: '');
+                    if (!$descIsBlank($curDesc)) {
+                        // 空上書きを拒否し既存本文を維持
+                        $task['description'] = $curDesc;
+                        error_log('[OliveNote] saveTask: blocked blank description overwrite for task ' . $task['id']);
+                    }
+                }
+            }
+
             $pdo->prepare("
                 INSERT INTO tasks (
                     id, title, description, status, priority, type, category, card_color, parent_id,

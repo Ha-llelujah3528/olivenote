@@ -1210,12 +1210,28 @@ if (!auth_is_logged_in()) {
           onUpdate: ({ editor, transaction }) => {
             const md = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             if (md !== lastEmittedRef.current) {
-              lastEmittedRef.current = md;
-              // autoClean = パース時に湧く幽霊 taskItem の自動除去。ユーザー編集ではないので
-              // onChange(=dirty 化) を発火させない（開いただけで「未保存」になるのを防ぐ）。
-              if (!transaction || !transaction.getMeta('autoClean')) {
+              // autoClean = パース時に湧く幽霊 taskItem の自動除去（onBlur の removeEmptyTaskItems 等）。ユーザー編集ではない。
+              const isAutoClean = !!(transaction && transaction.getMeta('autoClean'));
+              // ★ 根本ガード（iOS Safari deep-link データ消失/空表示の真因）:
+              //   onChange（親 state への伝播 = formData.description の更新）は「フォーカス中＝実ユーザー入力」
+              //   のときだけに限定する。非フォーカスの onUpdate は初期化/ハイドレーション/プログラム由来の
+              //   ノイズ（空ドキュメントの markdown '\n' 等）であり、これが setFormData(task) で入った本物の
+              //   本文を空/1文字で塗り潰す事故の元だった（診断で t:2304 → s:1 を確認）。
+              //   プログラム的な setContent はすべて emitUpdate=false で呼んでおり onUpdate を起こさないため、
+              //   フォーカス中の onUpdate だけが本物のユーザー編集に対応する。
+              if (editor.isFocused && !isAutoClean) {
+                lastEmittedRef.current = md;
                 const cb = onChangeRef.current;
                 if (typeof cb === 'function') cb(md);
+              } else {
+                // 非フォーカス / autoClean: 親へは伝播しない。
+                // 「本文あり→空」への非フォーカス遷移なら直前内容を復元して表示も守る（autoClean は正当な掃除なので除外）。
+                const becameBlank = md.trim() === '' && (lastEmittedRef.current || '').trim() !== '';
+                if (becameBlank && !isAutoClean) {
+                  try { editor.commands.setContent(lastEmittedRef.current, false); } catch (e) {}
+                } else {
+                  lastEmittedRef.current = md;
+                }
               }
             }
             // @メンションサジェスト: カーソル直前の @... パターンを検出
@@ -1294,9 +1310,19 @@ if (!auth_is_logged_in()) {
         useEffect(() => {
           if (!editor || isCollab) return;
           const incoming = value || '';
-          if (incoming === lastEmittedRef.current) return;
           // 編集中（フォーカス中）は setContent しない → undo 履歴と入力中状態を保護
           if (editor.isFocused) return;
+          // 通常は lastEmittedRef で「同期済み」を高速判定する。ただし ref だけに頼ると、
+          // iOS Safari の deep-link 初期化レースで「value に本文があるのにエディタ実体が空のまま」
+          // 同期がスキップされ、詳細が空表示になることがある（データ消失とは別の表示バグ）。
+          // → ref が同期済みと言っていても、エディタ実体の現在内容が value と食い違っていたら
+          //   実体を真実として強制的に setContent し直す。
+          if (incoming === lastEmittedRef.current) {
+            const current = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
+            // 末尾改行の差だけ（serializer 由来）なら同期済みとみなす。先頭側の差は実差として扱う。
+            // 空表示バグ（current='' vs 本文あり）は trimEnd 一致しないので確実に下の setContent が走る。
+            if (current === incoming || current.trimEnd() === incoming.trimEnd()) return;
+          }
           lastEmittedRef.current = incoming;
           editor.commands.setContent(incoming, false);
           // setContent 後に走る: 残存 #pending-xxx を救済除去 + パース時に湧く幽霊 taskItem の除去
