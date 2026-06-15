@@ -513,7 +513,7 @@ if (!auth_is_logged_in()) {
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
-    import { useEditor, EditorContent, Editor } from '@tiptap/react';
+    import { useEditor, EditorContent, Editor, Extension, InputRule } from '@tiptap/react';
     import StarterKit from '@tiptap/starter-kit';
     import Paragraph from '@tiptap/extension-paragraph';
     import TipTapLink from '@tiptap/extension-link';
@@ -848,6 +848,93 @@ if (!auth_is_logged_in()) {
     });
 
     // ============================================================
+    // MarkdownTable — テーブルを GFM Markdown へ serialize する拡張
+    //   バグ: 表（特に「他アプリからコピペした表」）を保存すると本文 Markdown が `[table]` に
+    //   化けてデータが失われる。原因は tiptap-markdown@0.8.10 の既定 serializer が
+    //   「ヘッダ行（tableHeader セル）を持つ表」しか出力できず、ヘッダ行の無い表
+    //   （Excel/Word/Web から貼った表は全セルが tableCell）を未知ノード扱いして
+    //   `[${node.type.name}]` = `[table]` に潰してしまうため（隔離ハーネスで実証）。
+    //   対策: table ノードに自前の markdown.serialize を持たせ、常に GFM 表記
+    //   （先頭行をヘッダとして `| ... |` ＋区切り `| --- |` ＋本文行）で書き出す。
+    //   markdown-it（tiptap-markdown 既定 preset）は GFM 表を標準でパースできるため
+    //   再オープン時に table ノードへ正しく復元される。セル内はインライン装飾を保持せず
+    //   テキスト化する（`|`/改行はエスケープ・空白化）。貼り付け表データの保全を最優先。
+    // ============================================================
+    const MarkdownTable = TipTapTable.extend({
+      addStorage() {
+        return {
+          markdown: {
+            serialize(state, node) {
+              const rows = [];
+              node.forEach((rowNode) => {
+                const cells = [];
+                rowNode.forEach((cellNode) => {
+                  const text = (cellNode.textContent || '')
+                    .replace(/\\/g, '\\\\')   // バックスラッシュを先にエスケープ
+                    .replace(/\|/g, '\\|')    // セル区切りと衝突する `|` を退避
+                    .replace(/\s*\n\s*/g, ' ') // セル内改行は GFM 表に置けないので空白化
+                    .trim();
+                  cells.push(text);
+                });
+                rows.push(cells);
+              });
+              if (rows.length === 0) { state.closeBlock(node); return; }
+              const colCount = Math.max(...rows.map((r) => r.length));
+              const pad = (r) => { const c = r.slice(); while (c.length < colCount) c.push(''); return c; };
+              const header = pad(rows[0]);
+              const lines = [];
+              lines.push('| ' + header.join(' | ') + ' |');
+              lines.push('| ' + header.map(() => '---').join(' | ') + ' |');
+              rows.slice(1).map(pad).forEach((r) => lines.push('| ' + r.join(' | ') + ' |'));
+              state.write(lines.join('\n'));
+              state.closeBlock(node);
+            },
+            parse: {},   // パースは tiptap-markdown(markdown-it) の GFM 表サポートに委ねる
+          },
+        };
+      },
+    });
+
+    // ============================================================
+    // CheckboxEverywhere — `[ ] ` 入力でどのリスト文脈でもチェックボックス化する拡張
+    //   バグ: 箇条書き/番号リストの中（特にインデントを一つ下げた入れ子）で `[ ] ` を
+    //   入力してもチェックボックスに変換されず `[ ]` のまま残ることがある。原因は
+    //   @tiptap/extension-task-item の wrappingInputRule が「既存のリスト項目内」では
+    //   findWrapping に失敗して発火しないため（隔離ハーネスで全文脈を実証）。
+    //   対策: 優先度を上げた自前 InputRule を足し、トップレベル段落／箇条書き／番号／
+    //   入れ子いずれでも `toggleTaskList()` でチェックボックス化する。既に taskItem 内なら
+    //   トグルせず checked 属性のみ更新（誤って解除しない）。`[x] ` は完了状態で作成。
+    // ============================================================
+    const CHECKBOX_INPUT_RE = /^\s*\[([ xX]?)\]\s$/;
+    const CheckboxEverywhere = Extension.create({
+      name: 'checkboxEverywhere',
+      priority: 1000,   // TaskItem 既定の wrappingInputRule より先に走らせる
+      addInputRules() {
+        return [
+          new InputRule({
+            find: CHECKBOX_INPUT_RE,
+            handler: ({ state, range, match, chain }) => {
+              const checked = /[xX]/.test(match[1] || '');
+              const $from = state.selection.$from;
+              let inTaskItem = false;
+              for (let d = $from.depth; d > 0; d--) {
+                if ($from.node(d).type.name === 'taskItem') { inTaskItem = true; break; }
+              }
+              const c = chain().deleteRange(range);
+              if (inTaskItem) {
+                c.updateAttributes('taskItem', { checked });
+              } else {
+                c.toggleTaskList();
+                if (checked) c.updateAttributes('taskItem', { checked });
+              }
+              c.run();
+            },
+          }),
+        ];
+      },
+    });
+
+    // ============================================================
     // 共有: エディタ拡張ビルダ（スキーマ部分のみ）
     //   RichMarkdownEditor 本体と、Wiki 同時編集の seed 用 headless エディタが
     //   「全く同じ ProseMirror スキーマ」を使うための単一ソース。editorProps / 画像アップロード等の
@@ -872,8 +959,11 @@ if (!auth_is_logged_in()) {
         }),
         TaskList,
         TaskItem.configure({ nested: true }),
+        // `[ ] ` 入力をどのリスト文脈でもチェックボックス化（TaskItem 既定ルールの取りこぼし対策）
+        CheckboxEverywhere,
         Placeholder.configure({ placeholder: placeholder || '課題の詳細を入力...（Markdown が使えます）' }),
-        TipTapTable.configure({ resizable: true, HTMLAttributes: { class: 'olive-tiptap-table' } }),
+        // 表は GFM Markdown へ serialize できる MarkdownTable を使う（既定だと `[table]` に化ける）
+        MarkdownTable.configure({ resizable: true, HTMLAttributes: { class: 'olive-tiptap-table' } }),
         TipTapTableRow,
         TipTapTableHeader,
         TipTapTableCell,
