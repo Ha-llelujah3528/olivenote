@@ -1995,12 +1995,42 @@ if (!auth_is_logged_in()) {
     );
 
     // api.php と通信する共通関数（レスポンスの json.data を返す）
+    // AI/重い処理はバックエンド cURL が最長 120〜180 秒かかる。AbortController が無いと
+    // 応答が返らないとき fetch が永久に待ち続け、UI が固まり呼び出し側のボタンが disabled の
+    // まま固着する。該当アクションにだけクライアント側タイムアウトを掛け、超過時は明示エラー
+    // で打ち切る（P1 で各呼び出し側に追加した try/catch がトースト表示＋状態復帰を担う）。
+    const AI_TIMEOUT_MS = 210000; // バックエンド最長(約180s) + 余白
+    // AI 系に加え、Drive の大規模スキャン/アップロードも応答が返らないと UI が固着し得る。
+    // 210s を超える応答は実質失敗のため、いずれも上限を掛けて明示エラーで打ち切る。
+    const TIMED_ACTIONS = new Set([
+      'gatherAiInformation', 'chatWithOliveAI', 'generateTasksFromContext',
+      'generateDocumentFromComment', 'generateAndAppendReleaseNote',
+      'generateAdvisorDoc', 'generateImage', 'analyzeWhiteboardImage',
+      'syncDocumentsFromDrive', 'uploadFile',
+    ]);
     const callApi = async (action, payload = {}) => {
-      const res  = await fetch('api.php', {
+      const opts = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, payload })
-      });
+      };
+      let controller = null, timer = null;
+      if (TIMED_ACTIONS.has(action) && typeof AbortController !== 'undefined') {
+        controller = new AbortController();
+        opts.signal = controller.signal;
+        timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+      }
+      let res;
+      try {
+        res = await fetch('api.php', opts);
+      } catch (e) {
+        if (controller && controller.signal.aborted) {
+          throw new Error('AI の応答がタイムアウトしました。時間をおいて再度お試しください。');
+        }
+        throw e;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
       // セッション切れ → ログイン画面へリダイレクト
       if (res.status === 401) {
         window.location.reload();

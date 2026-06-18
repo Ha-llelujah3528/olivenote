@@ -449,8 +449,15 @@ function ensureAiGeneratedDocsFolder(PDO $pdo, string $token): string {
         $folderId = (string)$created['id'];
     }
 
-    $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('aiGeneratedDocsFolderId', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)")
-        ->execute([$folderId]);
+    // キャッシュ保存に失敗しても致命ではない（次回呼び出しは上の Drive 名前検索で既存の
+    // 「AI生成」フォルダを再発見するため重複フォルダは生まれない）。ここで例外を投げると
+    // AI Doc 生成全体が落ちてしまうので、握ってフォルダ ID を返す。
+    try {
+        $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('aiGeneratedDocsFolderId', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)")
+            ->execute([$folderId]);
+    } catch (Throwable $e) {
+        error_log('[olivenote] aiGeneratedDocsFolderId cache save failed: ' . $e->getMessage());
+    }
 
     return $folderId;
 }
@@ -1484,6 +1491,70 @@ function lwOutboxClaim(PDO $pdo, string $email, string $taskId, string $kind, st
     } catch (Throwable $e) { /* PK 重複 or テーブル未適用 → スキップ */ }
 }
 
+// ---- 送信失敗リマインドの翌日リトライ ----
+//   リマインドのバケット（d5/d3/d1/d0）は「今日との日付差」で決まるため、送信に失敗した日の
+//   リマインドは翌日には別バケットへ移り（例: d5→d4=対象外）恒久消失する。送信失敗分を
+//   private ディレクトリのファイルに退避し、次回 cron 冒頭で再送する（新規テーブル不要・
+//   トークンキャッシュと同じファイル方式）。退避済みバケットは翌日以降に再生成されないため
+//   通常経路との二重送信は起きない。
+function lwRetryQueueFile(): string {
+    $base = dirname(__DIR__, 3);
+    $dir  = (is_dir($base) && is_writable($base)) ? $base : sys_get_temp_dir();
+    return rtrim($dir, '/\\') . '/.olivenote_lw_retry.json';
+}
+function lwRetryLoad(): array {
+    $f = lwRetryQueueFile();
+    if (!is_readable($f)) return [];
+    $j = json_decode((string)@file_get_contents($f), true);
+    return is_array($j) ? $j : [];
+}
+function lwRetrySave(array $items): void {
+    $f = lwRetryQueueFile();
+    if ($items === []) { @unlink($f); return; }
+    @file_put_contents($f, json_encode(array_values($items), JSON_UNESCAPED_UNICODE), LOCK_EX);
+    @chmod($f, 0600);
+}
+function lwRetryEnqueue(string $uid, string $email, string $message, array $claims, string $queuedOn): void {
+    if ($uid === '' || $message === '') return;
+    $items   = lwRetryLoad();
+    $items[] = ['uid' => $uid, 'email' => $email, 'message' => $message, 'claims' => $claims, 'queued_on' => $queuedOn, 'attempts' => 0];
+    lwRetrySave($items);
+}
+// 退避済みの失敗リマインドを再送。成功→ outbox claim、失敗→ attempts++ で残す。
+// 5日以上前 or 5回以上失敗したものは鮮度切れ＆無限肥大防止のため破棄する。再送件数を返す。
+function lwRetryFlush(PDO $pdo): int {
+    $items = lwRetryLoad();
+    if ($items === []) return 0;
+    $today  = new DateTime('today');
+    $kept   = [];
+    $resent = 0;
+    foreach ($items as $it) {
+        $uid      = (string)($it['uid'] ?? '');
+        $message  = (string)($it['message'] ?? '');
+        $claims   = is_array($it['claims'] ?? null) ? $it['claims'] : [];
+        $attempts = (int)($it['attempts'] ?? 0);
+        $queuedOn = (string)($it['queued_on'] ?? '');
+        $stale = false;
+        if ($queuedOn !== '') {
+            try { $stale = ((int)$today->diff(new DateTime($queuedOn))->format('%a')) >= 5; } catch (Throwable $e) {}
+        }
+        if ($uid === '' || $message === '' || $attempts >= 5 || $stale) continue; // 破棄
+        if (lwSendToUserId($uid, lwTextContent($message))) {
+            foreach ($claims as $c) {
+                if (is_array($c) && count($c) === 4) {
+                    lwOutboxClaim($pdo, (string)$c[0], (string)$c[1], (string)$c[2], (string)$c[3]);
+                }
+            }
+            $resent++;
+        } else {
+            $it['attempts'] = $attempts + 1;
+            $kept[] = $it;
+        }
+    }
+    lwRetrySave($kept);
+    return $resent;
+}
+
 // M/D・YYYY-MM-DD などをパースして Y-m-d を返す（不正なら null）。要 timezone 設定。
 function lwParseDate(string $s): ?string {
     $s = trim($s);
@@ -1540,6 +1611,9 @@ function lwRunScheduledNotifications(PDO $pdo): void {
     $today    = new DateTime('today');
     $todayStr = $today->format('Y-m-d');
     $sent     = 0;
+
+    // 前回 cron で送信失敗したリマインドを先に再送（バケットが変わる前の救済）
+    $resent = lwRetryFlush($pdo);
 
     // ---- 日付系（期限・開始日）: ユーザー単位ダイジェスト ----
     $perUser = [];
@@ -1618,6 +1692,10 @@ function lwRunScheduledNotifications(PDO $pdo): void {
         if (lwSendToUserId($uid, lwTextContent($msg))) {
             foreach ($claims as $c) lwOutboxClaim($pdo, $c[0], $c[1], $c[2], $c[3]);
             $sent++;
+        } else {
+            // 送信失敗 → claim せず退避。翌日 cron 冒頭の lwRetryFlush で再送する
+            //（これをしないと相対バケットがずれてこの日のリマインドは恒久消失する）。
+            lwRetryEnqueue($uid, $email, $msg, $claims, $todayStr);
         }
     }
 
@@ -1663,10 +1741,12 @@ function lwRunScheduledNotifications(PDO $pdo): void {
         if (lwSendToUserId($uid, lwTextContent($msg))) {
             lwOutboxClaim($pdo, $email, '', 'weekly', $todayStr);
             $sent++;
+        } else {
+            lwRetryEnqueue($uid, $email, $msg, [[$email, '', 'weekly', $todayStr]], $todayStr);
         }
     }
 
-    echo json_encode(['success' => true, 'data' => ['sent' => $sent, 'date' => $todayStr]]);
+    echo json_encode(['success' => true, 'data' => ['sent' => $sent, 'resent' => $resent, 'date' => $todayStr]]);
 }
 
 // ================================================================
@@ -2547,8 +2627,15 @@ try {
             $modified = !empty($file['modifiedTime']) ? date('Y-m-d H:i:s', strtotime($file['modifiedTime'])) : date('Y-m-d H:i:s');
             $mime     = 'application/vnd.google-apps.document';
 
-            $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
-                ->execute([$file['id'], $file['name'], $url, $parentId, $mime, $modified]);
+            // Drive 側は作成済み。DB 登録に失敗すると「Drive にあるが DB に無い」孤児 Doc が
+            // 残るため、INSERT 失敗時は作成した Doc を trash して整合を取り戻す（補償）。
+            try {
+                $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
+                    ->execute([$file['id'], $file['name'], $url, $parentId, $mime, $modified]);
+            } catch (Throwable $e) {
+                try { trashDriveFile($file['id'], $token); } catch (Throwable $ignore) {}
+                throw new Exception('ドキュメントを作成しましたが登録に失敗したため取り消しました。時間をおいて再度お試しください。');
+            }
 
             echo json_encode(['success' => true, 'data' => [
                 'id'          => $file['id'],
@@ -2588,8 +2675,14 @@ try {
             $modified = !empty($folder['modifiedTime']) ? date('Y-m-d H:i:s', strtotime($folder['modifiedTime'])) : date('Y-m-d H:i:s');
             $mime     = 'application/vnd.google-apps.folder';
 
-            $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
-                ->execute([$folder['id'], $folder['name'], $url, $parentId, $mime, $modified]);
+            // createDocument と同様、DB 登録失敗時は作成済みフォルダを trash して孤児化を防ぐ。
+            try {
+                $pdo->prepare("INSERT INTO files (id, name, url, parent_id, mime_type, last_updated) VALUES (?, ?, ?, ?, ?, ?)")
+                    ->execute([$folder['id'], $folder['name'], $url, $parentId, $mime, $modified]);
+            } catch (Throwable $e) {
+                try { trashDriveFile($folder['id'], $token); } catch (Throwable $ignore) {}
+                throw new Exception('フォルダを作成しましたが登録に失敗したため取り消しました。時間をおいて再度お試しください。');
+            }
 
             echo json_encode(['success' => true, 'data' => [
                 'id'          => $folder['id'],
@@ -2683,8 +2776,36 @@ try {
             curl_close($ch);
             if ($code !== 200) throw new Exception("Drive 移動エラー (HTTP {$code}): " . $res);
 
-            $pdo->prepare("UPDATE files SET parent_id = ? WHERE id = ?")
-                ->execute([$newParentId, $fileId]);
+            // Drive 側は付け替え済み。DB 更新に失敗すると Drive(新親) と DB(旧親) が乖離する
+            // ため、UPDATE 失敗時は Drive の親を元へ巻き戻してから例外化する（補償）。
+            try {
+                $pdo->prepare("UPDATE files SET parent_id = ? WHERE id = ?")
+                    ->execute([$newParentId, $fileId]);
+            } catch (Throwable $e) {
+                try {
+                    $revertParams = [
+                        'addParents'        => $oldParentId,
+                        'removeParents'     => $newParentId,
+                        'supportsAllDrives' => 'true',
+                        'fields'            => 'id',
+                    ];
+                    if ($oldParentId === '') unset($revertParams['addParents']);
+                    $rurl = 'https://www.googleapis.com/drive/v3/files/' . urlencode($fileId) . '?' . http_build_query($revertParams);
+                    $rch  = curl_init($rurl);
+                    curl_setopt_array($rch, [
+                        CURLOPT_CUSTOMREQUEST  => 'PATCH',
+                        CURLOPT_POSTFIELDS     => '{}',
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_HTTPHEADER     => [
+                            "Authorization: Bearer {$token}",
+                            'Content-Type: application/json; charset=UTF-8',
+                        ],
+                    ]);
+                    curl_exec($rch);
+                    curl_close($rch);
+                } catch (Throwable $ignore) {}
+                throw new Exception('移動先への付け替えは完了しましたが記録の更新に失敗したため元に戻しました。再度お試しください。');
+            }
 
             echo json_encode(['success' => true, 'data' => [
                 'fileId'      => $fileId,
@@ -3146,6 +3267,9 @@ try {
                 }
             }
 
+            // コピーは作成済み。以降（プレースホルダ置換 batchUpdate / DB 登録）で失敗すると、
+            // 置換途中のプレースホルダ残 Doc が孤児として残るため、失敗時はコピーを trash する。
+            try {
             // 3) Google Docs の場合のみ batchUpdate でプレースホルダ置換
             if ($mimeType === 'application/vnd.google-apps.document') {
                 $requests = [];
@@ -3188,6 +3312,11 @@ try {
             } else {
                 $pdo->prepare("INSERT INTO files (id, name, url, last_updated) VALUES (?, ?, ?, ?)")
                     ->execute([$newId, $newName, $newUrl, $modified]);
+            }
+            } catch (Throwable $e) {
+                try { trashDriveFile($newId, $token); } catch (Throwable $ignore) {}
+                error_log('[olivenote] generateDocumentFromComment failed after copy: ' . $e->getMessage());
+                throw new Exception('ドキュメントを生成しましたが処理に失敗したため取り消しました。時間をおいて再度お試しください。');
             }
 
             echo json_encode(['success' => true, 'data' => [
@@ -3345,9 +3474,29 @@ PROMPT;
                 throw new Exception('AIが指定のJSON形式で出力しませんでした。');
             }
             $releaseData = json_decode($jm[0], true);
-            if (!$releaseData || !isset($releaseData['title'], $releaseData['sections']) || !is_array($releaseData['sections'])) {
+            if (!is_array($releaseData)
+                || !isset($releaseData['title']) || !is_string($releaseData['title']) || trim($releaseData['title']) === ''
+                || !isset($releaseData['sections']) || !is_array($releaseData['sections']) || $releaseData['sections'] === []) {
                 throw new Exception('AI出力JSONの構造が不正です。');
             }
+            // 各セクションを正規化（heading=文字列 / items=非空の文字列配列）。崩れた要素は
+            // 破棄し、この後の UTF-16 オフセット計算＆ batchUpdate へ渡す前に Doc 破損の芽を摘む。
+            $normSections = [];
+            foreach ($releaseData['sections'] as $sec) {
+                if (!is_array($sec)) continue;
+                $heading = (isset($sec['heading']) && is_string($sec['heading'])) ? $sec['heading'] : '';
+                $items   = [];
+                foreach ((array)($sec['items'] ?? []) as $it) {
+                    if (is_string($it)) { if (trim($it) !== '') $items[] = $it; }
+                    elseif (is_scalar($it)) { if (trim((string)$it) !== '') $items[] = (string)$it; }
+                }
+                if ($heading === '' && $items === []) continue;
+                $normSections[] = ['heading' => $heading, 'items' => $items];
+            }
+            if ($normSections === []) {
+                throw new Exception('AI出力に有効なセクションがありませんでした。');
+            }
+            $releaseData['sections'] = $normSections;
 
             // 挿入位置: 「更新履歴」を含む段落の直後。なければbody先頭(index=1)
             $relStruct = docsApiGet($releaseDocId, $token);
