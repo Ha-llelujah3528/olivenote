@@ -198,7 +198,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           raw = raw.replace(/<input([^>]*?)disabled([^>]*?)>/gi, '<input$1$2>');
           // @メンションのハイライト
           raw = raw.replace(/@([^\s<　]+)/g, '<span class="mention">@$1</span>');
-          descHtml = raw;
+          descHtml = sanitizeHtml(raw);
         } else {
           // marked が読み込まれていない時のフォールバック
           descHtml = esc(formData.description).replace(/\n/g, '<br>');
@@ -611,6 +611,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
+      // commentText（コメント入力欄の状態）は、直後の undo 履歴 effect の依存配列で参照される。
+      // useState 宣言が参照より後ろにあると「Cannot access 'commentText' before initialization」
+      // (TDZ) でモーダルがクラッシュするため、参照箇所より前にここで宣言する。
+      const [commentText, setCommentText] = useState('');
+      // currentUserId も下の「既読化」effect の依存配列で参照されるため、ここで先に宣言する（TDZ 回避）。
+      const currentUserId = currentUser?.email || 'guest@example.com';
       const undoStack = useRef([]);
       const currentStateRef = useRef({ title: '', description: '', commentText: '' });
       
@@ -716,7 +722,6 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       }, [formData.comments, currentUserId, isNew, formData.id]);
 
-      const [commentText, setCommentText] = useState('');
       // ★ コメント欄は TaskModal 詳細欄 / Wiki と同じ TipTap (RichMarkdownEditor) を使う。
       //    旧 textarea ベースの mention 検出（@入力中サジェスト）は、TipTap がエディタ内 selection を
       //    持つため textarea API で位置検出できない。メンション挿入はボタンクリック側で
@@ -1121,8 +1126,6 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const handleRemoveAttachment = (attachmentId) => {
         setFormData(prev => ({ ...prev, attachments: prev.attachments.filter(a => a.id !== attachmentId) }));
       };
-
-      const currentUserId = currentUser?.email || 'guest@example.com';
 
       const handleLikeTaskLocal = () => {
         const newLikes = formData.likes.includes(currentUserId) ? formData.likes.filter(u => u !== currentUserId) : [...formData.likes, currentUserId];
@@ -2199,7 +2202,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         ) : (
                           <div
                             className="px-4 py-2.5 rounded-2xl max-w-[90%] text-sm leading-relaxed shadow-sm bg-white text-gray-800 border border-olive-200 rounded-tl-none markdown-body [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 break-words overflow-x-auto [&_pre]:overflow-x-auto [&_pre]:max-w-full"
-                            dangerouslySetInnerHTML={{ __html: marked.parse(msg.text) }}
+                            dangerouslySetInnerHTML={{ __html: sanitizeHtml(marked.parse(msg.text)) }}
                           />
                         )}
                       </div>

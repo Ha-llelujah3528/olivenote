@@ -757,7 +757,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       `<title>${esc(editTitle || 'wiki')}</title>` +
       `<style>${printCss}</style></head><body>` +
       `<h1 class="doc-title">${esc(editTitle || '(無題)')}</h1>` +
-      `<div class="doc-body">${bodyHtml}</div>` +
+      `<div class="doc-body">${sanitizeHtml(bodyHtml)}</div>` +
       `</body></html>`;
 
     const iframe = document.createElement('iframe');
