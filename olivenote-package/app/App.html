@@ -264,7 +264,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
                 ) : (
                   <div 
                     className="px-4 py-2.5 rounded-2xl max-w-[85%] text-sm leading-relaxed shadow-sm bg-white text-gray-800 border border-gray-100 rounded-tl-none markdown-body [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                    dangerouslySetInnerHTML={{ __html: marked.parse(msg.text) }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeHtml(marked.parse(msg.text)) }}
                   />
                 )}
               </div>

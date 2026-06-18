@@ -18,7 +18,7 @@ function MarkdownPreview({ text, onCheckboxChange }) {
 
     processedHtml = processedHtml.replace(/@([^\s<　]+)/g, '<span class="text-blue-700 font-bold bg-blue-100 px-1.5 py-0.5 rounded border border-blue-200 shadow-sm">@$1</span>');
 
-    return { __html: processedHtml };
+    return { __html: sanitizeHtml(processedHtml) };
   }, [text]);
 
   const handleClick = (e) => {

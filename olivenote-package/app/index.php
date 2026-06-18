@@ -64,6 +64,7 @@ if (!auth_is_logged_in()) {
         "react-dom": "https://esm.sh/react-dom@18.2.0",
         "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
         "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+        "react/jsx-dev-runtime": "https://esm.sh/react@18.2.0/jsx-dev-runtime",
         "lucide-react": "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0",
         "@tiptap/react": "https://esm.sh/@tiptap/react@2.10.3?deps=react@18.2.0,react-dom@18.2.0",
         "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@2.10.3",
@@ -88,7 +89,10 @@ if (!auth_is_logged_in()) {
       }
     }
   </script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- ★バージョン固定（7系=JSX classic ランタイム既定）。未固定にすると CDN が Babel 8 を配信し
+       preset-react の既定が automatic に変わって "react/jsx-runtime" 解決失敗で全画面が落ちる。
+       姉妹システム（島ワーク家計簿）で 2026-06-17 に実発生した障害と同型のため版固定する。 -->
+  <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
 
   <script>
     // GAS版との互換性のため残す（使用しない）
@@ -104,6 +108,10 @@ if (!auth_is_logged_in()) {
     };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- DOMPurify: marked.parse の出力（AI/ユーザー由来）を DOM 反映する前のサニタイザ。
+       marked v5+ は生 HTML をエスケープしないため、未通過だと <img onerror> 等で XSS が成立する。
+       版固定（CDN 自動更新で挙動が変わらないように）。共通ヘルパ sanitizeHtml() から使用。 -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <!-- SheetJS (Excel/CSV パース): AI課題生成モーダルで使用。globalThis.XLSX として展開される -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <!-- Wiki: 差分比較 (jsdiff) と PDF 出力 (html2pdf) — グローバルで Diff / html2pdf を提供 -->
@@ -2154,6 +2162,27 @@ if (!auth_is_logged_in()) {
         }
         return out;
       });
+    };
+
+    // marked.parse 等で生成した HTML を DOM へ反映する直前に必ず通すサニタイザ。
+    //   marked v5+ は Markdown 内の生 HTML をそのまま通すため、AI 応答やユーザー入力に
+    //   <script>/<img onerror=...> 等が混ざると XSS が成立する。ここで危険要素を除去する。
+    //   アプリが正当に使う要素（チェックボックス input / リンクの target / 画像の style 幅 /
+    //   @メンションの span class 等）は DOMPurify 既定許可リストで保持される。
+    //   DOMPurify 未ロード時（CDN 障害）は素の HTML を描画せずテキスト化して安全側に倒す。
+    //   App.html / TaskModal.html / WikiView.html / MarkdownPreview.html から共通参照。
+    const sanitizeHtml = (html) => {
+      if (html == null) return '';
+      const s = String(html);
+      if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+        // class/style/target を明示許可（DOMPurify の版差で既定許可が揺れても表示を保つ）。
+        //   - class : @メンションの span / リンクの Tailwind クラス / チェックボックスの cursor-pointer
+        //   - style : applyImageWidthTokens が付ける <img style="width:NN%">（CSS は DOMPurify が無害化）
+        //   - target: 別タブリンク target="_blank"
+        // いずれも非実行属性 or CSSサニタイズ対象のため XSS 耐性は変わらない。
+        return window.DOMPurify.sanitize(s, { ADD_ATTR: ['target', 'class', 'style'] });
+      }
+      return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     };
 
     // ============================================================
