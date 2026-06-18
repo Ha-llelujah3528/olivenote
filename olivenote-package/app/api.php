@@ -473,6 +473,24 @@ function collectDescendantIds(PDO $pdo, string $folderId): array {
     return $ids;
 }
 
+// Drive API 呼び出しの結果（curl_exec の戻り値 / curl_error / HTTPコード）を検査し、
+// 転送エラー or HTTP 4xx/5xx を例外化する。戻り値を捨てると「削除/公開の失敗」を
+// 無言で成功扱いしてしまう（呼び出し側の try/catch・失敗集計が機能しない）ため、必ず通す。
+function assertDriveApiOk($res, string $curlErr, int $httpCode, string $op): void {
+    if ($res === false) {
+        throw new Exception("Drive{$op}に失敗しました（通信エラー" . ($curlErr !== '' ? "：{$curlErr}" : '') . "）");
+    }
+    if ($httpCode >= 400) {
+        // Drive のエラーメッセージ本文があれば添える
+        $detail  = '';
+        $decoded = json_decode((string)$res, true);
+        if (is_array($decoded) && isset($decoded['error']['message'])) {
+            $detail = '：' . $decoded['error']['message'];
+        }
+        throw new Exception("Drive{$op}に失敗しました（HTTP {$httpCode}{$detail}）");
+    }
+}
+
 function trashDriveFile(string $fileId, string $token): void {
     $ch = curl_init("https://www.googleapis.com/drive/v3/files/{$fileId}?supportsAllDrives=true");
     curl_setopt_array($ch, [
@@ -484,8 +502,11 @@ function trashDriveFile(string $fileId, string $token): void {
             'Content-Type: application/json; charset=UTF-8',
         ],
     ]);
-    curl_exec($ch);
+    $res  = curl_exec($ch);
+    $err  = curl_error($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
+    assertDriveApiOk($res, $err, $code, 'ファイルの削除');
 }
 
 function docFromRow(array $row): array {
@@ -530,8 +551,11 @@ function makeFilePublic(string $fileId, string $token): void {
             'Content-Type: application/json',
         ],
     ]);
-    curl_exec($ch);
+    $res  = curl_exec($ch);
+    $err  = curl_error($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
+    assertDriveApiOk($res, $err, $code, '公開設定');
 }
 
 // ================================================================

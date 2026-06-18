@@ -559,8 +559,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
         setFormData(prev => ({ ...prev, comments: [...(prev.comments || []), newComment] }));
         setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: [...(t.comments || []), newComment] } : t));
-        api.saveComment(newComment).catch(console.error);
-        
+        api.saveComment(newComment).catch(err => {
+          console.error(err);
+          // DB 保存が失敗したら楽観追加をロールバック（リロードで消える事故を防ぐ）し、ユーザーに通知する。
+          setFormData(prev => ({ ...prev, comments: (prev.comments || []).filter(c => c.id !== newComment.id) }));
+          setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: (t.comments || []).filter(c => c.id !== newComment.id) } : t));
+          showCustomAlert('error', "コメントの保存に失敗しました。お手数ですが、もう一度お試しください。");
+        });
+
         showCustomAlert('success', "収集した情報をコメントとして登録しました！\n出力する前に、内容を直接編集して整えることができます。");
         setIsGatherInfoModalOpen(false);
       };
@@ -848,7 +854,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
             likes: []
           };
-          api.saveComment(historyComment).catch(console.error);
+          api.saveComment(historyComment).catch(err => {
+            console.error(err);
+            // クローズ時実行のためモーダルは閉じている → 親stateを直接ロールバックし、
+            // app レベルのトースト（showToast prop）で通知する（showCustomAlert は閉じたモーダル側で表示されない）。
+            setTasks(prev => prev.map(t =>
+              t.id === live.id
+                ? { ...t, comments: (t.comments || []).filter(c => c.id !== historyComment.id) }
+                : t
+            ));
+            showToast?.('更新履歴コメントの保存に失敗しました');
+          });
           // フロント state にも追記 → モーダル再オープン時に即反映される
           setTasks(prev => prev.map(t =>
             t.id === live.id
@@ -1345,12 +1361,20 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       };
 
       // ★ Sprint 2-E: コメント／履歴 振り分け
-      // 履歴は generateAndSaveHistoryComment で生成された `comment_hist_*` のみ。
-      // AI 系の `comment_ai_gather_*` / `*_sys` / 画像生成 / Doc生成 は ユーザー目線では
-      // 「コメント」タブに残す（手で書いた発言と並べて読みたいため）。
+      // 履歴タブ = フィールド変更などの「システム自動記録」。次のいずれか:
+      //   - generateAndSaveHistoryComment が付与する `comment_hist_*`（課題モーダル上の更新履歴）
+      //   - ガントチャートの日付変更記録（author='システム自動記録'。旧データは id が `*_history`）
+      // AI 系の `comment_ai_gather_*` / `*_sys`（⚙️システム通知）/ 画像生成 / Doc生成 は
+      // ユーザー目線の「コメント」タブに残す（手で書いた発言と並べて読みたいため）。
+      const isHistoryItem = (c) => {
+        const id = c.id || '';
+        return id.startsWith('comment_hist_')
+            || id.endsWith('_history')               // 旧ガント記録（DB既存分の後方互換）
+            || c.authorName === 'システム自動記録';   // ガント等の自動記録
+      };
       const allCommentItems = formData.comments || [];
-      const historyItems = allCommentItems.filter(c => (c.id || '').startsWith('comment_hist_'));
-      const commentItems = allCommentItems.filter(c => !(c.id || '').startsWith('comment_hist_'));
+      const historyItems = allCommentItems.filter(isHistoryItem);
+      const commentItems = allCommentItems.filter(c => !isHistoryItem(c));
 
       return (
         <div

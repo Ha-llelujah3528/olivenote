@@ -2008,7 +2008,17 @@ if (!auth_is_logged_in()) {
       }
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'API Error');
-      return json.data;
+      // AI系アクションは HTTP200 のまま {success:true, data:{success:false, error}} という
+      // 二重封筒で失敗を返す（自前 try/catch でコスト/状態を保護する設計）。呼び出し側が
+      // 内側の success を見落とすと AI エラーを無言で握り潰す（例: result.url=undefined の
+      // 壊れたリンク、version=undefined の偽の完了通知）。ここで一元的に検出して投げ、
+      // すべての呼び出し側 try/catch にエラーを確実に伝播させる。
+      const data = json.data;
+      if (data && typeof data === 'object' && !Array.isArray(data)
+          && Object.prototype.hasOwnProperty.call(data, 'success') && data.success === false) {
+        throw new Error(data.error || 'AI 処理に失敗しました');
+      }
+      return data;
     };
 
     // React コンポーネントが使用する API オブジェクト

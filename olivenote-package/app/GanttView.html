@@ -320,7 +320,7 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
 
       if (changes.length > 0) {
         const historyComment = {
-          id: Date.now().toString() + '_history',
+          id: 'comment_hist_' + Date.now().toString(),  // 履歴タブへ振り分けるための規約 prefix（コメント欄に出さない）
           taskId: updatedTask.id,
           authorEmail: 'system',
           authorName: 'システム自動記録',
@@ -330,7 +330,12 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
         };
         updatedTask.comments = [...(updatedTask.comments || []), historyComment];
         if (typeof api !== 'undefined' && api.saveComment) {
-          api.saveComment(historyComment).catch(console.error);
+          // 日付変更は onSaveTask で別途永続化されるが、変更履歴コメントは saveComment が唯一の保存経路。
+          // 失敗を握り潰すとリロードで履歴メモだけ消える → ユーザーに明示通知する（GanttView はトースト手段を持たない）。
+          api.saveComment(historyComment).catch(err => {
+            console.error(err);
+            alert('変更履歴コメントの保存に失敗しました。日付の変更は保存されましたが、履歴メモは記録されませんでした。');
+          });
         }
       }
       onSaveTask(updatedTask);
