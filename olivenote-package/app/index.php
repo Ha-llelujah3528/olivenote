@@ -35,28 +35,17 @@ if (!auth_is_logged_in()) {
   <title>Olive Note</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/png" href="favicon.png">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            olive: {
-              50:  '#F2F6EE',
-              100: '#E8F2DF',
-              200: '#B8D4A8',
-              300: '#9DB88A',
-              500: '#6A9D50',
-              600: '#4D7A2D',
-              700: '#3D6222',
-              800: '#2C4A1C',
-              900: '#2A3E1C',
-            }
-          }
-        }
-      }
-    }
-  </script>
+  <!-- ★Tailwind は静的ビルドCSS（自前配信）。旧 cdn.tailwindcss.com（Play CDN）は
+       ブラウザ JIT ランタイム＝①CDN廃止リスク②毎回ランタイム生成のコスト があったため撤廃。
+       olive パレット等は tailwind/tailwind.config.js に集約し、使用クラスだけを抽出した
+       tailwind.css をビルドして配信する。クラスを増減したら必ず再ビルドすること：
+         npx -y tailwindcss@3.4.17 -c tailwind/tailwind.config.js -i tailwind/input.css \
+             -o stg.shodoshima.work/tailwind.css --minify
+       ?v= は filemtime でキャッシュバスティング（再ビルドで自動更新）。 -->
+  <!-- href は相対（ブラウザのページ URL 基準）で stg=olivenote直下 / dist=パッケージroot のどちらでも
+       tailwind.css に解決される。?v= の filemtime は配置先がレイアウトで違う（stg: index.php と同階層 /
+       dist: app/index.php の親＝パッケージroot）ため両パスを順に試す。 -->
+  <link rel="stylesheet" href="tailwind.css?v=<?= @filemtime(__DIR__ . '/tailwind.css') ?: @filemtime(dirname(__DIR__) . '/tailwind.css') ?: '1' ?>">
   <script type="importmap">
     {
       "imports": {
@@ -107,7 +96,13 @@ if (!auth_is_logged_in()) {
       enabled: <?= (defined('PUSHER_KEY') && PUSHER_KEY !== '') ? 'true' : 'false' ?>
     };
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- ★バージョン固定（v15.0.12）＋SRI。未固定だと jsdelivr が "marked.min.js が残る最新版" へ
+       勝手にフォールバックし（16系以降はルートの marked.min.js が廃止）、メジャー版の破壊的変更や
+       生HTMLエスケープ挙動の変化を無警告で踏む。integrity で同一版・同一内容を二重保証する
+       （SRI 検証には crossorigin が必須）。版を上げる際は integrity も必ず再計算すること。 -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
+          integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
+          crossorigin="anonymous"></script>
   <!-- DOMPurify: marked.parse の出力（AI/ユーザー由来）を DOM 反映する前のサニタイザ。
        marked v5+ は生 HTML をエスケープしないため、未通過だと <img onerror> 等で XSS が成立する。
        版固定（CDN 自動更新で挙動が変わらないように）。共通ヘルパ sanitizeHtml() から使用。 -->

@@ -148,7 +148,10 @@ function auth_render_login_screen(string $appVersion): void {
   <title>Olive Note - ログイン</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/png" href="favicon.png">
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- ★Tailwind は静的ビルドCSS（パッケージ同梱・自前配信）。Play CDN は撤廃。
+       href はブラウザのページ URL（パッケージ root）基準で tailwind.css に解決される。
+       filemtime はこのファイル（app/lib/auth/）から 3 階層上＝パッケージ root を指す。 -->
+  <link rel="stylesheet" href="tailwind.css?v=<?= @filemtime(__DIR__ . '/../../../tailwind.css') ?: '1' ?>">
 </head>
 <body class="bg-gradient-to-br from-emerald-50 to-blue-50 min-h-screen flex items-center justify-center p-4">
   <div class="bg-white rounded-2xl shadow-xl p-10 w-full max-w-md text-center">
