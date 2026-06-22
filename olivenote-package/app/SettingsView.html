@@ -12,6 +12,7 @@ function LineWorksNotifyPanel() {
     due: { d5: true, d3: true, d1: true, d0: true, overdue: true },
     start: { d3: true, d1: true, d0: true },
     weeklySummary: true, summaryWeekday: 'mon',
+    weeklyDue: true, weeklyDueWeekday: 'mon', monthlyDue: true,
   };
   const WEEKDAYS = [['mon','月'],['tue','火'],['wed','水'],['thu','木'],['fri','金'],['sat','土'],['sun','日']];
 
@@ -110,6 +111,18 @@ function LineWorksNotifyPanel() {
               {WEEKDAYS.map(([k, ja]) => <option key={k} value={k}>{ja}曜日</option>)}
             </select>
           </div>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-xs font-bold text-gray-500 mb-1">期限の課題一覧リマインド</div>
+          <Toggle checked={prefs.weeklyDue} onChange={v => setPrefs(p => ({ ...p, weeklyDue: v }))} label="今週が期限の課題をまとめて受け取る" />
+          <div className="flex items-center gap-2 mt-1 mb-2 text-sm">
+            <span className="text-gray-600">配信曜日:</span>
+            <select value={prefs.weeklyDueWeekday} onChange={e => setPrefs(p => ({ ...p, weeklyDueWeekday: e.target.value }))} className="border border-gray-300 p-1.5 rounded text-sm bg-white focus:ring-2 focus:ring-olive-500">
+              {WEEKDAYS.map(([k, ja]) => <option key={k} value={k}>{ja}曜日</option>)}
+            </select>
+          </div>
+          <Toggle checked={prefs.monthlyDue} onChange={v => setPrefs(p => ({ ...p, monthlyDue: v }))} label="今月が期限の課題を毎月1日にまとめて受け取る" />
         </div>
 
         <div className="flex items-center gap-3 pt-2">

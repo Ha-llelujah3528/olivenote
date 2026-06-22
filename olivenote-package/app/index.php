@@ -1287,6 +1287,20 @@ if (!auth_is_logged_in()) {
               images.forEach(f => uploadAndInsertImageRef.current && uploadAndInsertImageRef.current(f));
               return true;
             },
+            // Ctrl/⌘ + クリックでリンクを別タブで開く（要件項目1）。
+            //   openOnClick:false にしているため通常クリックはカーソル移動のまま。修飾キー併用時のみ遷移。
+            //   editable / 閲覧専用どちらのエディタ（詳細・コメント・Wiki）でも同じ挙動にする。
+            handleClick: (view, pos, event) => {
+              if (!(event.ctrlKey || event.metaKey)) return false;
+              const a = event.target && event.target.closest && event.target.closest('a[href]');
+              if (!a) return false;
+              const href = a.getAttribute('href') || '';
+              // #pending-（アップロード未完了の暫定リンク）やページ内アンカーは開かない
+              if (!href || href.charAt(0) === '#') return false;
+              event.preventDefault();
+              window.open(href, '_blank', 'noopener,noreferrer');
+              return true;
+            },
             // 画像クリック: 画像ノードを選択する（→ ツールバーに幅プリセット 小/中/大/原寸 が出る）。
             //   以前はここで Drive 原本を window.open して return true しており、
             //   ProseMirror 既定のノード選択を奪っていた。その結果クリックしても

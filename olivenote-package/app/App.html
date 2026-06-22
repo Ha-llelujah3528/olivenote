@@ -103,6 +103,10 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
       parts.push(`期限: ${filters.dueDateFrom || '指定なし'} 〜 ${filters.dueDateTo || '指定なし'}`);
     }
     if (filters.hasImplementationDate) parts.push('実施日: あり');
+    if (filters.hierarchyLevels && filters.hierarchyLevels.length > 0 && filters.hierarchyLevels.length < 3) {
+      const ja = { root: '親', child: '子', grand: '孫' };
+      parts.push(`階層: ${filters.hierarchyLevels.map(k => ja[k] || k).join('・')}`);
+    }
     return parts.length > 0 ? parts.join(' / ') : '（フィルター指定なし・全件表示）';
   };
 
@@ -528,13 +532,19 @@ function App() {
   // ★ 要件4: デフォルトはすべてのステータスを表示（クイックボタン「完了以外」で絞り込み可）
   const defaultStatuses = STATUSES.map(s => s.id);
   const statusesWithoutDone = STATUSES.filter(s => s.id !== 'done').map(s => s.id);
+  // 階層レベル定義（要件項目3）— 親=root / 子=child / 孫以下=grand
+  const HIERARCHY_LEVELS = [['root', '親'], ['child', '子'], ['grand', '孫']];
+  const allHierarchyLevels = HIERARCHY_LEVELS.map(([k]) => k);
 
   // ★ 変更：filters に hasImplementationDate（実施日あり）を追加
+  // hierarchyLevels: 親(root)/子(child)/孫(grand) の階層レベルで絞り込む（ガント以外で有効・要件項目3）
   const [filters, setFilters] = useState({
     assigneeEmail: [], category: '', type: '', priority: '',
     dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
-    hasImplementationDate: false
+    hasImplementationDate: false,
+    hierarchyLevels: ['root', 'child', 'grand']
   });
+  const [isHierarchyMenuOpen, setIsHierarchyMenuOpen] = useState(false);
 
   // ★ ユーザー別表示設定（要件2/3/4/6）— サーバーDBに保存
   const [userPrefs, setUserPrefs] = useState({});
@@ -737,6 +747,27 @@ function App() {
       .catch(() => showToast('設定の保存に失敗しました', 'error'));
   }, [members, categories, taskTypes, taskTemplates, docTags, docFileTags, docTemplates, releaseDocUrl, isInitializing]);
 
+  // 各タスクの階層の深さ（0=親 / 1=子 / 2以上=孫）。parentId を辿って算出（循環は guard で打ち切り）。
+  const taskLevelMap = useMemo(() => {
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    const m = new Map();
+    tasks.forEach(t => {
+      let depth = 0, cur = t, guard = 0;
+      const seen = new Set();
+      while (cur && cur.parentId && byId.has(cur.parentId) && !seen.has(cur.id) && guard < 20) {
+        seen.add(cur.id);
+        cur = byId.get(cur.parentId);
+        depth++; guard++;
+      }
+      m.set(t.id, depth);
+    });
+    return m;
+  }, [tasks]);
+  const levelBucket = (id) => {
+    const d = taskLevelMap.get(id) || 0;
+    return d === 0 ? 'root' : d === 1 ? 'child' : 'grand';
+  };
+
   const filteredTasks = useMemo(() => {
     let result = tasks;
     if (searchQuery) result = result.filter(t => t.title.includes(searchQuery) || t.assigneeName?.includes(searchQuery) || (t.id && t.id.includes(searchQuery)));
@@ -760,8 +791,16 @@ function App() {
       result = result.filter(t => !!t.implementationDate);
     }
 
+    // ★ 要件項目3：階層レベル（親/子/孫）フィルター。ガントビューには適用しない。
+    if (activeTab !== 'gantt') {
+      const levels = filters.hierarchyLevels || allHierarchyLevels;
+      if (levels.length < allHierarchyLevels.length) {
+        result = result.filter(t => levels.includes(levelBucket(t.id)));
+      }
+    }
+
     return result;
-  }, [tasks, searchQuery, filters]);
+  }, [tasks, searchQuery, filters, activeTab, taskLevelMap]);
 
   const handleSaveTask = async (taskData, closeModal = true) => {
     const isNew = !taskData.id || taskData.id.startsWith('TASK-TEMP-');
@@ -915,7 +954,8 @@ function App() {
   const clearFilters = () => setFilters({
     assigneeEmail: [], category: '', type: '', priority: '',
     dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
-    hasImplementationDate: false
+    hasImplementationDate: false,
+    hierarchyLevels: allHierarchyLevels
   });
 
   // ============================================================
@@ -933,6 +973,7 @@ function App() {
       dueDateTo:     f.dueDateTo     || '',
       statuses:      Array.isArray(f.statuses) ? f.statuses : defaultStatuses,
       hasImplementationDate: !!f.hasImplementationDate,
+      hierarchyLevels: Array.isArray(f.hierarchyLevels) ? f.hierarchyLevels : allHierarchyLevels,
     });
     if (typeof f.searchQuery === 'string') setSearchQuery(f.searchQuery);
     setIsPresetMenuOpen(false);
@@ -1256,6 +1297,10 @@ function App() {
       if (current.length !== defaultStatuses.length) return true;
       return !defaultStatuses.every(s => current.includes(s));
     }
+    if (k === 'hierarchyLevels') {
+      const current = filters.hierarchyLevels || allHierarchyLevels;
+      return current.length !== allHierarchyLevels.length;
+    }
     if (k === 'assigneeEmail') {
       return filters.assigneeEmail && filters.assigneeEmail.length > 0;
     }
@@ -1335,7 +1380,7 @@ function App() {
                 <Bell size={20} />
                 {validNotifications.filter(n => !n.isRead).length > 0 && (
                   <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-olive-800 shadow-sm">
-                    {notifications.filter(n => !n.isRead).length}
+                    {validNotifications.filter(n => !n.isRead).length}
                   </span>
                 )}
               </button>
@@ -1435,7 +1480,7 @@ function App() {
             <Bell size={20} />
             {validNotifications.filter(n => !n.isRead).length > 0 && (
               <span className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full border-2 border-white shadow-sm">
-                {notifications.filter(n => !n.isRead).length}
+                {validNotifications.filter(n => !n.isRead).length}
               </span>
             )}
           </button>
@@ -1608,6 +1653,61 @@ function App() {
                   </>
                 )}
               </div>
+
+              {/* ★ 要件項目3: 階層（親/子/孫）フィルター — ガント以外で表示 */}
+              {activeTab !== 'gantt' && (
+                <div className="w-[calc(50%-0.375rem)] md:w-40 relative">
+                  <label className="block text-xs font-bold text-gray-500 mb-1">階層</label>
+                  <button
+                    onClick={() => setIsHierarchyMenuOpen(!isHierarchyMenuOpen)}
+                    className="border border-gray-300 rounded p-1.5 text-sm w-full bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-olive-500 shadow-sm"
+                    title="親・子・孫の階層で絞り込み"
+                  >
+                    <span className="truncate flex items-center gap-1">
+                      <CornerDownRight size={13} className="text-olive-600 shrink-0" />
+                      {(filters.hierarchyLevels?.length || 0) === HIERARCHY_LEVELS.length ? 'すべて' :
+                       (filters.hierarchyLevels?.length || 0) === 0 ? '選択なし' :
+                       HIERARCHY_LEVELS.filter(([k]) => filters.hierarchyLevels?.includes(k)).map(([, ja]) => ja).join('・')}
+                    </span>
+                    <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                  </button>
+                  {isHierarchyMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsHierarchyMenuOpen(false)}></div>
+                      <div className="absolute left-0 top-full mt-1 w-full md:w-[180px] bg-white border border-gray-200 rounded-md shadow-xl z-50 py-1">
+                        <div className="flex gap-1 px-2 pt-1 pb-2 border-b border-gray-100">
+                          <button
+                            type="button"
+                            onClick={() => setFilters({ ...filters, hierarchyLevels: allHierarchyLevels })}
+                            className="flex-1 text-[11px] px-2 py-1 rounded bg-gray-100 hover:bg-olive-100 text-gray-700 hover:text-olive-700 font-bold transition-colors"
+                          >全選択</button>
+                          <button
+                            type="button"
+                            onClick={() => setFilters({ ...filters, hierarchyLevels: [] })}
+                            className="flex-1 text-[11px] px-2 py-1 rounded bg-gray-100 hover:bg-olive-100 text-gray-700 hover:text-olive-700 font-bold transition-colors"
+                          >クリア</button>
+                        </div>
+                        {HIERARCHY_LEVELS.map(([k, ja]) => (
+                          <label key={k} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={filters.hierarchyLevels?.includes(k)}
+                              onChange={(e) => {
+                                const next = e.target.checked
+                                  ? [...(filters.hierarchyLevels || []), k]
+                                  : (filters.hierarchyLevels || []).filter(x => x !== k);
+                                setFilters({ ...filters, hierarchyLevels: next });
+                              }}
+                              className="w-4 h-4 text-olive-600 rounded border-gray-300 focus:ring-olive-500 cursor-pointer"
+                            />
+                            <span className="font-medium">{ja}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* 担当者 (マルチセレクト対応) */}
               <div className="w-[calc(50%-0.375rem)] md:w-56 relative z-10">

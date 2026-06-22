@@ -1404,6 +1404,10 @@ function lwDefaultPrefs(): array {
         'start'          => ['d3' => true, 'd1' => true, 'd0' => true],
         'weeklySummary'  => true,
         'summaryWeekday' => 'mon',
+        // 今週期限の課題一覧（選択曜日に配信）／今月期限の課題一覧（毎月1日に配信）
+        'weeklyDue'        => true,
+        'weeklyDueWeekday' => 'mon',
+        'monthlyDue'       => true,
     ];
 }
 function lwMergePrefs(array $def, array $p): array {
@@ -1594,6 +1598,35 @@ function lwCreateTask(PDO $pdo, array $draft): string {
     return $id;
 }
 
+// 期限が [from, to]（Y-m-d 文字列・両端含む）に入る未完了課題を、受信者(email)ごとにまとめて返す。
+//   今週期限・今月期限の一覧リマインド用。assignee + sub_assignees の両方を受信者とする。
+//   due_date が DATE / DATETIME どちらでも DATE() で日付比較する。
+function lwGroupDueTasksByRecipient(PDO $pdo, string $fromYmd, string $toYmd): array {
+    $byUser = [];
+    $st = $pdo->prepare(
+        "SELECT id, title, due_date, assignee_email, sub_assignees
+           FROM tasks
+          WHERE deleted_at IS NULL AND status <> 'done'
+            AND due_date IS NOT NULL AND DATE(due_date) >= ? AND DATE(due_date) <= ?
+          ORDER BY due_date ASC, id ASC"
+    );
+    $st->execute([$fromYmd, $toYmd]);
+    while ($t = $st->fetch()) {
+        $recipients = [];
+        if (!empty($t['assignee_email'])) $recipients[] = $t['assignee_email'];
+        $subs = json_decode($t['sub_assignees'] ?? '[]', true);
+        if (is_array($subs)) foreach ($subs as $se) if ($se) $recipients[] = $se;
+        foreach (array_values(array_unique($recipients)) as $em) {
+            $byUser[$em][] = $t;
+        }
+    }
+    return $byUser;
+}
+// Y-m-d → n/j（不正なら原文）
+function lwFmtMd(string $ymd): string {
+    try { return (new DateTime($ymd))->format('n/j'); } catch (Throwable $e) { return $ymd; }
+}
+
 // ================================================================
 // LINE WORKS: 定期通知（cron）— 期限/開始日リマインド ＋ 週次サマリ
 //   入口: api.php?lw=cron&token=XXXX（セッション認証バイパス・トークン保護）
@@ -1743,6 +1776,64 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             $sent++;
         } else {
             lwRetryEnqueue($uid, $email, $msg, [[$email, '', 'weekly', $todayStr]], $todayStr);
+        }
+    }
+
+    // ---- 今週期限の課題一覧（ユーザーごとに選択した曜日に配信） ----
+    //   今週 = 今日を含む月曜〜日曜。期限がこの範囲に入る未完了課題を一覧で送る。
+    //   週初は date('N')（1=月..7=日・ロケール非依存）で明示計算する（$todayWd と同基準）。
+    $dow       = (int)$today->format('N');
+    $weekStart = (clone $today)->modify('-' . ($dow - 1) . ' day');
+    $weekEnd   = (clone $weekStart)->modify('+6 day');
+    $weekDueByUser = lwGroupDueTasksByRecipient($pdo, $weekStart->format('Y-m-d'), $weekEnd->format('Y-m-d'));
+    $weekPeriod    = $weekStart->format('n/j') . '〜' . $weekEnd->format('n/j');
+    foreach ($allMembers as $mb) {
+        $email = $mb['email'];
+        $prefs = lwGetPrefs($pdo, $email);
+        if (empty($prefs['enabled']) || empty($prefs['weeklyDue'])) continue;
+        if (($prefs['weeklyDueWeekday'] ?? 'mon') !== $todayWd) continue;
+        if (lwOutboxExists($pdo, $email, '', 'weekly_due', $todayStr)) continue;
+        $list = $weekDueByUser[$email] ?? [];
+        if (!$list) continue;
+        $uid = lwResolveUserId($pdo, $email);
+        if ($uid === null) continue;
+
+        $tl = [];
+        foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . "）\n  " . lwTaskUrl($t['id']);
+        $msg = "🫒 今週が期限の課題（{$weekPeriod}）\n\n" . implode("\n", $tl);
+        if (lwSendToUserId($uid, lwTextContent($msg))) {
+            lwOutboxClaim($pdo, $email, '', 'weekly_due', $todayStr);
+            $sent++;
+        } else {
+            lwRetryEnqueue($uid, $email, $msg, [[$email, '', 'weekly_due', $todayStr]], $todayStr);
+        }
+    }
+
+    // ---- 今月期限の課題一覧（毎月1日に配信） ----
+    if ((int)$today->format('j') === 1) {
+        $monthStart = (clone $today)->modify('first day of this month');
+        $monthEnd   = (clone $today)->modify('last day of this month');
+        $monthDueByUser = lwGroupDueTasksByRecipient($pdo, $monthStart->format('Y-m-d'), $monthEnd->format('Y-m-d'));
+        $monthLabel     = $today->format('n') . '月';
+        foreach ($allMembers as $mb) {
+            $email = $mb['email'];
+            $prefs = lwGetPrefs($pdo, $email);
+            if (empty($prefs['enabled']) || empty($prefs['monthlyDue'])) continue;
+            if (lwOutboxExists($pdo, $email, '', 'monthly_due', $todayStr)) continue;
+            $list = $monthDueByUser[$email] ?? [];
+            if (!$list) continue;
+            $uid = lwResolveUserId($pdo, $email);
+            if ($uid === null) continue;
+
+            $tl = [];
+            foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . "）\n  " . lwTaskUrl($t['id']);
+            $msg = "🫒 {$monthLabel}が期限の課題（月初リマインド）\n\n" . implode("\n", $tl);
+            if (lwSendToUserId($uid, lwTextContent($msg))) {
+                lwOutboxClaim($pdo, $email, '', 'monthly_due', $todayStr);
+                $sent++;
+            } else {
+                lwRetryEnqueue($uid, $email, $msg, [[$email, '', 'monthly_due', $todayStr]], $todayStr);
+            }
         }
     }
 
