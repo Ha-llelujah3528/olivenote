@@ -3505,6 +3505,12 @@ PROMPT;
                 throw new Exception(driveDisabledNotice('リリースノート生成のご依頼（メモ）は受け取りました。', true));
             }
 
+            // この処理は途中で Gemini 2.5 Pro を2回（リリースノート生成＋仕様書書換）呼ぶため、
+            // その数十秒〜数分のあいだ DB 接続がアイドルになる。共有 MySQL の wait_timeout を
+            // 超えるとアイドル接続が切られ、AI 後の SELECT/UPDATE で「2006 MySQL server has gone away」
+            // になる。この接続だけ idle 上限を引き上げて、AI 処理中の切断を防ぐ。
+            try { $pdo->exec("SET SESSION wait_timeout=900, interactive_timeout=900"); } catch (Throwable $e) { /* 変数設定不可な環境では無視 */ }
+
             // Drive(read) と Docs(read+write) の両スコープ（リリースノートDoc用）
             $token = getGoogleAccessToken('https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents');
 
