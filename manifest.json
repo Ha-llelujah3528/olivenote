@@ -1,9 +1,9 @@
 {
-  "latest": "1.2.23",
-  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.23/olivenote-1.2.23.zip",
-  "sha256": "417a84db51ceb64bddcc1411f99b75d5b5f16ccde6bc16e3285622ee2704ea8f",
-  "size_bytes": 2971352,
+  "latest": "1.2.24",
+  "download_url": "https://github.com/Ha-llelujah3528/olivenote/releases/download/v1.2.24/olivenote-1.2.24.zip",
+  "sha256": "7ba3770ab494a62d6be7d752195c2170ae47b19aa06c4ea870614cd155ef05e1",
+  "size_bytes": 2974499,
   "min_php_version": "8.0",
-  "changelog": "\n### 修正\n- **リリースノート＆AI仕様書 自動更新でエラーになる不具合を修正** — 管理画面の「リリースノート ＆ AI仕様書 自動更新ツール」を実行すると、処理の途中で `MySQL server has gone away` エラーが出て仕様書（AIナレッジ）が更新されないことがあった。この処理は途中でAI（Gemini）を2回呼び出すため、その待ち時間の間にデータベース接続が無通信で切断されることが原因。処理中は接続が切れないよう待機上限を引き上げて解消した。\n\n",
-  "published_at": "2026-06-22T03:21:21Z"
+  "changelog": "\n### 追加\n- **コメントの返信（引用）機能** — 課題のコメントで、各コメントの「返信」ボタンから別のコメントを引用して返信できるようにした（Teams のチャットのような形式）。返信コメントには引用元が2〜3行で埋め込まれて表示され、その引用部分をクリックすると元のコメントまでスクロールして一時的にハイライトされる。「返信」ボタンを押すとコメント入力欄まで自動でスクロールする。引用元が削除されている場合は「削除されたコメントへの返信」と表示する。\n\n",
+  "published_at": "2026-06-24T07:15:49Z"
 }
