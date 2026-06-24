@@ -1004,6 +1004,8 @@ function commentFromRow(array $row): array {
         'createdAt'   => date('n月j日 H:i', strtotime($row['created_at'])),
         'likes'       => json_decode($row['likes'] ?? '[]', true) ?: [],
         'readBy'      => json_decode($row['read_by'] ?? '[]', true) ?: [],
+        // 返信（引用）先のコメントID。列が無い旧環境では null。
+        'parentId'    => $row['parent_comment_id'] ?? null,
     ];
 }
 
@@ -1080,6 +1082,20 @@ function files_has_ai_flag(PDO $pdo): bool {
     if ($cached !== null) return $cached;
     try {
         $stmt = $pdo->query("SHOW COLUMNS FROM files LIKE 'is_ai_generated'");
+        $cached = (bool)$stmt->fetch();
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+// migration 009 未適用環境（comments.parent_comment_id 列が無い）でも壊れないようにするための列存在ガード。
+//   列が無い環境では返信（引用）情報を保存しないだけで、既存のコメント機能は通常どおり動く。
+function comments_has_parent_id(PDO $pdo): bool {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM comments LIKE 'parent_comment_id'");
         $cached = (bool)$stmt->fetch();
     } catch (Throwable $e) {
         $cached = false;
@@ -2393,22 +2409,46 @@ try {
                 echo json_encode(['success' => false, 'error' => 'comment id is required']);
                 break;
             }
-            $pdo->prepare("
-                INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, created_at)
-                VALUES (:id, :task_id, :author_email, :author_name, :text, :likes, :read_by, NOW())
-                ON DUPLICATE KEY UPDATE
-                    text    = VALUES(text),
-                    likes   = VALUES(likes),
-                    read_by = VALUES(read_by)
-            ")->execute([
-                ':id'           => $c['id'],
-                ':task_id'      => $c['taskId'] ?? '',
-                ':author_email' => $c['authorEmail'] ?? '',
-                ':author_name'  => $c['authorName'] ?? '',
-                ':text'         => $c['text'] ?? '',
-                ':likes'        => json_encode($c['likes'] ?? []),
-                ':read_by'      => json_encode($c['readBy'] ?? []),
-            ]);
+            // parent_comment_id（返信先）は新規投稿時のみ保存。編集・いいね時は親を変えないため UPDATE 句には含めない。
+            //   列が無い旧環境（migration 009 未適用）では列を一切触らない。
+            $hasParentCol = comments_has_parent_id($pdo);
+            $parentId     = !empty($c['parentId']) ? $c['parentId'] : null;
+            if ($hasParentCol) {
+                $pdo->prepare("
+                    INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, parent_comment_id, created_at)
+                    VALUES (:id, :task_id, :author_email, :author_name, :text, :likes, :read_by, :parent_comment_id, NOW())
+                    ON DUPLICATE KEY UPDATE
+                        text    = VALUES(text),
+                        likes   = VALUES(likes),
+                        read_by = VALUES(read_by)
+                ")->execute([
+                    ':id'                => $c['id'],
+                    ':task_id'           => $c['taskId'] ?? '',
+                    ':author_email'      => $c['authorEmail'] ?? '',
+                    ':author_name'       => $c['authorName'] ?? '',
+                    ':text'              => $c['text'] ?? '',
+                    ':likes'             => json_encode($c['likes'] ?? []),
+                    ':read_by'           => json_encode($c['readBy'] ?? []),
+                    ':parent_comment_id' => $parentId,
+                ]);
+            } else {
+                $pdo->prepare("
+                    INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, created_at)
+                    VALUES (:id, :task_id, :author_email, :author_name, :text, :likes, :read_by, NOW())
+                    ON DUPLICATE KEY UPDATE
+                        text    = VALUES(text),
+                        likes   = VALUES(likes),
+                        read_by = VALUES(read_by)
+                ")->execute([
+                    ':id'           => $c['id'],
+                    ':task_id'      => $c['taskId'] ?? '',
+                    ':author_email' => $c['authorEmail'] ?? '',
+                    ':author_name'  => $c['authorName'] ?? '',
+                    ':text'         => $c['text'] ?? '',
+                    ':likes'        => json_encode($c['likes'] ?? []),
+                    ':read_by'      => json_encode($c['readBy'] ?? []),
+                ]);
+            }
 
             // 週次サマリ用のアクティビティ記録（投稿者＝コメント author）。
             lwLogActivity($pdo, $c['authorEmail'] ?? '', $c['taskId'] ?? '', 'comment');

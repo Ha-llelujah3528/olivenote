@@ -738,6 +738,13 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [editingCommentText, setEditingCommentText] = useState('');
       const [isUploadingToComment, setIsUploadingToComment] = useState(false);
       const commentFileInputRef = useRef(null);
+      // コメントの返信（引用）機能。replyingTo に「返信先コメント」を持つと入力欄上部に引用チップが出る。
+      const [replyingTo, setReplyingTo] = useState(null);
+      // 引用クリックでジャンプした先のコメントを一時的にハイライトするための id。
+      const [highlightedCommentId, setHighlightedCommentId] = useState(null);
+      const commentListRef = useRef(null);
+      // 「返信」クリック時に入力欄へスクロールするためのコメント入力エリア参照。
+      const commentComposeRef = useRef(null);
 
       const isDirty = useMemo(() => {
         if (task) {
@@ -1162,6 +1169,40 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
+      // コメント本文（Markdown/HTML/画像記法）から引用プレビュー用の短いプレーンテキストを作る。
+      const getCommentSnippet = (text, maxLen = 90) => {
+        let s = (text || '')
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, '🖼️画像')       // 画像 markdown
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')           // リンク markdown → ラベルのみ
+          .replace(/<[^>]+>/g, ' ')                          // 生HTMLタグ
+          .replace(/[#>*`_~|-]/g, ' ')                       // markdown 記号
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!s) s = '（本文なし）';
+        return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+      };
+
+      const startReply = (comment) => {
+        setReplyingTo(comment);
+        // コメント入力エリアまでスクロールしてからフォーカスを移し、すぐ書き始められるようにする。
+        setTimeout(() => {
+          commentComposeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          commentEditorRef.current?.focus?.();
+        }, 60);
+      };
+
+      const cancelReply = () => setReplyingTo(null);
+
+      // 引用ブロックのクリックで、返信元コメントまでスクロールして一時ハイライトする。
+      const scrollToComment = (commentId) => {
+        if (!commentId) return;
+        const el = document.getElementById('comment-anchor-' + commentId);
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedCommentId(commentId);
+        setTimeout(() => setHighlightedCommentId(prev => (prev === commentId ? null : prev)), 1800);
+      };
+
       const handleAddCommentLocal = async () => {
         if (!commentText?.trim()) return;
         const newComment = {
@@ -1172,6 +1213,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           text: commentText,
           createdAt: new Date().toLocaleString('ja-JP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
           likes: [],
+          // 返信（引用）先コメントID。通常コメントは null。
+          parentId: replyingTo?.id || null,
           // 投稿者自身は当然「既読」状態として登録（自分宛メンションでも未読のままにならないように）
           readBy: currentUser?.email ? [currentUser.email] : []
         };
@@ -1190,14 +1233,18 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
 
         setCommentText('');
+        setReplyingTo(null);
         // RichMarkdownEditor は親 value 変化に追従するが、editor.isFocused 中は setContent をスキップする。
         // 投稿直後はフォーカス中なので、ref 経由で確実に空に戻す。
         commentEditorRef.current?.setMarkdown('');
 
         try {
           const saved = await api.saveComment(newComment);
-          setFormData(prev => ({ ...prev, comments: [...prev.comments, saved] }));
-          setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: [...t.comments, saved] } : t));
+          // 返信先(parentId)はバックエンドが parent_comment_id 列を持つ環境でのみ echo される。
+          // 列未適用でも投稿直後に引用ブロックを出せるよう、クライアント側で parentId を保持する。
+          const savedWithParent = { ...saved, parentId: saved.parentId ?? newComment.parentId ?? null };
+          setFormData(prev => ({ ...prev, comments: [...prev.comments, savedWithParent] }));
+          setTasks(prevTasks => prevTasks.map(t => t.id === formData.id ? { ...t, comments: [...t.comments, savedWithParent] } : t));
           showToast?.('コメントを投稿しました');
         } catch (e) {
           showCustomAlert('error', 'コメントの保存に失敗しました');
@@ -1971,7 +2018,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 ) : (
                   <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-4 bg-white">
                     {/* コメント入力エリア */}
-                    <div className="flex flex-col gap-3 bg-olive-50/50 p-3 rounded-xl border border-olive-200 shadow-inner">
+                    <div ref={commentComposeRef} className="flex flex-col gap-3 bg-olive-50/50 p-3 rounded-xl border border-olive-200 shadow-inner">
                       <div className="flex items-center gap-2">
                         <span className="text-2xl">{currentUser?.avatar}</span>
                         <span className="text-xs font-bold text-gray-700 truncate">{currentUser?.name} としてコメントを残す</span>
@@ -2000,6 +2047,31 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                           ))}
                         </div>
                       </div>
+                      {/* 返信（引用）チップ：返信先を選ぶと入力欄上部に表示。クリックで該当コメントへジャンプ、×でキャンセル */}
+                      {replyingTo && (
+                        <div className="flex items-stretch gap-2 bg-white border border-olive-200 rounded-lg overflow-hidden shadow-sm">
+                          <div className="w-1 bg-olive-500 shrink-0"></div>
+                          <button
+                            type="button"
+                            onClick={() => scrollToComment(replyingTo.id)}
+                            className="flex-1 min-w-0 text-left py-1.5 pr-1 hover:bg-olive-50/60 transition-colors"
+                            title="返信先のコメントへ移動"
+                          >
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-olive-700 mb-0.5">
+                              <CornerDownRight size={11} /> {replyingTo.authorName || replyingTo.author} に返信
+                            </div>
+                            <div className="text-[11px] text-gray-500 truncate">{getCommentSnippet(replyingTo.text)}</div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelReply}
+                            className="px-2 text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                            title="返信をやめる"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      )}
                       {/* コメントエディタ（詳細欄・Wiki と同じ TipTap ベース）。mentionMembers を渡すと「@」入力でサジェストが出る */}
                       <RichMarkdownEditor
                         ref={commentEditorRef}
@@ -2030,9 +2102,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                         const isDeleting = deleteCommentId === c.id;
                         const isEditing = editingCommentId === c.id;
                         const isMyComment = c.authorEmail === currentUserId || authorName === currentUser?.name;
+                        const isHighlighted = highlightedCommentId === c.id;
+                        // 返信（引用）先コメント。全コメント（履歴含む）から探し、見つからなければ削除済み扱い。
+                        const parentComment = c.parentId ? (formData.comments || []).find(pc => pc.id === c.parentId) : null;
 
                         return (
-                          <div key={c.id} className={`bg-white rounded-lg p-3 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-olive-400 shadow-md ring-1 ring-olive-400' : 'border-gray-200 hover:border-gray-300'}`}>
+                          <div key={c.id} id={'comment-anchor-' + c.id} className={`bg-white rounded-lg p-3 border relative group transition-colors shadow-sm overflow-hidden ${isDeleting ? 'border-red-300 bg-red-50/50' : isEditing ? 'border-olive-400 shadow-md ring-1 ring-olive-400' : isHighlighted ? 'border-olive-400 ring-2 ring-olive-300 bg-olive-50/40' : 'border-gray-200 hover:border-gray-300'}`}>
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-xl bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center shadow-inner shrink-0">{cMember ? cMember.avatar : '👤'}</span>
@@ -2061,6 +2136,30 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               </div>
                             </div>
 
+                            {/* 返信（引用）ブロック：このコメントが他コメントへの返信なら、引用元を埋め込んで表示。クリックで該当コメントへジャンプ */}
+                            {c.parentId && !isEditing && (
+                              parentComment ? (
+                                <button
+                                  type="button"
+                                  onClick={() => scrollToComment(c.parentId)}
+                                  className="w-full text-left flex items-stretch gap-2 bg-gray-50 hover:bg-olive-50/70 border border-gray-200 rounded-md overflow-hidden mb-2 transition-colors"
+                                  title="返信元のコメントへ移動"
+                                >
+                                  <div className="w-1 bg-olive-300 shrink-0"></div>
+                                  <div className="flex-1 min-w-0 py-1.5 pr-2">
+                                    <div className="flex items-center gap-1 text-[10px] font-bold text-olive-700 mb-0.5">
+                                      <CornerDownRight size={10} /> {parentComment.authorName || parentComment.author}
+                                    </div>
+                                    <div className="text-[11px] text-gray-500 line-clamp-2">{getCommentSnippet(parentComment.text, 120)}</div>
+                                  </div>
+                                </button>
+                              ) : (
+                                <div className="flex items-center gap-1 text-[11px] text-gray-400 italic bg-gray-50 border border-dashed border-gray-200 rounded-md px-2 py-1.5 mb-2">
+                                  <CornerDownRight size={10} /> 削除されたコメントへの返信
+                                </div>
+                              )
+                            )}
+
                             {/* 表示の切り替え（プレビュー or 編集テキストエリア） */}
                             <div className={`${isDeleting ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
                               {isEditing ? (
@@ -2087,7 +2186,17 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                               const text = c.text || '';
                               const mentionedMembers = members.filter(m => text.includes(`@${m.name}`));
                               return (
-                                <div className="flex items-center justify-end gap-2 mt-2">
+                                <div className="flex items-center justify-between gap-2 mt-2">
+                                  {/* 返信ボタン（全員に表示）。クリックで入力欄に引用チップをセットする */}
+                                  <button
+                                    onClick={() => startReply(c)}
+                                    disabled={isDeleting || isDeletingTask}
+                                    className="flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full transition-colors border text-gray-400 border-transparent hover:bg-olive-50 hover:text-olive-700"
+                                    title="このコメントに返信"
+                                  >
+                                    <CornerDownRight size={12} /> 返信
+                                  </button>
+                                  <div className="flex items-center gap-2">
                                   {mentionedMembers.length > 0 && (
                                     <div className="flex -space-x-2">
                                       {mentionedMembers.map((member, idx) => {
@@ -2113,6 +2222,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                                     <ThumbsUp size={12} className={c.likes?.includes(currentUserId) ? 'fill-olive-600' : ''}/>
                                     {c.likes?.length > 0 && <span>{c.likes.length}</span>}
                                   </button>
+                                  </div>
                                 </div>
                               );
                             })()}
