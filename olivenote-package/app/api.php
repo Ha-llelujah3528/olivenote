@@ -1,5 +1,31 @@
 <?php
 ini_set('display_errors', 0);
+
+// ----------------------------------------------------------------
+// 致命エラー診断トラップ
+//   メモリ超過 / 実行時間超過 / parse error などは try/catch (Throwable) では
+//   捕捉できず、display_errors=0 のため応答が「空ボディ」になる。すると
+//   フロントの res.json() が "Unexpected end of JSON input" で失敗し、
+//   原因が一切分からないまま「データが読み込めない」状態になる。
+//   shutdown 時に最後の致命エラーを拾い、空ボディの代わりに JSON で理由を
+//   返す＋サーバーログにも残す。正常応答時は error_get_last() が致命型では
+//   ないため何もしない（既存の正常系・catch 系には一切影響しない）。
+// ----------------------------------------------------------------
+register_shutdown_function(function () {
+    $err = error_get_last();
+    if (!$err || !in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR], true)) {
+        return;
+    }
+    @ini_set('memory_limit', '256M'); // 出力用にわずかな余裕を確保
+    $msg = 'Fatal: ' . $err['message'] . ' @ ' . basename($err['file']) . ':' . $err['line'];
+    error_log('[olivenote][FATAL] ' . $msg);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode(['success' => false, 'error' => $msg]);
+});
+
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth/auth.php';
 
@@ -181,14 +207,19 @@ function stripBase64Images(string $md): string {
     // PCRE のバックトラック爆発を避けるため、文字クラスを厳密に絞る:
     //   - MIME サブタイプ: [a-zA-Z0-9.+-]+
     //   - base64 本体    : [A-Za-z0-9+/=]+   ← ) を含まないため貪欲でも安全
-    // それでも数MB の base64 を扱うので、念のため pcre.backtrack_limit を一時的に引き上げる。
-    // preg_* が NULL を返した場合は元文字列を返してフェイルセーフ。
-
+    // 数MB の base64 を扱うので backtrack_limit を引き上げ、かつ JIT を無効化する。
+    //   ※ JIT 有効のまま巨大 subject を食わせると PREG_JIT_STACKLIMIT_ERROR で
+    //     preg_* が NULL を返す。すると下のフェイルセーフで「元文字列のまま
+    //     （= base64 丸ごと）」が AI に渡り、入力トークンが爆発する（実際に
+    //     1.6M tokens で HTTP 400 を踏んだ）。JIT を切るとインタプリタが
+    //     backtrack_limit を尊重して完走する。
     $oldBacktrack = ini_get('pcre.backtrack_limit');
     $oldRecursion = ini_get('pcre.recursion_limit');
+    $oldJit       = ini_get('pcre.jit');
     // 50MB の base64 を想定して大きめに（一時設定、関数抜けで戻す）
     ini_set('pcre.backtrack_limit', '100000000');
     ini_set('pcre.recursion_limit', '100000000');
+    ini_set('pcre.jit', '0');
 
     try {
         // リンク付き画像: [![alt](data:image/...;base64,...)](href)
@@ -219,9 +250,53 @@ function stripBase64Images(string $md): string {
     } finally {
         ini_set('pcre.backtrack_limit', $oldBacktrack);
         ini_set('pcre.recursion_limit', $oldRecursion);
+        // pcre.jit が無効化された環境では ini_get が false を返す。その場合は
+        // ini_set(false) で誤って空文字固定にしないよう、復元はスキップする。
+        if ($oldJit !== false) ini_set('pcre.jit', $oldJit);
+    }
+
+    // 最終防衛線: 正規表現が（JIT・環境差・想定外フォーマット = HTML <img src="data:...">
+    // 等で）取りこぼしても、base64 ペイロードだけは確実に剥がす O(n) の手動スキャン。
+    // 「;base64,<payload>」の <payload>（連続する base64 文字列）をプレースホルダに
+    // 置換し、megabyte 級の塊が AI に渡るのを物理的に防ぐ。正規表現に依存せず失敗しない。
+    if (strpos($md, ';base64,') !== false) {
+        $md = stripDataUriBase64Payloads($md);
     }
 
     return $md;
+}
+
+// data URI の base64 本体だけを手動で剥がす（正規表現非依存・O(n)・失敗しない）。
+// マークダウン / HTML どちらの画像埋め込みでも「;base64,」を起点に payload を除去する。
+function stripDataUriBase64Payloads(string $md): string {
+    $marker = ';base64,';
+    $mlen   = strlen($marker);
+    $len    = strlen($md);
+    $out    = '';
+    $i      = 0;
+    while ($i < $len) {
+        $pos = strpos($md, $marker, $i);
+        if ($pos === false) { $out .= substr($md, $i); break; }
+        // マーカーまでは温存
+        $out .= substr($md, $i, $pos - $i + $mlen);
+        // base64 本体（A-Za-z0-9 + / =）を読み飛ばす
+        $j = $pos + $mlen;
+        while ($j < $len) {
+            $c = $md[$j];
+            if (($c >= 'A' && $c <= 'Z') || ($c >= 'a' && $c <= 'z')
+                || ($c >= '0' && $c <= '9') || $c === '+' || $c === '/' || $c === '=') {
+                $j++;
+            } else {
+                break;
+            }
+        }
+        // 実際に payload があったときだけプレースホルダを差し込む
+        if ($j > $pos + $mlen) {
+            $out .= '...(画像データ省略)...';
+        }
+        $i = $j;
+    }
+    return $out;
 }
 
 function uploadFileToDrive(string $name, string $mimeType, string $binary, string $folderId, string $token): array {
@@ -992,6 +1067,27 @@ function taskFromRow(array $row, array $comments = []): array {
         'updatedAt'          => $row['updated_at'] ?? '',
         'comments'           => $comments,
     ];
+}
+
+// description 等から base64 データURI（貼付画像）を除去してテキストだけにする。
+// getInitialData は全課題を一括 json_encode するため、画像 base64 を含めると
+// メモリを食い潰す（実際に 192M 超過で「データが読み込めない」障害が発生）。
+// 一覧用の軽量データでは画像を [画像] プレースホルダに置換し、画像込みのフル本文は
+// getTaskDetail で課題を開いた時に個別取得する（遅延ロード）。
+function stripBase64FromText(?string $s): string {
+    $s = (string)$s;
+    if ($s === '') return $s;
+    // data:<mime>;base64,<payload> を [画像] に置換（payload は base64 文字＋改行を許容）
+    return preg_replace('/data:[^;,\s)"\']+;base64,[A-Za-z0-9+\/=\r\n]+/', '[画像]', $s) ?? $s;
+}
+
+// 一覧用の軽量タスク。description は画像を除いたテキスト、コメント本文は持たず
+// 件数(commentCount)のみ。フル本文＋全コメントは getTaskDetail で取得する。
+function taskFromRowLight(array $row, int $commentCount): array {
+    $t = taskFromRow($row, []);
+    $t['description']  = stripBase64FromText($t['description'] ?? '');
+    $t['commentCount'] = $commentCount;
+    return $t;
 }
 
 function commentFromRow(array $row): array {
@@ -2146,18 +2242,21 @@ try {
             if (!$currentUser && count($members) > 0) $currentUser = $members[0];
             if (!$currentUser) $currentUser = ['email' => 'guest@example.com', 'name' => 'Guest', 'avatar' => '👤', 'isAdmin' => false, 'defaultCategory' => ''];
 
-            // Comments（全件取得してタスクに紐づける）
-            $stmt           = $pdo->query("SELECT * FROM comments ORDER BY created_at ASC");
-            $commentsByTask = [];
+            // Comments（一覧では本文を返さず件数のみ。本文は getTaskDetail で個別取得）
+            //   ※ 旧実装は全コメント本文を一括ロードしており、貼付画像 base64 と相まって
+            //     getInitialData の json_encode でメモリ超過 →「データが読み込めない」障害の一因。
+            $stmt = $pdo->query("SELECT task_id, COUNT(*) AS c FROM comments GROUP BY task_id");
+            $commentCountByTask = [];
             while ($row = $stmt->fetch()) {
-                $commentsByTask[$row['task_id']][] = commentFromRow($row);
+                $commentCountByTask[$row['task_id']] = (int)$row['c'];
             }
 
-            // Tasks（削除されていないもの）
+            // Tasks（削除されていないもの）— 軽量版。description は画像除去テキスト、
+            //   コメントは件数のみ。フル本文＋全コメントは getTaskDetail で取得する。
             $stmt  = $pdo->query("SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC");
             $tasks = [];
             while ($row = $stmt->fetch()) {
-                $tasks[] = taskFromRow($row, $commentsByTask[$row['id']] ?? []);
+                $tasks[] = taskFromRowLight($row, $commentCountByTask[$row['id']] ?? 0);
             }
 
             // Documents（削除されていないもの、最終更新の新しい順）
@@ -2220,6 +2319,36 @@ try {
                     'filterPresets'   => $filterPresets,
                 ],
             ]);
+            break;
+
+        // ============================================================
+        // getTaskDetail — 1課題の重いデータ（フル本文＋全コメント）を個別取得
+        //   getInitialData を軽量化したため、課題モーダルを開いた時にここで
+        //   画像込みのフル description と全コメントを取得する（遅延ロード）。
+        // ============================================================
+        case 'getTaskDetail':
+            $taskId = $payload['taskId'] ?? '';
+            if ($taskId === '') {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT description FROM tasks WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$taskId]);
+            $trow = $stmt->fetch();
+            if (!$trow) {
+                echo json_encode(['success' => false, 'error' => 'task not found']);
+                break;
+            }
+            $cstmt = $pdo->prepare("SELECT * FROM comments WHERE task_id = ? ORDER BY created_at ASC");
+            $cstmt->execute([$taskId]);
+            $detailComments = [];
+            while ($crow = $cstmt->fetch()) {
+                $detailComments[] = commentFromRow($crow);
+            }
+            echo json_encode(['success' => true, 'data' => [
+                'description' => $trow['description'] ?? '',
+                'comments'    => $detailComments,
+            ]]);
             break;
 
         // ============================================================

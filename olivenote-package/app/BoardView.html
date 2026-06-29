@@ -129,7 +129,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
                   <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>
                   <div className="flex items-center gap-3 text-gray-500">
                     {task.attachments?.length > 0 && <div className="flex items-center gap-1" title="添付ファイル"><Paperclip size={12} />{task.attachments.length}</div>}
-                    {task.comments?.length > 0 && <div className="flex items-center gap-1" title="コメント数"><MessageSquare size={12} />{task.comments.length}</div>}
+                    {(task.comments?.length || task.commentCount) > 0 && <div className="flex items-center gap-1" title="コメント数"><MessageSquare size={12} />{task.comments?.length || task.commentCount}</div>}
                     <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 px-1.5 py-0.5 rounded-md shadow-sm" title="担当者"><span className="text-[10px]">{member ? member.avatar : '👤'}</span><span className="truncate max-w-[60px] font-medium">{task.assigneeName || '未設定'}</span></div>
                   </div>
                 </div>

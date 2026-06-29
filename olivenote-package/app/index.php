@@ -2067,7 +2067,21 @@ if (!auth_is_logged_in()) {
 
       // ---- コアデータ ----
       getInitialData:        ()                                        => callApi('getInitialData'),
-      saveTask:              (taskData)                                => callApi('saveTask', { task: taskData }),
+      getTaskDetail:         (taskId)                                  => callApi('getTaskDetail', { taskId }),
+      saveTask:              (taskData) => {
+                               // 遅延ロード対応の安全ガード:
+                               //   一覧の軽量タスクは description が画像除去済みのプレースホルダ
+                               //   文字列。これを既存課題に保存すると DB の本文（画像込み）を破壊
+                               //   する。詳細未ロード(_detailLoaded≠true)の既存課題保存では
+                               //   description を送らず、サーバ側の空description保護で既存本文を
+                               //   維持する。新規課題（id 無し/TEMP）はユーザー入力なので送る。
+                               const t = { ...taskData };
+                               const isExisting = t.id && !String(t.id).startsWith('TASK-TEMP-');
+                               if (isExisting && !t._detailLoaded) delete t.description;
+                               delete t._detailLoaded;
+                               delete t.commentCount;
+                               return callApi('saveTask', { task: t });
+                             },
       deleteTask:            (taskId)                                  => callApi('deleteTask', { taskId }),
       saveSettings:          (settingsData)                            => callApi('saveSettings', settingsData),
 

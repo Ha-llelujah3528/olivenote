@@ -576,6 +576,7 @@ function App() {
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  const [isOpeningTask, setIsOpeningTask] = useState(false); // 課題詳細(getTaskDetail)の取得中フラグ＝ローディング表示用
   // 通知リンク（?pane=comments）から開いたときに、モーダルへ初期表示ペインを伝える。
   const [modalInitialPane, setModalInitialPane] = useState(null);
   const isFirstRender = useRef(true);
@@ -626,8 +627,12 @@ function App() {
       
       if (notif.message.includes('メンション')) {
         const inDesc = targetTask.description && targetTask.description.includes(mentionStr);
-        const inComments = targetTask.comments && targetTask.comments.some(c => c.text && c.text.includes(mentionStr));
-        if (!inDesc && !inComments) return false; 
+        // コメント本文は一覧では未ロード（件数のみ）。読み込まれている課題のみ照合し、
+        // 未ロード時は判定保留＝通知を残す（誤って消さない）。description はテキストが
+        // 残っているので従来どおり照合できる。
+        const commentsLoaded = Array.isArray(targetTask.comments) && targetTask.comments.length > 0;
+        const inComments = commentsLoaded && targetTask.comments.some(c => c.text && c.text.includes(mentionStr));
+        if (!inDesc && commentsLoaded && !inComments) return false;
       }
       
       return true; 
@@ -648,11 +653,8 @@ function App() {
       setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     }
     
-    const targetTask = tasks.find(t => t.id === notif.taskId);
-    if (targetTask) {
-      setEditingTask(targetTask);
-      setIsModalOpen(true);
-      writeTaskToUrl(targetTask.id);
+    if (tasks.find(t => t.id === notif.taskId)) {
+      await openTaskWithDetail(notif.taskId, null);
     }
     setIsNotifOpen(false);
   };
@@ -712,9 +714,7 @@ function App() {
       if (initialTaskId) {
         const target = loadedTasks.find(t => t.id === initialTaskId);
         if (target) {
-          setModalInitialPane(readPaneFromUrl());
-          setEditingTask(target);
-          setIsModalOpen(true);
+          openTaskWithDetail(target, readPaneFromUrl());
         } else {
           // 存在しない ID は黙って除去（共有後に削除されたケースで毎回エラーを出さない）
           writeTaskToUrl(null);
@@ -732,8 +732,7 @@ function App() {
     const onPopState = () => {
       const id = readTaskFromUrl();
       if (!id) { setIsModalOpen(false); return; }
-      const target = tasks.find(t => t.id === id);
-      if (target) { setModalInitialPane(readPaneFromUrl()); setEditingTask(target); setIsModalOpen(true); }
+      if (tasks.find(t => t.id === id)) { openTaskWithDetail(id, readPaneFromUrl()); }
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -831,7 +830,12 @@ function App() {
       const savedTask = await api.saveTask(dataForSave);
 
       setTasks(prev => {
-        return prev.map(t => t.id === tempId ? savedTask : t).sort((a, b) => (a.order || 0) - (b.order || 0));
+        // savedTask は description・comments を持つ（モーダル保存＝詳細ロード済み）が、
+        // commentCount と _detailLoaded は含まないため手元の値を維持する。これが無いと
+        // ボードのコメントバッジ計算が狂い、再オープン時に getTaskDetail が二重発火する。
+        return prev.map(t => t.id === tempId
+          ? { ...savedTask, commentCount: t.commentCount ?? savedTask.commentCount, _detailLoaded: t._detailLoaded ?? true }
+          : t).sort((a, b) => (a.order || 0) - (b.order || 0));
       });
 
       if (!closeModal) {
@@ -849,8 +853,15 @@ function App() {
     delete dataForSave.updatedAt;
     const savedTask = await api.saveTask(dataForSave);
     setTasks(prev =>
-      prev.map(t => t.id === taskData.id ? savedTask : t)
-          .sort((a, b) => (a.order || 0) - (b.order || 0))
+      prev.map(t => {
+        if (t.id !== taskData.id) return t;
+        // コメントは saveComment / deleteComment が独立して永続化・管理している。
+        // saveTask はリクエストで受け取った comments をそのままエコーバックするだけ（DB には触らない）。
+        // autosave は古いクロージャの task.comments を送るため、savedTask.comments で上書きすると
+        // 直前に追加されたコメントが client 状態から巻き戻り、閉じて開き直すと消える不具合になる。
+        // よって client 側で保持している最新の comments（prev の t.comments）を優先して残す。
+        return { ...savedTask, comments: t.comments ?? savedTask.comments ?? [] };
+      }).sort((a, b) => (a.order || 0) - (b.order || 0))
     );
     // setEditingTask は呼ばない → task prop を変えず、履歴差分の基点を保持
   };
@@ -906,7 +917,12 @@ function App() {
       delete taskToSave.updatedAt;
       
       const saved = await api.saveTask(taskToSave);
-      setTasks(prev => prev.map(t => t.id === saved.id ? saved : t).sort((a, b) => (a.order || 0) - (b.order || 0))); 
+      // 保存エコーには commentCount が無く comments も一覧では空。全置換するとコメント
+      // バッジが消える＆画像込みフル本文が状態に流入するため、軽量フィールド
+      // （description / comments / commentCount / _detailLoaded）は手元の値を維持する。
+      setTasks(prev => prev.map(t => t.id === saved.id
+        ? { ...saved, description: t.description, comments: t.comments, commentCount: t.commentCount, _detailLoaded: t._detailLoaded }
+        : t).sort((a, b) => (a.order || 0) - (b.order || 0)));
     } catch (e) {
       alert("エラー: " + (e.message || "更新に失敗しました"));
       setTasks(previousTasks); 
@@ -938,17 +954,77 @@ function App() {
     }
   };
   
-  const handleOpenTask = (task) => {
-    setModalInitialPane(null); // 通常クリックで開くときはペイン指定なし
-    setEditingTask(task);
+  // 課題を開く共通処理（遅延ロード）:
+  //   getInitialData は軽量化され description（画像）とコメント本文を持たないため、
+  //   既存課題を開く時にここで getTaskDetail を呼んでフル本文＋全コメントを取得し、
+  //   editingTask と tasks state の両方に反映してからモーダルを開く。
+  //   開いた瞬間に本文が揃っているので、TipTap の空描画 autosave 事故も避けられる。
+  // クライアント側メモリガード:
+  //   getTaskDetail で取得したフル本文（貼付画像 base64 込み）とコメントを tasks state に
+  //   残し続けると、リロードせず画像入り課題を次々開くだけでブラウザのメモリが累積する。
+  //   そこで「フル本文を state に保持するのは“今開く1件”だけ」に制限する。課題を開くたびに
+  //   それ以外のタスクを画像除去テキスト＋コメント件数のみへ戻す（evict）。これでクライアント
+  //   メモリは開閉回数に依存せず一定に保たれ、コメント件数バッジも正確になる。
+  const stripBase64Client = (s) => (s || '').replace(/data:[^;,\s)"']+;base64,[A-Za-z0-9+\/=\r\n]+/g, '[画像]');
+  const evictTaskDetails = (keepId = null) => {
+    setTasks(prev => prev.map(t => {
+      if (t.id === keepId || !t._detailLoaded) return t;
+      return {
+        ...t,
+        description: stripBase64Client(t.description),
+        comments: [],
+        commentCount: (Array.isArray(t.comments) && t.comments.length) ? t.comments.length : t.commentCount,
+        _detailLoaded: false,
+      };
+    }));
+  };
+
+  const openTaskWithDetail = async (taskOrId, pane = null) => {
+    const id = typeof taskOrId === 'string' ? taskOrId : (taskOrId && taskOrId.id);
+    const base = typeof taskOrId === 'string' ? tasks.find(t => t.id === id) : taskOrId;
+    if (!base || !id) return;
+    setModalInitialPane(pane);
+    evictTaskDetails(id); // 開く対象以外のフル本文を解放してメモリ累積を防ぐ
+    // 既に本文取得済みならそのまま開く（再取得しない）
+    if (base._detailLoaded) {
+      setEditingTask(base);
+      setIsModalOpen(true);
+      writeTaskToUrl(base.id);
+      return;
+    }
+    let full = base;
+    setIsOpeningTask(true); // クリック直後にローディング表示（低スペック機で無反応に見えるのを防ぐ）
+    try {
+      const detail = await api.getTaskDetail(base.id);
+      full = { ...base, description: detail?.description ?? '', comments: detail?.comments ?? [], _detailLoaded: true };
+      setTasks(prev => prev.map(t => t.id === full.id ? full : t));
+    } catch (e) {
+      showToast('課題詳細の取得に失敗しました: ' + e.message, 'error');
+    } finally {
+      setIsOpeningTask(false);
+    }
+    setEditingTask(full);
     setIsModalOpen(true);
-    writeTaskToUrl(task?.id ?? null); // 新規(null)では URL に載せない
+    writeTaskToUrl(full.id);
+  };
+
+  const handleOpenTask = (task) => {
+    // 新規作成（id 無し / TEMP）は取得不要でそのまま開く
+    if (!task || !task.id || String(task.id).startsWith('TASK-TEMP-')) {
+      setModalInitialPane(null);
+      setEditingTask(task);
+      setIsModalOpen(true);
+      writeTaskToUrl(task?.id ?? null);
+      return;
+    }
+    openTaskWithDetail(task, null);
   };
 
   // モーダルを閉じる経路を統一（URL からも task を除去）
   const closeTaskModal = () => {
     setIsModalOpen(false);
     writeTaskToUrl(null);
+    evictTaskDetails(null); // 閉じたらフル本文を解放（保存直後は echo で1件だけ再保持し、次回オープン時に解放）
   };
 
   const clearFilters = () => setFilters({
@@ -2021,6 +2097,14 @@ function App() {
         {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} />}
       </main>
 
+      {isOpeningTask && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm" aria-live="polite" aria-busy="true">
+          <div className="flex items-center gap-3 bg-white p-5 rounded-2xl shadow-xl border border-gray-200 animate-in fade-in duration-200">
+            <Loader2 className="animate-spin text-olive-600" size={24} />
+            <span className="text-sm font-bold text-gray-700">課題を読み込み中...</span>
+          </div>
+        </div>
+      )}
       {isModalOpen && (
         <TaskModal
           task={editingTask} tasks={tasks} setTasks={setTasks} categories={categories} taskTypes={taskTypes}
