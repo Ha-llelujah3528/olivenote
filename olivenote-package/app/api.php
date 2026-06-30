@@ -623,7 +623,9 @@ function requireAdmin(PDO $pdo): void {
 }
 
 function makeFilePublic(string $fileId, string $token): void {
-    $ch = curl_init("https://www.googleapis.com/drive/v3/files/{$fileId}/permissions");
+    // supportsAllDrives=true は共有ドライブ内のファイルに必須。
+    // これが無いと共有ドライブ上のファイルに対し HTTP 404 File not found となる。
+    $ch = curl_init("https://www.googleapis.com/drive/v3/files/{$fileId}/permissions?supportsAllDrives=true");
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => json_encode(['role' => 'reader', 'type' => 'anyone']),
