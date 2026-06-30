@@ -1023,6 +1023,12 @@ if (!auth_is_logged_in()) {
     const createPusherYjsProvider = (pageId, ydoc, opts = {}) => {
       const onPresence = opts.onPresence || function () {};
       const MAX_BYTES = 9000;
+      // Pusher 無料枠（200k メッセージ/日）対策の送信間引き。メッセージは購読者数ぶん
+      // カウントされる（6名なら 1 イベント ≒ 5〜6 メッセージ）ため、高頻度送信＝最大の浪費源。
+      // 体感のなめらかさをほぼ落とさずに送信量を 5〜10 分の1 に抑える。
+      const AWARE_THROTTLE_MS = 400;    // カーソル/選択範囲の配信間隔（旧 80ms。最大の浪費源なので強めに絞る）
+      const YJS_BATCH_MS      = 300;    // ローカル編集のバッチ配信間隔（旧 150ms）
+      const HEARTBEAT_MS      = 30000;  // state vector 心拍の間隔（旧 15000ms）
       const channelName = 'presence-wiki-' + pageId;
       let channel = null, pusher = null, myId = null, destroyed = false, msgSeq = 0;
       const membersInfo = new Map();
@@ -1074,7 +1080,7 @@ if (!auth_is_logged_in()) {
           if (!batch.length || !channel) { batch = []; return; }
           const merged = Y.mergeUpdates(batch); batch = [];
           sendBytes('client-yjs-update', {}, merged);
-        }, 150);
+        }, YJS_BATCH_MS);
       };
       ydoc.on('update', onLocalUpdate);
 
@@ -1098,8 +1104,8 @@ if (!auth_is_logged_in()) {
         for (const c of updated) awarePending.add(c);
         for (const c of removed) awarePending.add(c);
         const now = Date.now();
-        if (now - awareThrottle > 80) { flushAware(); }
-        else { if (awareTrailing) clearTimeout(awareTrailing); awareTrailing = setTimeout(flushAware, 80); }
+        if (now - awareThrottle > AWARE_THROTTLE_MS) { flushAware(); }
+        else { if (awareTrailing) clearTimeout(awareTrailing); awareTrailing = setTimeout(flushAware, AWARE_THROTTLE_MS); }
       };
       awareness.on('update', onAwareUpdate);
       const applyRemoteAware = (u8) => { try { awarenessProtocol.applyAwarenessUpdate(awareness, u8, 'remote'); } catch (_) {} };
@@ -1156,7 +1162,7 @@ if (!auth_is_logged_in()) {
           if (!data || data.u == null || (data.to && data.to !== myId)) return;
           recvBytes(data, applyRemote);
         });
-        hbTimer = setInterval(sendStateVector, 15000);
+        hbTimer = setInterval(sendStateVector, HEARTBEAT_MS);
       };
 
       setup();
