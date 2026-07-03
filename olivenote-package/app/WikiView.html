@@ -66,7 +66,21 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   const [dropTargetId, setDropTargetId] = useState(null);   // ドロップ先ハイライト（page.id または '__root__'）
   const [ghost, setGhost]               = useState(null);   // 浮遊ラベル { x, y, title } | null
   // ドラッグセッション状態（同期参照用。pointermove/up の closure から最新値を読む）
-  const dragRef  = useRef({ active: false, started: false, pageId: null, title: '', startX: 0, startY: 0 });
+  const dragRef  = useRef({ active: false, started: false, armed: false, pointerType: null, pageId: null, title: '', startX: 0, startY: 0 });
+  // タッチ操作の「タップ時の指ブレ」で誤ってドラッグ（階層移動）が始まらないための調整値。
+  // マウスは即座に反応させたいので閾値のみ、タッチは長押しで「構え」させてから閾値判定する。
+  const DRAG_THRESHOLD       = 6;    // px。マウス操作: 合計移動量がこれ未満ならクリック
+  const TOUCH_DRAG_THRESHOLD = 10;   // px。タッチ操作: 長押し確定後、これ以上動いたらドラッグ開始
+  const TOUCH_ARM_CANCEL_PX  = 10;   // px。長押し確定前にこれ以上動いたらスクロール等の意図とみなし中止
+  const LONG_PRESS_MS        = 350;  // タッチ操作でドラッグを「構え」させるまでの長押し時間
+  const longPressTimerRef = useRef(null);   // 上記長押し判定用タイマー
+  // 左ツリーの最小化（PC のみ。モバイルは元々1ペイン切替のため対象外）
+  const [treeCollapsed, setTreeCollapsed] = useState(() => {
+    try { return localStorage.getItem('olivenote_wiki_tree_collapsed') === '1'; } catch (_) { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('olivenote_wiki_tree_collapsed', treeCollapsed ? '1' : '0'); } catch (_) {}
+  }, [treeCollapsed]);
   // pointermove/up ハンドラから最新の pages / isDescendant を参照するための ref
   const pagesRef = useRef(pages);
   useEffect(() => { pagesRef.current = pages; }, [pages]);
@@ -117,8 +131,6 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   //   listener は一度だけ登録し、最新の pages / コールバックは ref 経由で参照する
   //   （[] 依存で張り替えないことで pointer セッション中の再登録ブレを防ぐ）。
   useEffect(() => {
-    const DRAG_THRESHOLD = 6; // px。合計移動量がこれ未満ならクリック
-
     // ghost は pointer-events:none なので elementFromPoint には写らない。
     // 戻り値: page.id / '__root__' / undefined（無効領域）
     function resolveTarget(x, y) {
@@ -131,8 +143,13 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       return undefined;
     }
 
+    function clearLongPressTimer() {
+      if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+    }
+
     function endDrag() {
-      dragRef.current = { active: false, started: false, pageId: null, title: '', startX: 0, startY: 0 };
+      clearLongPressTimer();
+      dragRef.current = { active: false, started: false, armed: false, pointerType: null, pageId: null, title: '', startX: 0, startY: 0 };
       setGhost(null);
       setDraggedId(null);
       setDropTargetId(null);
@@ -144,7 +161,14 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       const st = dragRef.current;
       if (!st.active) return;
       if (!st.started) {
-        if (Math.abs(e.clientX - st.startX) + Math.abs(e.clientY - st.startY) < DRAG_THRESHOLD) return;
+        const moved = Math.abs(e.clientX - st.startX) + Math.abs(e.clientY - st.startY);
+        if (st.pointerType === 'touch' && !st.armed) {
+          // 長押し確定前: 動いたらタップ or スクロールの意図とみなしドラッグ予約ごと取り消す
+          if (moved >= TOUCH_ARM_CANCEL_PX) endDrag();
+          return;
+        }
+        const threshold = st.pointerType === 'touch' ? TOUCH_DRAG_THRESHOLD : DRAG_THRESHOLD;
+        if (moved < threshold) return;
         st.started = true;
         setDraggedId(st.pageId);
         document.body.style.userSelect = 'none';
@@ -164,8 +188,10 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       const wasStarted = st.started;
       const movedId = st.pageId;
       if (!wasStarted) {
-        // 動かさず離した = クリック → ページを開く
+        // 動かさず離した = クリック → ページを開く（子階層があれば展開もあわせて切替）
         endDrag();
+        const hasChildren = pagesRef.current.some(p => p.parentId === movedId);
+        if (hasChildren) cbRef.current.toggleExpand && cbRef.current.toggleExpand(movedId);
         cbRef.current.openPage && cbRef.current.openPage(movedId);
         return;
       }
@@ -834,19 +860,39 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
       showToast && showToast('自分自身の子孫には移動できません', 'error');
       return;
     }
+    // 誤操作救済のため、移動前の親を控えておき「元に戻す」トーストで復帰できるようにする。
+    const oldParentId = movedPage ? (movedPage.parentId || null) : null;
     try {
       await api.moveWikiPage(movedId, targetId, null);
       await loadPages();
       if (targetId) setExpanded(s => { const n = new Set(s); n.add(targetId); return n; });
-      showToast && showToast(targetId ? '移動しました' : 'ルートに移動しました', 'success');
+      showToast && showToast(
+        targetId ? '移動しました' : 'ルートに移動しました',
+        'success',
+        { actionLabel: '元に戻す', onAction: () => undoMove(movedId, oldParentId) }
+      );
     } catch (e) {
       showToast && showToast('移動に失敗しました', 'error');
+    }
+  }
+
+  // 「元に戻す」: 直前のドラッグ移動を取り消し、移動元の親へ戻す。
+  async function undoMove(movedId, oldParentId) {
+    if (!movedId) return;
+    try {
+      await api.moveWikiPage(movedId, oldParentId, null);
+      await loadPages();
+      if (oldParentId) setExpanded(s => { const n = new Set(s); n.add(oldParentId); return n; });
+      showToast && showToast('元に戻しました', 'success');
+    } catch (e) {
+      showToast && showToast('元に戻せませんでした', 'error');
     }
   }
 
   // pointermove/up の [] closure から最新コールバックを呼べるよう、毎レンダリングで更新
   cbRef.current.openPage    = openPage;
   cbRef.current.performMove = performMove;
+  cbRef.current.toggleExpand = (id) => setExpanded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   // ============================================================
   // 階層ツリー描画
@@ -870,12 +916,23 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
           data-wiki-node={page.id}
           onPointerDown={e => {
             if (e.button !== 0) return;  // 左ボタンのみ
+            const pointerType = e.pointerType;
             // ドラッグ開始を予約（実際の開始は閾値超え時）。クリック判定も pointerup で行う。
+            // タッチ操作は「タップ時の指ブレ」で誤ってドラッグ（階層移動）が始まらないよう、
+            // 長押し（LONG_PRESS_MS）で armed になるまではドラッグ開始判定そのものを行わない。
             dragRef.current = {
-              active: true, started: false, pageId: page.id,
-              title: page.title || '(無題)',
+              active: true, started: false, armed: pointerType !== 'touch', pointerType,
+              pageId: page.id, title: page.title || '(無題)',
               startX: e.clientX, startY: e.clientY,
             };
+            if (pointerType === 'touch') {
+              if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+              longPressTimerRef.current = setTimeout(() => {
+                const st = dragRef.current;
+                if (st.active && st.pageId === page.id && !st.started) st.armed = true;
+                longPressTimerRef.current = null;
+              }, LONG_PRESS_MS);
+            }
           }}
           className={`flex items-center gap-1 py-1 pr-1 rounded text-sm group transition-all select-none ${
             draggedId ? 'cursor-grabbing' : 'cursor-grab'
@@ -939,32 +996,52 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     <div className={`flex-1 bg-white border border-gray-200 rounded-lg flex overflow-hidden shadow-sm ${opening ? 'cursor-wait' : ''}`}>
       {/* ===== Left tree ===== */}
       {/* モバイルは1ペイン切替: ページ選択中(=editor表示中)はツリーを隠す。md以上は常に表示 */}
-      <aside className={`w-full md:w-72 border-r border-gray-200 flex-col bg-gray-50 md:shrink-0 ${(selected || opening) ? 'hidden md:flex' : 'flex'}`}>
-        <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-white">
-          <h3 className="font-bold text-sm flex items-center gap-1.5"><BookOpen size={16}/> ドキュメント</h3>
-          <button
-            onClick={() => handleCreate(null)}
-            className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-2 py-1 flex items-center gap-1"
-          ><Plus size={12}/>新規</button>
-        </div>
-        <div
-          data-wiki-root="1"
-          className={`flex-1 overflow-y-auto p-2 transition-colors ${
-            draggedId ? 'border-2 border-dashed border-olive-300' : 'border-2 border-transparent'
-          } ${dropTargetId === '__root__' ? 'bg-olive-100 border-olive-500' : ''}`}
+      {/* 最小化(treeCollapsed)は PC(md以上)専用。モバイルは元々1ペイン切替のため常にフルツリー表示 */}
+      <aside className={`border-r border-gray-200 flex-col bg-gray-50 md:shrink-0 w-full ${treeCollapsed ? 'md:w-11' : 'md:w-72'} ${(selected || opening) ? 'hidden md:flex' : 'flex'}`}>
+        {/* 最小化レール（PCのみ。クリックで展開） */}
+        <button
+          onClick={() => setTreeCollapsed(false)}
+          title="ツリーを開く"
+          className={`${treeCollapsed ? 'hidden md:flex' : 'hidden'} flex-1 flex-col items-center pt-3 gap-3 text-gray-400 hover:text-olive-600 hover:bg-gray-100 transition-colors`}
         >
-          {draggedId && (
-            <div className="text-[10px] text-olive-600 font-bold text-center mb-1 py-0.5 bg-olive-50 rounded">
-              ↓ ここにドロップでルートへ移動
+          <ChevronRight size={16}/>
+          <BookOpen size={16} className="text-olive-300"/>
+        </button>
+
+        <div className={`${treeCollapsed ? 'flex md:hidden' : 'flex'} flex-col flex-1 min-h-0`}>
+          <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-white">
+            <h3 className="font-bold text-sm flex items-center gap-1.5"><BookOpen size={16}/> ドキュメント</h3>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleCreate(null)}
+                className="bg-olive-600 hover:bg-olive-700 text-white text-xs font-bold rounded px-2 py-1 flex items-center gap-1"
+              ><Plus size={12}/>新規</button>
+              <button
+                onClick={() => setTreeCollapsed(true)}
+                title="ツリーを最小化"
+                className="hidden md:flex shrink-0 text-gray-400 hover:text-olive-600 hover:bg-gray-100 p-1.5 rounded transition-colors"
+              ><ChevronLeft size={14}/></button>
             </div>
-          )}
-          {loading ? (
-            <div className="text-center text-xs text-gray-400 py-6">読み込み中...</div>
-          ) : rootPages.length === 0 ? (
-            <div className="text-center text-xs text-gray-400 py-6">ページがありません<br/>右上の「新規」で作成</div>
-          ) : (
-            rootPages.map(p => renderPageNode(p, 0))
-          )}
+          </div>
+          <div
+            data-wiki-root="1"
+            className={`flex-1 overflow-y-auto p-2 transition-colors ${
+              draggedId ? 'border-2 border-dashed border-olive-300' : 'border-2 border-transparent'
+            } ${dropTargetId === '__root__' ? 'bg-olive-100 border-olive-500' : ''}`}
+          >
+            {draggedId && (
+              <div className="text-[10px] text-olive-600 font-bold text-center mb-1 py-0.5 bg-olive-50 rounded">
+                ↓ ここにドロップでルートへ移動
+              </div>
+            )}
+            {loading ? (
+              <div className="text-center text-xs text-gray-400 py-6">読み込み中...</div>
+            ) : rootPages.length === 0 ? (
+              <div className="text-center text-xs text-gray-400 py-6">ページがありません<br/>右上の「新規」で作成</div>
+            ) : (
+              rootPages.map(p => renderPageNode(p, 0))
+            )}
+          </div>
         </div>
       </aside>
 

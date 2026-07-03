@@ -600,9 +600,22 @@ function App() {
   }, [currentTheme]);
 
   const [toast, setToast] = useState(null);
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  const toastTimerRef = useRef(null);
+  // options: { actionLabel, onAction, duration } — アクション付きトースト（例: 「元に戻す」）に対応。
+  // 既存の showToast(message, type) 呼び出しは options 省略でそのまま動く（後方互換）。
+  const showToast = (message, type = 'success', options = null) => {
+    if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
+    const action = (options && options.actionLabel && options.onAction)
+      ? { label: options.actionLabel, onAction: options.onAction }
+      : null;
+    setToast({ message, type, action });
+    // アクション付きは押す時間を確保するため長め（既定7秒）、通常は従来どおり3秒。
+    const duration = (options && options.duration) || (action ? 7000 : 3000);
+    toastTimerRef.current = setTimeout(() => { setToast(null); toastTimerRef.current = null; }, duration);
+  };
+  const dismissToast = () => {
+    if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
+    setToast(null);
   };
 
   const [holidays, setHolidays] = useState([]);
@@ -2150,9 +2163,15 @@ function App() {
       />
 
       {toast && (
-        <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-2 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-bold pointer-events-none ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
+        <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-2 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-bold ${toast.action ? 'pointer-events-auto' : 'pointer-events-none'} ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
           {toast.type === 'error' ? <XCircle size={18} /> : <CheckCircle size={18} />}
-          {toast.message}
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              onClick={() => { const fn = toast.action.onAction; dismissToast(); fn && fn(); }}
+              className="ml-1 inline-flex items-center gap-1 bg-white/20 hover:bg-white/30 rounded-lg px-2.5 py-1 text-xs font-bold transition-colors"
+            ><RotateCcw size={13} /> {toast.action.label}</button>
+          )}
         </div>
       )}
     </div>
