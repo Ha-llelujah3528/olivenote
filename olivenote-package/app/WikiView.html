@@ -11,6 +11,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   const [loading, setLoading]         = useState(true);
   const [opening, setOpening]         = useState(false);  // ページを開く→エディタ表示までのインジケータ
   const [selected, setSelected]       = useState(null);   // 詳細 (body_md 込み)
+  const [mobileTreeOpen, setMobileTreeOpen] = useState(false); // モバイル: ドキュメントを開いたままツリーを左からドロワー表示
   const [editTitle, setEditTitle]     = useState('');
   const [editBody, setEditBody]       = useState('');
   const [editorKey, setEditorKey]     = useState(0);      // 切替で TipTap を再マウント
@@ -409,6 +410,7 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
     teardownCollab(true);
     // 即座にスピナーを出してクリックへの反応を返す（ネットワーク待ち + 後続のエディタマウントを「読込中」として可視化）
     setOpening(true);
+    setMobileTreeOpen(false); // モバイル: ページを開いたらツリードロワーを閉じてエディタへ戻す
     try {
       const data = await api.getWikiPage(id);
       if (!data.page) {
@@ -994,10 +996,26 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
   // ============================================================
   return (
     <div className={`flex-1 bg-white border border-gray-200 rounded-lg flex overflow-hidden shadow-sm ${opening ? 'cursor-wait' : ''}`}>
+      {/* モバイル: ドキュメントを開いたままツリーをドロワー表示するときの背景。タップで閉じる */}
+      {(selected || opening) && mobileTreeOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 md:hidden"
+          onClick={() => setMobileTreeOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ===== Left tree ===== */}
       {/* モバイルは1ペイン切替: ページ選択中(=editor表示中)はツリーを隠す。md以上は常に表示 */}
+      {/* ただし mobileTreeOpen のときは左からドロワー(オーバーレイ)で被せる＝ドキュメントを閉じずにツリーを開ける */}
       {/* 最小化(treeCollapsed)は PC(md以上)専用。モバイルは元々1ペイン切替のため常にフルツリー表示 */}
-      <aside className={`border-r border-gray-200 flex-col bg-gray-50 md:shrink-0 w-full ${treeCollapsed ? 'md:w-11' : 'md:w-72'} ${(selected || opening) ? 'hidden md:flex' : 'flex'}`}>
+      <aside className={`border-r border-gray-200 flex-col bg-gray-50 md:shrink-0 md:static md:z-auto md:shadow-none ${treeCollapsed ? 'md:w-11' : 'md:w-72'} ${
+        (selected || opening)
+          ? (mobileTreeOpen
+              ? 'flex fixed inset-y-0 left-0 z-50 w-[85%] max-w-xs shadow-2xl'
+              : 'hidden md:flex')
+          : 'flex w-full'
+      }`}>
         {/* 最小化レール（PCのみ。クリックで展開） */}
         <button
           onClick={() => setTreeCollapsed(false)}
@@ -1021,6 +1039,14 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
                 title="ツリーを最小化"
                 className="hidden md:flex shrink-0 text-gray-400 hover:text-olive-600 hover:bg-gray-100 p-1.5 rounded transition-colors"
               ><ChevronLeft size={14}/></button>
+              {/* モバイル: ドロワー表示中のみ。ツリーを閉じてドキュメントへ戻る */}
+              {(selected || opening) && mobileTreeOpen && (
+                <button
+                  onClick={() => setMobileTreeOpen(false)}
+                  title="ツリーを閉じる"
+                  className="md:hidden shrink-0 text-gray-400 hover:text-olive-600 hover:bg-gray-100 p-1.5 rounded transition-colors"
+                ><X size={16}/></button>
+              )}
             </div>
           </div>
           <div
@@ -1052,12 +1078,12 @@ function WikiView({ currentUser, members, wikiTargetPageId, setWikiTargetPageId,
           <>
             {/* Toolbar */}
             <div className="border-b border-gray-200 p-2 flex flex-wrap items-center gap-2 bg-white shrink-0">
-              {/* モバイル専用: ツリー一覧へ戻る */}
+              {/* モバイル専用: ドキュメントを閉じずにツリー一覧を左からドロワー表示（サイドメニュー） */}
               <button
-                onClick={handleBackToList}
-                title="ドキュメント一覧へ戻る"
+                onClick={() => setMobileTreeOpen(true)}
+                title="ドキュメント一覧を開く"
                 className="md:hidden border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded px-2 py-1.5 flex items-center gap-1"
-              ><ChevronLeft size={14}/>一覧</button>
+              ><BookOpen size={14}/>一覧</button>
               <button
                 onClick={() => handleSave(true)}
                 disabled={isSaving || (!isCollab && !isDirty)}
