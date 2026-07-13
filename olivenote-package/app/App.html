@@ -71,6 +71,7 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef(null);
+  const inputResize = useUpwardResize(40, 40, 200); // 上端ドラッグで入力欄を上方向に伸縮（パネル固定高のため上限控えめ）
 
   // メッセージが増えたら自動で一番下までスクロール
   useEffect(() => {
@@ -291,16 +292,21 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
           </div>
 
           {/* 入力エリア */}
-          <div className="p-3 bg-white border-t border-gray-100 shrink-0">
+          <div className="p-3 pt-1 bg-white border-t border-gray-100 shrink-0">
+            {/* 上端グリップ：上へドラッグすると入力欄が上方向に広がる（Tailwind静的ビルド非依存のため装飾はinline） */}
+            <div {...inputResize.handleProps} style={{ cursor: 'ns-resize', touchAction: 'none' }} className="h-3 flex items-center justify-center" title="ドラッグで入力欄の高さを変更">
+              <div className="w-8 rounded-full bg-gray-300" style={{ height: 3 }}></div>
+            </div>
             <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
+                style={{ height: inputResize.height }}
                 placeholder={mode === 'concierge-tasks'
                   ? `表示中の${filteredTasks.length}件について質問... (Ctrl+Enterで送信)`
                   : '使い方を質問... (Ctrl+Enterで送信)'}
-                className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 max-h-32 min-h-[40px] outline-none"
+                className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 overflow-y-auto outline-none"
                 rows={1}
               />
               <button 
@@ -1574,7 +1580,8 @@ function App() {
           <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Columns size={16} /> ボード</button>
           <button onClick={() => setActiveTab('list')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'list' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><List size={16} /> 一覧</button>
           <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarDays size={16} /> ガント</button>
-          <button onClick={() => setActiveTab('calendar')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'calendar' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarIcon size={16} /> カレンダー</button>
+          {/* カレンダービューは廃止（非表示）。誰も使っていないため 2026-07-13 にタブを撤去。
+              CalendarView コンポーネント本体と holidays 取得は残置（再有効化時はこのボタンと下の描画分岐を戻す）。 */}
           <button onClick={() => setActiveTab('wiki')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'wiki' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><BookOpen size={16} /> ドキュメント</button>
           <button onClick={() => setActiveTab('whiteboard')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'whiteboard' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Palette size={16} /> ホワイトボード</button>
           <button onClick={() => setActiveTab('files')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'files' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><FileText size={16} /> ファイル</button>
@@ -1689,7 +1696,7 @@ function App() {
         </div>
       </header>
 
-      {(activeTab === 'board' || activeTab === 'gantt' || activeTab === 'calendar' || activeTab === 'list') && (
+      {(activeTab === 'board' || activeTab === 'gantt' || activeTab === 'list') && (
         <div className="bg-white border-b border-gray-200 relative shadow-[0_2px_4px_rgba(0,0,0,0.05)] z-30 shrink-0">
           {isFilterExpanded && (
             <div className="px-4 md:px-6 py-4 flex flex-wrap gap-3 md:gap-4 items-end">
@@ -2085,7 +2092,7 @@ function App() {
         {activeTab === 'list' && (() => {
           const visibleColumns = Array.isArray(userPrefs['list.visibleColumns']) && userPrefs['list.visibleColumns'].length > 0
             ? userPrefs['list.visibleColumns']
-            : ['title','category','type','assigneeName','subAssignees','status','startDate','dueDate'];
+            : ['title','category','type','assigneeName','subAssignees','status','startDate','dueDate','updatedAt'];
           const sort = userPrefs['list.sort'] || { column: 'dueDate', direction: 'asc' };
           const split = !!userPrefs['list.splitByAssignee'] && isPcViewport && currentUser?.email;
           const commonProps = {
@@ -2121,7 +2128,6 @@ function App() {
         })()}
 
         {activeTab === 'gantt' && <GanttView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onSaveTask={handleSaveTask} onReorderTask={handleReorderTask} holidays={holidays} />}
-        {activeTab === 'calendar' && <CalendarView tasks={filteredTasks} onOpenTask={handleOpenTask} holidays={holidays} taskTypes={taskTypes} members={members} />}
         {activeTab === 'files' && <FilesView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}
         {activeTab === 'wiki' && <WikiView currentUser={currentUser} members={members} wikiTargetPageId={wikiTargetPageId} setWikiTargetPageId={setWikiTargetPageId} showToast={showToast} />}
         {activeTab === 'whiteboard' && <WhiteboardView currentUser={currentUser} members={members} categories={categories} onCreateTask={handleSaveTask} showToast={showToast} />}

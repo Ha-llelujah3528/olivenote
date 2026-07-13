@@ -25,6 +25,7 @@ function ListView({
     { id: 'status',        label: 'ステータス',  width: 'min-w-[100px] w-[8%]'  },
     { id: 'startDate',     label: '開始日',     width: 'min-w-[100px] w-[8%]'  },
     { id: 'dueDate',       label: '期限日',     width: 'min-w-[100px] w-[8%]'  },
+    { id: 'updatedAt',     label: '最終更新',    width: 'min-w-[100px] w-[10%]' },
   ];
   const cols = ALL_COLUMNS.filter(c => visibleColumns.includes(c.id));
 
@@ -65,6 +66,8 @@ function ListView({
           va = a.startDate || ''; vb = b.startDate || ''; break;
         case 'dueDate':
           va = a.dueDate || ''; vb = b.dueDate || ''; break;
+        case 'updatedAt':
+          va = a.updatedAt || ''; vb = b.updatedAt || ''; break;
         default:
           va = ''; vb = '';
       }
@@ -171,6 +174,12 @@ function ListView({
             {task.dueDate.replace(/^\d{4}-/, '').replace('-','/')}
           </span>
         );
+      }
+      case 'updatedAt': {
+        const label = formatUpdatedAt(task.updatedAt);
+        return label
+          ? <span className="text-xs text-gray-500 font-mono whitespace-nowrap">{label}</span>
+          : <span className="text-gray-300 text-xs">—</span>;
       }
       default:
         return null;
