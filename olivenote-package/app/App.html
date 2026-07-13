@@ -538,12 +538,14 @@ function App() {
 
   // ★ 変更：filters に hasImplementationDate（実施日あり）を追加
   // hierarchyLevels: 親(root)/子(child)/孫(grand) の階層レベルで絞り込む（ガント以外で有効・要件項目3）
-  const [filters, setFilters] = useState({
+  // フィルター初期値。次回ログイン/別ブラウザ復元時のフォールバックにも使う（キー追加時の後方互換の基準）。
+  const defaultFilters = {
     assigneeEmail: [], category: '', type: '', priority: '',
     dueDateFrom: '', dueDateTo: '', statuses: defaultStatuses,
     hasImplementationDate: false,
     hierarchyLevels: ['root', 'child', 'grand']
-  });
+  };
+  const [filters, setFilters] = useState(defaultFilters);
   const [isHierarchyMenuOpen, setIsHierarchyMenuOpen] = useState(false);
 
   // ★ ユーザー別表示設定（要件2/3/4/6）— サーバーDBに保存
@@ -563,6 +565,15 @@ function App() {
       });
     }, 500);
   }, []);
+
+  // ★ フィルター条件をユーザー別にサーバー保存 → 次回・別ブラウザで復元（フィルター引き継ぎ）。
+  //   初期ロード＆復元が完了するまで（filtersHydrated=false）は保存しない
+  //   ＝マウント直後のデフォルト値でサーバーの保存済みフィルターを上書きしないため。
+  const filtersHydrated = useRef(false);
+  useEffect(() => {
+    if (!filtersHydrated.current) return;
+    savePref('filters.current', filters);
+  }, [filters, savePref]);
 
   // スマホ判定（要件3 でPCのみ分割表示にするため）
   const [isPcViewport, setIsPcViewport] = useState(() =>
@@ -695,8 +706,13 @@ function App() {
       setUserPrefs(loadedPrefs);
       setFilterPresets(data.filterPresets || []);
 
-      // ★ 要件4: 初回ログイン時のみ「担当者=自分」を自動ON
-      if (!loadedPrefs['filters.initialized'] && data.currentUser?.email) {
+      // ★ フィルター条件の復元（次回・別ブラウザ引き継ぎ）
+      //   保存済み filters.current があればそれを復元。無ければ従来どおり初回ログイン時のみ「担当者=自分」。
+      //   どちらも defaultFilters とマージし、将来フィルター項目が増えても壊れないようにする。
+      const savedFilters = loadedPrefs['filters.current'];
+      if (savedFilters && typeof savedFilters === 'object' && !Array.isArray(savedFilters)) {
+        setFilters({ ...defaultFilters, ...savedFilters });
+      } else if (!loadedPrefs['filters.initialized'] && data.currentUser?.email) {
         setFilters(f => ({ ...f, assigneeEmail: [data.currentUser.email] }));
         // 初回ONフラグを立てる（楽観更新+API送信）
         setUserPrefs(p => ({ ...p, 'filters.initialized': true }));
@@ -704,6 +720,8 @@ function App() {
           console.error('[filters.initialized] save failed:', err)
         );
       }
+      // 復元完了。以降の filters 変更はサーバー保存の対象にする（上の useEffect のゲート解除）。
+      filtersHydrated.current = true;
       
       setDocTags(data.docTags || []); 
       setDocFileTags(data.docFileTags || {}); 
