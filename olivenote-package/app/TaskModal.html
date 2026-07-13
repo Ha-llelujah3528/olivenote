@@ -397,6 +397,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [advisorInput, setAdvisorInput] = useState('');
       const [isAdvisorTyping, setIsAdvisorTyping] = useState(false);
       const advisorMessagesEndRef = useRef(null);
+      const advisorInputResize = useUpwardResize(40, 40, 300); // 上端ドラッグで入力欄を上方向に伸縮
 
       // ★ アドバイザー会話の Google Doc 化
       const [isGenAdvisorDocOpen, setIsGenAdvisorDocOpen] = useState(false);
@@ -1507,6 +1508,15 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 </h2>
               </div>
               <div className="flex items-center gap-1.5 md:gap-4 shrink-0">
+                {!isNew && formData.updatedAt && (
+                  <span
+                    className="hidden md:flex items-center gap-1 text-[11px] text-gray-400 font-mono whitespace-nowrap"
+                    title="最終更新日時"
+                  >
+                    <Clock size={12} className="text-gray-400" />
+                    {formatUpdatedAt(formData.updatedAt, true)}
+                  </span>
+                )}
                 {!isNew && (
                   <button
                     onClick={handleLikeTaskLocal}
@@ -2444,14 +2454,19 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                   )}
 
                   {/* 入力エリア */}
-                  <div className="p-3 bg-white border-t border-olive-200 shrink-0">
+                  <div className="p-3 pt-1 bg-white border-t border-olive-200 shrink-0">
+                    {/* 上端グリップ：上へドラッグすると入力欄が上方向に広がる（Tailwind静的ビルド非依存のため装飾はinline） */}
+                    <div {...advisorInputResize.handleProps} style={{ cursor: 'ns-resize', touchAction: 'none' }} className="h-3 flex items-center justify-center" title="ドラッグで入力欄の高さを変更">
+                      <div className="w-8 rounded-full bg-gray-300" style={{ height: 3 }}></div>
+                    </div>
                     <div className="flex items-end gap-2 bg-gray-50 p-1 pl-3 rounded-xl border border-gray-200 focus-within:border-olive-600 focus-within:ring-1 focus-within:ring-olive-400 transition-all">
                       <textarea
                         value={advisorInput}
                         onChange={(e) => setAdvisorInput(e.target.value)}
                         onKeyDown={handleAdvisorKeyDown}
+                        style={{ height: advisorInputResize.height }}
                         placeholder="タスクの相談を... (Ctrl+Enterで送信)"
-                        className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 max-h-32 min-h-[40px] outline-none"
+                        className="flex-1 bg-transparent border-none focus:ring-0 resize-none text-sm py-2 overflow-y-auto outline-none"
                         rows={1}
                       />
                       <button

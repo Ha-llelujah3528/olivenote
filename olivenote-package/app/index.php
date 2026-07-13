@@ -512,7 +512,7 @@ if (!auth_is_logged_in()) {
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
       UploadCloud, Check, Edit3, Table, Palette,
       Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown,
-      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown, StickyNote, User
+      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown, StickyNote, User, Clock
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
@@ -2252,6 +2252,45 @@ if (!auth_is_logged_in()) {
         return window.DOMPurify.sanitize(s, { ADD_ATTR: ['target', 'class', 'style'] });
       }
       return s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    };
+
+    // チャット入力欄を「上端の掴みバーを上へドラッグして上方向に」伸縮させる共通フック。
+    //   下端ドラッグ（native resize-y）は下向きに伸び、下端固定のチャット入力では上部が動いて
+    //   不自然なため、上端にグリップを置いて上方向へ広げる方式にする。
+    //   返り値: { height, handleProps }。handleProps を上端グリップ要素へ展開し、
+    //   style={{ height }} を textarea に適用する（App.html コンシェルジュ / TaskModal.html アドバイザー共用）。
+    const useUpwardResize = (initial = 40, min = 40, max = 480) => {
+      const [height, setHeight] = useState(initial);
+      const drag = useRef(null);
+      const onPointerDown = (e) => {
+        drag.current = { startY: e.clientY, startH: height };
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+        e.preventDefault();
+      };
+      const onPointerMove = (e) => {
+        if (!drag.current) return;
+        const dy = drag.current.startY - e.clientY; // 上へ動かすほど正 → 高さ増
+        setHeight(Math.max(min, Math.min(max, drag.current.startH + dy)));
+      };
+      const endDrag = (e) => {
+        if (!drag.current) return;
+        drag.current = null;
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      return { height, handleProps: { onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerCancel: endDrag } };
+    };
+
+    // 課題等の最終更新日時（DB の "YYYY-MM-DD HH:MM:SS"）を表示用に整形する。
+    //   new Date() パースは Safari やタイムゾーンで崩れるため、文字列スライスで安全に処理する。
+    //   withYear=false: "MM/DD HH:mm"（一覧の列など省スペース向け）
+    //   withYear=true : "YYYY/MM/DD HH:mm"（詳細モーダルなど）
+    //   App.html / ListView.html / TaskModal.html から共通参照（同一 <script> スコープ）。
+    const formatUpdatedAt = (raw, withYear = false) => {
+      if (!raw) return '';
+      const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+      if (!m) return '';
+      const [, y, mo, d, hh, mi] = m;
+      return withYear ? `${y}/${mo}/${d} ${hh}:${mi}` : `${mo}/${d} ${hh}:${mi}`;
     };
 
     // ============================================================
