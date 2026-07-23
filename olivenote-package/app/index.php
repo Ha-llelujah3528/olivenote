@@ -1206,7 +1206,7 @@ if (!auth_is_logged_in()) {
     // - forwardedRef 経由で getMarkdown / setMarkdown / insertTemplate / focus を露出
     // ============================================================
     const RichMarkdownEditor = React.forwardRef(
-      ({ value, onChange, placeholder, disabled, minHeight, mentionMembers, collab }, ref) => {
+      ({ value, onChange, placeholder, disabled, minHeight, mentionMembers, collab, allowMdToggle }, ref) => {
         // collab = { ydoc } が渡されたら Wiki 同時編集モード。content を渡さず Collaboration に本文を委ねる。
         // 渡されない（TaskModal 等）なら従来どおり value(markdown) ベースで動く。
         const isCollab = !!(collab && collab.ydoc);
@@ -1222,6 +1222,46 @@ if (!auth_is_logged_in()) {
         // 進行中・完了・失敗のアップロード状況を可視化（ツールバー直下のステータスバーで表示）
         // shape: [{ id, name, status: 'pending'|'success'|'error', error?: string, retry?: () => void }]
         const [pendingUploads, setPendingUploads] = useState([]);
+
+        // ===== Markdownソース表示モード（allowMdToggle 時のみ UI 露出）=====
+        // WYSIWYG（TipTap）⇔ 生のMarkdownテキスト編集（textarea）をトグルで切替。
+        // 初期状態は従来どおり WYSIWYG。MD モード中は textarea が真実で、
+        // エディタ実体への反映はトグル復帰時にまとめて行う（毎キー入力のパース回避）。
+        // useImperativeHandle / effect から参照するため state と ref を常に同期させる。
+        const [isMdSource, setIsMdSource] = useState(false);
+        const [mdDraft, setMdDraft] = useState('');
+        const isMdSourceRef = useRef(false);
+        const mdDraftRef = useRef('');
+        const mdTextareaRef = useRef(null);
+        const updateMdDraft = (v) => { mdDraftRef.current = v; setMdDraft(v); };
+        // WYSIWYG → MDソース: エディタ実体から現在の markdown を吸い出して textarea へ
+        const enterMdSource = () => {
+          if (!editor) return;
+          updateMdDraft(stripEmptyCheckboxes(editor.storage.markdown.getMarkdown()));
+          isMdSourceRef.current = true;
+          setIsMdSource(true);
+        };
+        // MDソース → WYSIWYG: ドラフトをエディタ実体へ反映（setContent は emitUpdate=false）
+        const exitMdSource = () => {
+          isMdSourceRef.current = false;
+          setIsMdSource(false);
+          if (!editor) return;
+          const md = mdDraftRef.current || '';
+          lastEmittedRef.current = md;
+          editor.commands.setContent(md, false);
+          cleanupStalePendingLinks();
+          removeEmptyTaskItems(editor);
+        };
+        // textarea 直接入力: 実ユーザー操作なので即 onChange で親へ伝播する
+        // （WYSIWYG 側の isFocused ガードと同等の安全性。プログラム由来の混入経路が無い）
+        const handleMdSourceChange = (e) => {
+          const v = e.target.value;
+          updateMdDraft(v);
+          lastEmittedRef.current = v;
+          const cb = onChangeRef.current;
+          if (typeof cb === 'function') cb(v);
+        };
+        // ================================================================
 
         // ===== @メンションサジェスト =====
         const [mentionSuggest, setMentionSuggest] = useState({ active: false, members: [], selectedIndex: 0, rect: null });
@@ -1423,6 +1463,18 @@ if (!auth_is_logged_in()) {
         useEffect(() => {
           if (!editor || isCollab) return;
           const incoming = value || '';
+          // MDソース表示中: エディタ実体へ毎回 setContent しない（キー入力ごとの markdown
+          // パースを避ける）。実体への反映は WYSIWYG へ戻すとき（exitMdSource）にまとめて行う。
+          // 外部からの value 変更（保存レスポンス等・自己発信値と異なる場合）だけドラフトへ取り込む。
+          if (isMdSourceRef.current) {
+            // textarea へ打鍵中は外部 value を取り込まない（WYSIWYG 側 isFocused ガードと同等の入力保護）
+            if (mdTextareaRef.current && document.activeElement === mdTextareaRef.current) return;
+            if (incoming !== lastEmittedRef.current) {
+              lastEmittedRef.current = incoming;
+              updateMdDraft(incoming);
+            }
+            return;
+          }
           // 編集中（フォーカス中）は setContent しない → undo 履歴と入力中状態を保護
           if (editor.isFocused) return;
           // 通常は lastEmittedRef で「同期済み」を高速判定する。ただし ref だけに頼ると、
@@ -1459,20 +1511,27 @@ if (!auth_is_logged_in()) {
         }, [editor, disabled]);
 
         React.useImperativeHandle(ref, () => ({
-          getMarkdown: () => stripEmptyCheckboxes(editor?.storage.markdown.getMarkdown() || ''),
+          // MDソース表示中は textarea のドラフトが真実（エディタ実体は復帰時まで未同期）
+          getMarkdown: () => isMdSourceRef.current
+            ? stripEmptyCheckboxes(mdDraftRef.current || '')
+            : stripEmptyCheckboxes(editor?.storage.markdown.getMarkdown() || ''),
           setMarkdown: (md) => {
             if (!editor) return;
             lastEmittedRef.current = md || '';
             editor.commands.setContent(md || '', false);
+            if (isMdSourceRef.current) updateMdDraft(md || '');
           },
           insertTemplate: (md) => {
             if (!editor) return;
-            const current = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
+            const current = isMdSourceRef.current
+              ? stripEmptyCheckboxes(mdDraftRef.current || '')
+              : stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             const sep = current && !/\n\n$/.test(current) ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
             const next = stripEmptyCheckboxes(current + sep + md);
             lastEmittedRef.current = next;
             editor.commands.setContent(next, false);
-            editor.commands.focus('end');
+            if (isMdSourceRef.current) updateMdDraft(next);
+            else editor.commands.focus('end');
             const cb = onChangeRef.current;
             if (typeof cb === 'function') cb(next);
           },
@@ -1481,6 +1540,20 @@ if (!auth_is_logged_in()) {
           // insertTemplate と同様、挿入後に onChange を明示的に呼んで state を確実に更新する。
           insertAtCursor: (text) => {
             if (!editor) return;
+            // MDソース表示中は textarea のカーソル位置へ挿入（エディタ実体も同期しておく）
+            if (isMdSourceRef.current) {
+              const ta = mdTextareaRef.current;
+              const cur = mdDraftRef.current || '';
+              const start = ta ? ta.selectionStart : cur.length;
+              const end = ta ? ta.selectionEnd : cur.length;
+              const next = cur.slice(0, start) + text + cur.slice(end);
+              updateMdDraft(next);
+              lastEmittedRef.current = next;
+              editor.commands.setContent(next, false);
+              const cb = onChangeRef.current;
+              if (typeof cb === 'function') cb(next);
+              return;
+            }
             editor.chain().focus().insertContent(text).run();
             const md = stripEmptyCheckboxes(editor.storage.markdown.getMarkdown());
             lastEmittedRef.current = md;
@@ -1852,6 +1925,10 @@ if (!auth_is_logged_in()) {
         return (
           <div className="olive-rich-md-editor border border-gray-300 rounded-lg bg-white">
             <div className="olive-tiptap-toolbar sticky top-0 z-10 flex flex-wrap items-center gap-1 p-1.5 border-b border-gray-200 bg-gray-50 rounded-t-lg">
+              {isMdSource && (
+                <span className="text-[11px] text-gray-500 px-0.5 select-none">Markdownソース編集モード（装飾はMarkdown記法で直接入力）</span>
+              )}
+              {!isMdSource && (<>
               {tbBtn(editor.isActive('heading', { level: 1 }), () => editor.chain().focus().toggleHeading({ level: 1 }).run(), 'H1', '見出し1 (# )')}
               {tbBtn(editor.isActive('heading', { level: 2 }), () => editor.chain().focus().toggleHeading({ level: 2 }).run(), 'H2', '見出し2 (## )')}
               {tbBtn(editor.isActive('heading', { level: 3 }), () => editor.chain().focus().toggleHeading({ level: 3 }).run(), 'H3', '見出し3 (### )')}
@@ -1908,6 +1985,20 @@ if (!auth_is_logged_in()) {
               <span className="w-px h-5 bg-gray-300 mx-1" />
               {tbBtn(false, () => editor.chain().focus().undo().run(), '↶', '元に戻す (Ctrl+Z)')}
               {tbBtn(false, () => editor.chain().focus().redo().run(), '↷', 'やり直し (Ctrl+Y / Ctrl+Shift+Z)')}
+              </>)}
+              {/* WYSIWYG ⇔ Markdownソース表示のトグル（allowMdToggle 時のみ・右端固定） */}
+              {allowMdToggle && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); (isMdSource ? exitMdSource : enterMdSource)(); }}
+                  title={isMdSource ? 'リッチ表示（WYSIWYG）に戻す' : 'Markdown記法のまま表示・編集する'}
+                  className={`ml-auto px-2 py-1 text-xs rounded border transition-colors flex items-center gap-1 whitespace-nowrap ${
+                    isMdSource
+                      ? 'bg-olive-100 border-olive-400 text-olive-900 font-bold'
+                      : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                  }`}
+                >{isMdSource ? 'リッチ表示' : 'MD表示'}</button>
+              )}
             </div>
             {/* 画像アップロード進捗バー: pending/error が残っている間だけ表示。success は3秒で自動消去。 */}
             {pendingUploads.length > 0 && (
@@ -1952,9 +2043,23 @@ if (!auth_is_logged_in()) {
                 ))}
               </div>
             )}
-            <div className="olive-tiptap-content" style={{ minHeight: minHeight || '240px' }}>
+            {/* MDソース表示中も EditorContent はアンマウントせず display:none で隠す
+                （ProseMirror の view detach/reattach 起因の不具合を避ける） */}
+            <div className="olive-tiptap-content" style={{ minHeight: minHeight || '240px', display: isMdSource ? 'none' : undefined }}>
               <EditorContent editor={editor} />
             </div>
+            {isMdSource && (
+              <textarea
+                ref={mdTextareaRef}
+                value={mdDraft}
+                onChange={handleMdSourceChange}
+                disabled={disabled}
+                spellCheck={false}
+                placeholder={placeholder}
+                className="block w-full p-3 text-sm text-gray-800 font-mono outline-none resize-y rounded-b-lg leading-relaxed"
+                style={{ minHeight: minHeight || '240px', fontFamily: "Consolas, 'BIZ UDGothic', 'MS Gothic', monospace" }}
+              />
+            )}
             {/* @メンションサジェストドロップダウン（position:fixed でスクロール/overflow の影響を受けない） */}
             {mentionSuggest.active && mentionSuggest.rect && (
               <div
@@ -1983,7 +2088,7 @@ if (!auth_is_logged_in()) {
                 招いたため不採用。メンションサジェストと同じ自前 fixed 方式にする。
                 座標は選択位置から coordsAtPos で都度算出（本コンポーネントは selection 変化で
                 再レンダリングされる）。onMouseDown preventDefault で操作中も画像選択を保持。 */}
-            {editor.isActive('image') && (() => {
+            {!isMdSource && editor.isActive('image') && (() => {
               let coords = null;
               try { coords = editor.view.coordsAtPos(editor.state.selection.from); } catch (_) { coords = null; }
               if (!coords) return null;
