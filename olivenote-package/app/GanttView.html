@@ -232,6 +232,18 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                         </span>
                       )}
                     </div>
+                    {/* スマホはガントの代わりのリスト表示なので、期限マーカーの代わりに
+                        「次の一手」を1行テキストで出す（操作はしない＝閲覧のみの方針どおり） */}
+                    {task.nextAction && (() => {
+                      const info = getActionDueInfo(task.nextAction.dueDate);
+                      return (
+                        <div className="flex items-center gap-1.5 mt-1.5 pt-1 border-t border-gray-100">
+                          <span className="text-[10px] text-olive-800 border border-olive-300 rounded px-1 shrink-0">次</span>
+                          {info && <span className={`text-[10px] shrink-0 font-mono ${info.className}`}>{info.text}</span>}
+                          <span className="text-xs text-gray-600 truncate">{task.nextAction.title}</span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               </button>
@@ -423,6 +435,15 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
             {s.label}
           </span>
         ))}
+        {/* 次の一手の期限マーカーの凡例（▼が何なのか分からないと線が増えただけに見えるため） */}
+        <span className="flex items-center gap-1 text-[10px] font-bold text-gray-700 whitespace-nowrap border-l border-gray-300 pl-1">
+          <span style={{
+            width: 0, height: 0, display: 'inline-block',
+            borderLeft: '4px solid transparent', borderRight: '4px solid transparent',
+            borderTop: '6px solid #4D7A2D',
+          }}></span>
+          次の一手
+        </span>
       </div>
 
       <div ref={scrollContainerRef} onScroll={handleGanttScroll} className="flex-1 overflow-auto relative">
@@ -584,6 +605,41 @@ function GanttView({ tasks, members, categories, onTaskClick, onSaveTask, onReor
                       ></div>
                     );
                   })}
+
+                  {/* ★ 次の一手（先頭の未完了1行）の期限マーカー。
+                      課題の期間バーの中の「いま止まっている位置」を1本の線で示す。
+                      出すのは先頭1行だけ＝カード・一覧と同じ基準（全行を点で撒くと、
+                      ガントが読めなくなるうえ「1つだけ見せる」という設計と食い違う）。
+                      期限を過ぎていれば赤。**pointer-events は付けない**——バーのドラッグ領域
+                      （z-50）より前面に出すため、当たり判定を持たせるとバーが掴めなくなる。 */}
+                  {(() => {
+                    const na = task.nextAction;
+                    if (!na || !na.dueDate) return null;
+                    const diffNa = Math.round((new Date(na.dueDate) - days[0]) / (1000 * 60 * 60 * 24));
+                    if (diffNa < 0 || diffNa >= days.length) return null;
+                    const isLate = na.dueDate < todayStr;
+                    const color  = isLate ? '#dc2626' : '#4D7A2D';
+                    const top    = isCompact ? 0 : 6;
+                    return (
+                      <div
+                        className="absolute z-[60] pointer-events-none flex flex-col items-center"
+                        style={{ left: diffNa * 32 + 10, top }}
+                        aria-label={`次の一手の期限: ${na.dueDate}`}
+                      >
+                        {/* 下向きの三角＋縦線。バーの上に重ねても内容が読める細さにする */}
+                        <span style={{
+                          width: 0, height: 0,
+                          borderLeft: '5px solid transparent',
+                          borderRight: '5px solid transparent',
+                          borderTop: `7px solid ${color}`,
+                          filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.35))',
+                        }} />
+                        <span style={{
+                          width: 2, height: isCompact ? 24 : 26, background: color, opacity: 0.85,
+                        }} />
+                      </div>
+                    );
+                  })()}
 
                   {/* ★ 実施日のマーク（バーよりも前面の z-[60] で描画） */}
                   {(() => {

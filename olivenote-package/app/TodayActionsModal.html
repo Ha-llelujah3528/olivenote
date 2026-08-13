@@ -1,0 +1,285 @@
+// ============================================================
+// 今日の一手（横断ビュー）
+//   ボード・一覧が「課題単位」で並ぶのに対し、ここだけは **行動単位** で並べる。
+//   自分が関わる課題の「先頭の未完了1行」だけを集め、期限順に一列にする。
+//   ＝「今日、どれから手を付けるか」を1画面で決めるための画面。
+//
+//   設計上の約束:
+//     ・出すのは課題ごとに1行だけ（nextAction）。全行はモーダルの中でしか見せない、
+//       という機能全体の原則をこの画面でも崩さない。
+//     ・チェックすると次の行が繰り上がる（サーバ確定値で tasks が差し替わるため、
+//       この画面は再計算されて勝手に次の一手へ入れ替わる）。
+//     ・タブは増やさず、フィルターエリアのボタンから開くモーダルにしている。
+//   データはすでに手元にある tasks（getInitialData が先頭1行＋件数を積んでいる）だけで
+//   足りるので、この画面のための API は作らない。
+// ============================================================
+function TodayActionsModal({ tasks, currentUser, onToggleAction, onOpenTask, onClose }) {
+  const [scope, setScope] = useState(() => {
+    try { return localStorage.getItem('olivenote_today_scope') === 'all' ? 'all' : 'mine'; }
+    catch (e) { return 'mine'; }
+  });
+  const [busyId, setBusyId] = useState(null);
+  const [hoverId, setHoverId] = useState(null);
+  const [showStalled, setShowStalled] = useState(false);
+
+  useEffect(() => {
+    try { localStorage.setItem('olivenote_today_scope', scope); } catch (e) {}
+  }, [scope]);
+
+  // Esc で閉じる。変換中の Escape は IME の取消なのでアプリ側では拾わない。
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !window.isImeComposing?.(e)) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // 背景クリックで閉じる（押した位置と離した位置の両方が背景のときだけ＝全システム共通のUI仕様）
+  const downOnBackdrop = useRef(false);
+
+  const myEmail = currentUser?.email || '';
+  const todayStr = getTodayStr();
+
+  const diffDaysFrom = (dateStr) =>
+    Math.ceil((new Date(dateStr) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+
+  const { groups, stalled, totalOpen, overdueCount } = useMemo(() => {
+    const isMine = (t) =>
+      !!myEmail && (t.assigneeEmail === myEmail || (t.subAssignees || []).includes(myEmail));
+
+    const target = tasks.filter(t =>
+      t.status !== 'done' && (scope === 'all' || isMine(t))
+    );
+
+    const rows = [];
+    const stalledRows = [];
+    target.forEach(t => {
+      if (t.nextAction) {
+        rows.push({ task: t, action: t.nextAction });
+      } else if ((t.actionTotal || 0) === 0) {
+        // 1行も無い課題＝「次の一手が誰にも決められていない」＝止まっている可能性が高い
+        stalledRows.push(t);
+      }
+      // actionTotal > 0 かつ nextAction 無し＝全件完了。ここでは何も出さない
+    });
+
+    // 期限が近い順。期限なしは最後（「やることはあるが急がない」ものを上に置かない）
+    rows.sort((a, b) => {
+      const ad = a.action.dueDate || '';
+      const bd = b.action.dueDate || '';
+      if (ad && bd) return ad.localeCompare(bd) || a.task.id.localeCompare(b.task.id);
+      if (ad) return -1;
+      if (bd) return 1;
+      // 期限なし同士は課題の期限で並べる（それも無ければ ID 順）
+      const at = a.task.dueDate || '9999-99-99';
+      const bt = b.task.dueDate || '9999-99-99';
+      return at.localeCompare(bt) || a.task.id.localeCompare(b.task.id);
+    });
+
+    const buckets = {
+      overdue: [], today: [], tomorrow: [], week: [], later: [], none: [],
+    };
+    rows.forEach(r => {
+      const d = r.action.dueDate;
+      if (!d) { buckets.none.push(r); return; }
+      const diff = diffDaysFrom(d);
+      if (diff < 0) buckets.overdue.push(r);
+      else if (diff === 0) buckets.today.push(r);
+      else if (diff === 1) buckets.tomorrow.push(r);
+      else if (diff <= 7) buckets.week.push(r);
+      else buckets.later.push(r);
+    });
+
+    stalledRows.sort((a, b) =>
+      (a.dueDate || '9999-99-99').localeCompare(b.dueDate || '9999-99-99') || a.id.localeCompare(b.id));
+
+    return {
+      groups: buckets,
+      stalled: stalledRows,
+      totalOpen: rows.length,
+      overdueCount: buckets.overdue.length,
+    };
+  }, [tasks, scope, myEmail, todayStr]);
+
+  const handleCheck = async (row) => {
+    setBusyId(row.action.id);
+    try {
+      await onToggleAction(row.action.id, true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const SECTIONS = [
+    { key: 'overdue',  label: '期限切れ',   tone: 'text-red-700 bg-red-50 border-red-200' },
+    { key: 'today',    label: '今日',       tone: 'text-olive-800 bg-olive-50 border-olive-200' },
+    { key: 'tomorrow', label: '明日',       tone: 'text-gray-700 bg-gray-50 border-gray-200' },
+    { key: 'week',     label: '今週（7日以内）', tone: 'text-gray-700 bg-gray-50 border-gray-200' },
+    { key: 'later',    label: 'それ以降',   tone: 'text-gray-500 bg-gray-50 border-gray-200' },
+    { key: 'none',     label: '期限なし',   tone: 'text-gray-500 bg-gray-50 border-gray-200' },
+  ];
+
+  const renderRow = (row) => {
+    const { task, action } = row;
+    const busy    = busyId === action.id;
+    const hover   = hoverId === action.id;
+    const dueInfo = getActionDueInfo(action.dueDate);
+    return (
+      <div key={action.id} className="flex items-start gap-2 py-2 px-3 hover:bg-olive-50/40 transition-colors">
+        {/* チェック（この画面は「消化するための画面」なのでスマホでもチェックを出す。
+            カードと違い、開くための当たり判定と重ならない） */}
+        <button
+          type="button"
+          title="完了にする"
+          aria-label={`「${action.title}」を完了にする`}
+          disabled={busy}
+          onMouseEnter={() => setHoverId(action.id)}
+          onMouseLeave={() => setHoverId(null)}
+          onClick={() => handleCheck(row)}
+          className="shrink-0 flex items-center justify-center"
+          style={{
+            width: 18, height: 18, marginTop: 2, borderRadius: 4, padding: 0,
+            border: `1.5px solid ${hover ? '#4D7A2D' : '#9ca3af'}`,
+            background: hover ? '#F2F6EE' : '#fff',
+            boxShadow: hover ? '0 0 0 3px rgba(77,122,45,0.15)' : 'none',
+            cursor: busy ? 'wait' : 'pointer',
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          {busy && <Loader2 size={11} className="animate-spin text-olive-700" />}
+        </button>
+
+        <div className="flex-1 min-w-0">
+          {/* items-start にしているのは tailwind.css が静的ビルドで items-baseline を含まないため
+              （新規クラスは必ず tailwind.css に実在するものだけを使う） */}
+          <div className="flex items-start gap-2">
+            <span className="text-sm text-gray-800 flex-1 min-w-0 break-words">{action.title}</span>
+            {dueInfo
+              ? <span className={`text-[11px] shrink-0 font-mono ${dueInfo.className}`} title={dueInfo.title}>{dueInfo.text}</span>
+              : null}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <button
+              type="button"
+              onClick={() => { onOpenTask(task); onClose(); }}
+              title="この課題を開く"
+              className="text-[11px] text-gray-500 hover:text-olive-700 hover:underline truncate max-w-full text-left"
+            >
+              {task.id.replace('TASK-', '')} / {task.title}
+            </button>
+            <span className="shrink-0">
+              <NextActionProgress total={task.actionTotal || 0} done={task.actionDone || 0} width={48} height={4} />
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-2 sm:p-6"
+      onPointerDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onPointerUp={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose();
+        downOnBackdrop.current = false;
+      }}
+    >
+      <div className="bg-white w-full max-w-2xl h-[85vh] rounded-xl shadow-2xl flex flex-col overflow-hidden">
+        {/* ヘッダー */}
+        <div className="bg-olive-800 text-white px-4 sm:px-6 py-3 flex justify-between items-center shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckSquare size={19} className="shrink-0" />
+            <span className="font-bold tracking-wide">今日の一手</span>
+            <span className="hidden sm:inline text-xs bg-white/20 rounded px-2 py-0.5 ml-1">
+              {totalOpen}件{overdueCount > 0 ? ` / 期限切れ ${overdueCount}件` : ''}
+            </span>
+          </div>
+          <button onClick={onClose} title="閉じる" aria-label="閉じる" className="text-white/80 hover:text-white shrink-0"><X size={22} /></button>
+        </div>
+
+        {/* 対象の切替。ボード/一覧のフィルターとは独立（横断で見るための画面なので、
+            絞り込み条件を持ち込むと「自分の抜け」を見つけられなくなる） */}
+        <div className="px-3 sm:px-6 py-2 border-b border-gray-200 bg-gray-50 flex items-center gap-2 shrink-0">
+          <div className="flex rounded border border-olive-300 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setScope('mine')}
+              className={`text-xs font-bold px-2.5 py-1 ${scope === 'mine' ? 'bg-olive-600 text-white' : 'bg-white text-olive-700 hover:bg-olive-50'}`}
+            >自分</button>
+            <button
+              type="button"
+              onClick={() => setScope('all')}
+              className={`text-xs font-bold px-2.5 py-1 ${scope === 'all' ? 'bg-olive-600 text-white' : 'bg-white text-olive-700 hover:bg-olive-50'}`}
+            >全員</button>
+          </div>
+          <span className="text-[11px] text-gray-500 truncate">
+            {scope === 'mine' ? '自分が担当・サブ担当の課題' : 'すべての課題'}の「次の一手」を期限順に表示（画面のフィルターとは独立）
+          </span>
+        </div>
+
+        {/* 一覧 */}
+        <div className="flex-1 overflow-y-auto">
+          {totalOpen === 0 && (
+            <div className="p-8 text-center text-sm text-gray-400">
+              表示できる「次の一手」はありません。
+              {scope === 'mine' && <><br/>担当外の課題も見るときは「全員」に切り替えてください。</>}
+            </div>
+          )}
+
+          {SECTIONS.map(sec => {
+            const rows = groups[sec.key] || [];
+            if (rows.length === 0) return null;
+            return (
+              <div key={sec.key}>
+                <div className={`sticky top-0 z-10 px-3 sm:px-6 py-1 text-xs font-bold border-b ${sec.tone}`}>
+                  {sec.label}<span className="ml-1 font-normal">{rows.length}</span>
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {rows.map(renderRow)}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* 止まっている課題（次の一手が1行も無い）。数だけでも見えると効く */}
+          {stalled.length > 0 && (
+            <div className="border-t border-gray-200 mt-2">
+              <button
+                type="button"
+                onClick={() => setShowStalled(v => !v)}
+                className="w-full px-3 sm:px-6 py-2 flex items-center gap-2 text-left hover:bg-gray-50"
+              >
+                {showStalled ? <ChevronDown size={14} className="text-gray-400 shrink-0"/> : <ChevronRight size={14} className="text-gray-400 shrink-0"/>}
+                <AlertTriangle size={13} className="text-amber-500 shrink-0" />
+                <span className="text-xs font-bold text-gray-600">次の一手が未設定の課題</span>
+                <span className="text-xs text-gray-500">{stalled.length}件</span>
+              </button>
+              {showStalled && (
+                <div className="divide-y divide-gray-100 border-t border-dashed border-gray-200">
+                  {stalled.slice(0, 50).map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => { onOpenTask(t); onClose(); }}
+                      className="w-full text-left px-3 sm:px-6 py-2 hover:bg-olive-50/40 flex items-center gap-2"
+                    >
+                      <span className="text-[10px] text-gray-400 font-mono shrink-0">{t.id.replace('TASK-', '')}</span>
+                      <span className="text-sm text-gray-700 truncate flex-1 min-w-0">{t.title}</span>
+                      {t.dueDate && <span className="text-[11px] text-gray-400 shrink-0 font-mono">{String(t.dueDate).substring(5).replace('-', '/')}</span>}
+                    </button>
+                  ))}
+                  {stalled.length > 50 && (
+                    <div className="px-3 sm:px-6 py-2 text-[11px] text-gray-400">ほか {stalled.length - 50} 件（多いので50件までを表示しています）</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="h-6"></div>
+        </div>
+      </div>
+    </div>
+  );
+}

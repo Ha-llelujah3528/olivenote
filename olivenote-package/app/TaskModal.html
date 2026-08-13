@@ -160,7 +160,7 @@ function ActionTitleInput({ action, isDone, disabled, onCommit, showToast }) {
   );
 }
 
-function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast, initialPane = null, aiModelAdvisor = AI_MODEL_DEFAULT, onAdvisorModelChange = () => {}, productionTasks = [], onOpenProductionTask = null }) {
+function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, actionTemplates = {}, docTemplates, showToast, initialPane = null, aiModelAdvisor = AI_MODEL_DEFAULT, onAdvisorModelChange = () => {}, productionTasks = [], onOpenProductionTask = null }) {
       const isNew = !task || !task.id;
 
       // この課題への共有用ディープリンクをクリップボードへコピー
@@ -226,6 +226,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const [isAddingAction, setIsAddingAction] = useState(false);
       const [hoverCheckId, setHoverCheckId] = useState(null);
       const newActionInputRef = useRef(null);
+      // 直近で「種別の定型」から入れた行（新規課題）。手入力を消さない判定にだけ使う
+      const templateActionsRef = useRef([]);
 
       // 下ペイン（本文をスクロールしても常に見える位置）としての表示状態。
       //   左ペインにすると本文の横幅がつぶれるため下に置く。
@@ -334,18 +336,24 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         }
       };
 
-      // 保存で ID が発番されたら、たまっていた行をその順番どおりに登録する
+      // 保存で ID が発番されたら、たまっていた行をその順番どおりに登録する。
+      // 追記専用のバルク（addTaskActions）で1往復にまとめる＝履歴も1行で済む。
       useEffect(() => {
         if (!task?.id || pendingActions.length === 0) return;
         let cancelled = false;
         (async () => {
           const queued = pendingActions;
+          // 中身が「種別の定型そのまま」のときだけ履歴に由来（種別名）を残す。
+          // 手で足した行が混ざっていたらテンプレート扱いにはしない。
+          const fromTemplate = JSON.stringify(queued) === JSON.stringify(templateActionsRef.current);
           setPendingActions([]);
+          templateActionsRef.current = [];
           try {
-            let payload = null;
-            for (const a of queued) {
-              payload = await api.saveTaskAction({ taskId: task.id, title: a.title, dueDate: a.dueDate || '' });
-            }
+            const payload = await api.addTaskActions(
+              task.id,
+              queued.map(a => ({ title: a.title, dueDate: a.dueDate || '' })),
+              fromTemplate ? (formDataRef.current?.type || '') : '',
+            );
             if (!cancelled) applyActionsPayload(payload);
           } catch (e) {
             if (!cancelled) actionErrorToast(e);
@@ -353,6 +361,111 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         })();
         return () => { cancelled = true; };
       }, [task?.id]);
+
+      // ------------------------------------------------------------
+      // 種別ごとの定型ネクストアクション（settings.actionTemplates）
+      //   「毎回おなじ手順を1行ずつ手で足す」のをやめるための機能。
+      //   ここが埋まっていない課題＝止まっている課題、という見方を成立させたい。
+      // ------------------------------------------------------------
+      const templateActions = getActionTemplate(actionTemplates, formData.type);
+
+      // 新規課題で種別を選んだときの自動投入。
+      //   手で書いた行があるときは触らない（前の種別のテンプレそのままのときだけ差し替える）。
+      const applyTypeActionTemplate = (nextType) => {
+        const next = buildActionsFromTemplate(getActionTemplate(actionTemplates, nextType));
+        const untouched = JSON.stringify(pendingActions) === JSON.stringify(templateActionsRef.current);
+        if (pendingActions.length > 0 && !untouched) return;
+        templateActionsRef.current = next;
+        setPendingActions(next);
+      };
+
+      // 既存課題（および手動での追加）: 現在の種別の定型を末尾へ追加する
+      const handleApplyActionTemplate = async () => {
+        const items = buildActionsFromTemplate(templateActions);
+        if (items.length === 0) return;
+        if (!task?.id) {
+          setPendingActions(prev => [...prev, ...items]);
+          templateActionsRef.current = [];   // 以後は「手で触った」扱い＝種別変更で消さない
+          return;
+        }
+        setIsAddingAction(true);
+        try {
+          applyActionsPayload(await api.addTaskActions(task.id, items, formData.type));
+          showToast && showToast(`「${formData.type}」の定型アクションを${items.length}件追加しました`);
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setIsAddingAction(false);
+        }
+      };
+
+      // ------------------------------------------------------------
+      // AI に「次の一手」を提案してもらう（v1.3.5）
+      //   ★ 提案は state に置くだけで DB には書かない。採用した行だけを
+      //     addTaskActions（追記専用）で登録する＝AI が勝手に課題を書き換えない。
+      //   期限は絶対日付ではなく offsetDays（今日から N 日後）で返るので、
+      //   定型アクションと同じ addDaysStr で実日付に変換する。
+      // ------------------------------------------------------------
+      const [aiSuggestions, setAiSuggestions] = useState(null);   // null=未実行 / [] =0件 / [{title, offsetDays, reason}]
+      const [aiSuggestBusy, setAiSuggestBusy] = useState(false);
+      const [aiPicked, setAiPicked]           = useState({});      // index → 採用するか
+
+      // 未発番の仮 ID（TASK-TEMP-…）は「まだ保存されていない」扱い。
+      // サーバは taskId を DB 検索のキーにするので、仮 ID を送ると必ず「課題が見つかりません」になる。
+      const isSavedTask = !!task?.id && !String(task.id).startsWith('TASK-TEMP-');
+
+      const handleSuggestActions = async () => {
+        setAiSuggestBusy(true);
+        try {
+          const res = await api.suggestTaskActions({
+            // 保存済みなら taskId だけ渡す（本文・コメントはサーバが DB から読む。
+            // 一覧の軽量タスクは description が画像除去済みプレースホルダなので送らない）
+            taskId:      isSavedTask ? task.id : '',
+            title:       formData.title || '',
+            description: isSavedTask ? '' : (formData.description || ''),
+            type:        formData.type || '',
+            category:    formData.category || '',
+          });
+          const list = Array.isArray(res?.suggestions) ? res.suggestions : [];
+          setAiSuggestions(list);
+          setAiPicked(Object.fromEntries(list.map((_, i) => [i, true])));
+          if (list.length === 0) {
+            showToast && showToast('提案できる内容が見つかりませんでした。詳細やコメントを書いてから試してください。', 'error');
+          }
+        } catch (e) {
+          showToast && showToast('AI提案に失敗しました: ' + e.message, 'error');
+        } finally {
+          setAiSuggestBusy(false);
+        }
+      };
+
+      // 選んだ提案だけを末尾に追加する（既存行は一切触らない）
+      const handleAdoptSuggestions = async () => {
+        const items = (aiSuggestions || [])
+          .filter((_, i) => aiPicked[i])
+          .map(s => ({
+            title:   s.title,
+            dueDate: (s.offsetDays === null || s.offsetDays === undefined) ? '' : addDaysStr(getTodayStr(), s.offsetDays),
+          }));
+        if (items.length === 0) return;
+        if (!isSavedTask) {
+          // 未保存の新規課題では pendingActions にためる（保存時にまとめて登録される）
+          setPendingActions(prev => [...prev, ...items]);
+          templateActionsRef.current = [];   // 以後は「手で触った」扱い＝種別変更で消さない
+          setAiSuggestions(null);
+          return;
+        }
+        setIsAddingAction(true);
+        try {
+          applyActionsPayload(await api.addTaskActions(task.id, items, 'AI提案'));
+          setAiSuggestions(null);
+          showToast && showToast(`AI の提案から${items.length}件追加しました`);
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setIsAddingAction(false);
+        }
+      };
 
       // 1行の title / dueDate を更新（変化が無ければ通信しない）
       //   空タイトルは呼び出し側（onBlur）で弾く。ここへは非空だけが来る。
@@ -416,7 +529,16 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       // 表示中の課題を CSV エクスポート（コメント・画像は除く、description は Markdown）
       // ============================================================
       const handleExportCsv = () => {
-        downloadTasksCsv([formData], {
+        // formData は課題本体だけを持つ。CSV の「次の一手」列は一覧と同じ形
+        //（先頭の未完了1行＋件数）で、この場で actions から組み立てて渡す。
+        const openAction = actions.find(a => !a.doneAt) || null;
+        const csvTask = {
+          ...formData,
+          actionTotal,
+          actionDone,
+          nextAction: openAction ? { id: openAction.id, title: openAction.title, dueDate: openAction.dueDate } : null,
+        };
+        downloadTasksCsv([csvTask], {
           members,
           filename: `olivenote_${sanitizeFilename(formData.id || 'task')}_${sanitizeFilename(formData.title)}.csv`,
         });
@@ -1462,6 +1584,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         const { name, value } = e.target;
 
         if (name === 'type' && isNew) {
+           // 定型ネクストアクションは本文テンプレートとは独立に投入する
+           //（本文が手書きでも手順は入れたい／その逆もあるため）
+           applyTypeActionTemplate(value);
            const oldType = formData.type;
            const oldTemplate = taskTemplates[oldType] || '';
            const newTemplate = taskTemplates[value] || '';
@@ -2666,6 +2791,92 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                       {isAddingAction ? <Loader2 size={13} className="animate-spin"/> : '追加'}
                     </button>
                   </div>
+                  {/* 種別の定型アクション。「毎回おなじ手順を手で足す」のをやめるための入口。
+                      新規課題では種別を選んだ時点で自動で入るが、後から足したいとき用にボタンも出す。 */}
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    {templateActions.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleApplyActionTemplate}
+                        disabled={isAddingAction || isDeletingTask}
+                        title={templateActions.map(r => r.title).join(' / ')}
+                        className="text-xs font-bold px-2 py-1 rounded border border-olive-300 bg-white text-olive-800 hover:bg-olive-100 disabled:opacity-50 flex items-center gap-1"
+                      >
+                        <FileText size={13}/>「{formData.type}」の定型を追加（{templateActions.length}件）
+                      </button>
+                    )}
+                    {/* AI 提案。詳細欄とコメント欄を読ませて「次にやること」の候補を出す
+                        （＝この機能の出発点＝人が毎回そこを探しに行っていた作業の肩代わり）。
+                        出るのは候補だけで、採用した行だけが登録される。 */}
+                    <button
+                      type="button"
+                      onClick={handleSuggestActions}
+                      disabled={aiSuggestBusy || isAddingAction || isDeletingTask}
+                      title="課題の詳細とコメントを読んで、次にやることの候補を出します（登録はされません）"
+                      className="text-xs font-bold px-2 py-1 rounded border border-purple-200 bg-white text-purple-700 hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      {aiSuggestBusy ? <Loader2 size={13} className="animate-spin"/> : <Sparkles size={13}/>}
+                      {aiSuggestBusy ? 'AIが考えています…' : 'AIに提案してもらう'}
+                    </button>
+                    {templateActions.length > 0 && <span className="text-[11px] text-gray-400">末尾に追加します</span>}
+                  </div>
+
+                  {/* AI の提案（採用するまで DB には入らない） */}
+                  {aiSuggestions && aiSuggestions.length > 0 && (
+                    <div className="mt-2 border border-purple-200 bg-purple-100 rounded p-2">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <Sparkles size={13} className="text-purple-600 shrink-0"/>
+                        <span className="text-xs font-bold text-purple-800">AI の提案（{aiSuggestions.length}件）</span>
+                        <span className="text-[11px] text-gray-500 truncate">チェックした行だけを末尾に追加します</span>
+                        <button type="button" title="提案を閉じる" aria-label="提案を閉じる"
+                                onClick={() => setAiSuggestions(null)}
+                                className="ml-auto shrink-0 text-gray-400 hover:text-gray-700 p-0.5 rounded">
+                          <X size={13}/>
+                        </button>
+                      </div>
+                      <div className="space-y-1">
+                        {aiSuggestions.map((s, i) => {
+                          const due = (s.offsetDays === null || s.offsetDays === undefined)
+                            ? '' : addDaysStr(getTodayStr(), s.offsetDays);
+                          return (
+                            <label key={i} className="flex items-start gap-2 bg-white border border-purple-200 rounded px-2 py-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={!!aiPicked[i]}
+                                onChange={(e) => setAiPicked(p => ({ ...p, [i]: e.target.checked }))}
+                                className="mt-1 shrink-0"
+                              />
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-sm text-gray-800 break-words">{s.title}</span>
+                                <span className="block text-[11px] text-gray-500 mt-0.5">
+                                  {due ? `期限 ${due}` : '期限なし'}{s.reason ? ` ・ ${s.reason}` : ''}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <button
+                          type="button"
+                          onClick={handleAdoptSuggestions}
+                          disabled={isAddingAction || isDeletingTask || !aiSuggestions.some((_, i) => aiPicked[i])}
+                          className="text-xs font-bold px-2 py-1 rounded border border-olive-600 bg-olive-600 text-white hover:bg-olive-700 disabled:opacity-50 flex items-center gap-1"
+                        >
+                          <Plus size={13}/>選んだ行を追加
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSuggestActions}
+                          disabled={aiSuggestBusy || isAddingAction || isDeletingTask}
+                          className="text-xs font-bold px-2 py-1 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1"
+                        >
+                          <RefreshCw size={13}/>出し直す
+                        </button>
+                        <span className="text-[11px] text-gray-400 truncate">内容は追加後に編集できます</span>
+                      </div>
+                    </div>
+                  )}
                   {!task?.id && (
                     <p className="text-[11px] text-gray-400 mt-1">※ 課題を保存すると、ここに書いた行がそのままの順番で登録されます。</p>
                   )}

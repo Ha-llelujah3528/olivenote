@@ -2278,7 +2278,7 @@ if (!auth_is_logged_in()) {
       'gatherAiInformation', 'chatWithOliveAI', 'generateTasksFromContext',
       'generateDocumentFromComment', 'generateAndAppendReleaseNote',
       'generateAdvisorDoc', 'generateImage', 'analyzeWhiteboardImage',
-      'syncDocumentsFromDrive', 'uploadFile',
+      'syncDocumentsFromDrive', 'uploadFile', 'suggestTaskActions',
     ]);
     const callApi = async (action, payload = {}) => {
       const opts = {
@@ -2367,9 +2367,15 @@ if (!auth_is_logged_in()) {
       //   を返すので、呼び出し側はそれで丸ごと差し替える（サマリと全行の乖離を防ぐ）。
       getTaskActions:        (taskId)                                  => callApi('getTaskActions', { taskId }),
       saveTaskAction:        ({ taskId, id = 0, title, dueDate = '' }) => callApi('saveTaskAction', { taskId, id, title, dueDate }),
+      // 末尾への追記だけを行うバルク（定型アクションの適用・新規課題の保存時のまとめ登録）
+      addTaskActions:        (taskId, items, source = '')                => callApi('addTaskActions', { taskId, items, source }),
       toggleTaskAction:      (id, done)                                => callApi('toggleTaskAction', { id, done }),
       deleteTaskAction:      (id, taskId = '')                         => callApi('deleteTaskAction', { id, taskId }),
       reorderTaskActions:    (taskId, ids)                             => callApi('reorderTaskActions', { taskId, ids }),
+      // AI に「次にやること」の候補を出させる（提案だけ・登録は addTaskActions が担う）。
+      // 返るのは { suggestions: [{ title, offsetDays, reason }] }。期限は絶対日付ではなく
+      // 「今日から N 日後」で返り、実日付への変換はクライアント側（addDaysStr）で行う。
+      suggestTaskActions:    (payload)                                 => callApi('suggestTaskActions', payload),
 
       // ---- 制作物管理（オリジナル版限定・ENABLE_PRODUCTION）----
       getProductionTaskDetail:   (taskId) => callApi('getProductionTaskDetail', { taskId }),
@@ -2686,6 +2692,13 @@ if (!auth_is_logged_in()) {
       { key: 'attachments',        label: '添付ファイル名' },
       { key: 'createdAt',          label: '作成日時' },
       { key: 'updatedAt',          label: '更新日時' },
+      // ネクストアクション。全行ではなく「いま先頭にある1行」＋件数だけを出す
+      //   （一覧の tasks は先頭1行しか持たないため。件数は 2/6 のような分数にすると
+      //     Excel が日付に変換してしまうので、完了数と総数の2列に分ける）
+      { key: 'nextActionTitle',    label: '次の一手' },
+      { key: 'nextActionDueDate',  label: '次の一手の期限' },
+      { key: 'actionDone',         label: 'アクション完了数' },
+      { key: 'actionTotal',        label: 'アクション総数' },
       { key: 'description',        label: '詳細(Markdown)' },
     ];
 
@@ -2708,6 +2721,10 @@ if (!auth_is_logged_in()) {
           case 'subAssignees': return subNames;
           case 'likes':        return (task.likes || []).length;
           case 'attachments':  return attachNames;
+          case 'nextActionTitle':   return task.nextAction ? task.nextAction.title : '';
+          case 'nextActionDueDate': return task.nextAction ? (task.nextAction.dueDate || '') : '';
+          case 'actionDone':        return task.actionTotal ? (task.actionDone || 0) : '';
+          case 'actionTotal':       return task.actionTotal || '';
           default:             return task[col.key] != null ? task[col.key] : '';
         }
       });
@@ -2795,12 +2812,66 @@ if (!auth_is_logged_in()) {
       return               { text, className: 'text-olive-700',                 title: `期限 ${dueDate}` };
     };
 
+    // ------------------------------------------------------------
+    // 種別ごとの定型ネクストアクション（settings.actionTemplates）
+    //   形: { 種別名: [{ title, offset }] }
+    //   offset は「適用した日から N 日後」を表す任意項目（null なら期限なし）。
+    //   テンプレートに絶対日付は持たせない——課題ごとに正しい日付が違うので、
+    //   固定日を配ると必ず間違った期限が量産され、期限表示そのものが信用されなくなる。
+    // ------------------------------------------------------------
+    const MAX_ACTION_TEMPLATE_ROWS = 50;
+
+    const addDaysStr = (dateStr, days) => {
+      const d = new Date(String(dateStr) + 'T00:00:00');
+      if (isNaN(d.getTime())) return '';
+      d.setDate(d.getDate() + (Number(days) || 0));
+      return d.toLocaleDateString('sv-SE');
+    };
+
+    // 設定値は人が編集する JSON なので、使う側では必ずこのゲートを通して読む
+    const getActionTemplate = (actionTemplates, type) => {
+      const rows = (actionTemplates && type) ? actionTemplates[type] : null;
+      if (!Array.isArray(rows)) return [];
+      return rows
+        .filter(r => r && String(r.title || '').trim() !== '')
+        .slice(0, MAX_ACTION_TEMPLATE_ROWS)
+        .map(r => {
+          const n = (r.offset === null || r.offset === undefined || r.offset === '') ? null : Number(r.offset);
+          return {
+            title:  String(r.title).trim().slice(0, 500),
+            offset: (n !== null && Number.isFinite(n)) ? Math.max(0, Math.min(3650, Math.round(n))) : null,
+          };
+        });
+    };
+
+    // テンプレート行 → 実際に登録する行（offset を基準日からの実日付へ変換）
+    const buildActionsFromTemplate = (rows, baseDate = null) => {
+      const base = baseDate || getTodayStr();
+      return rows.map(r => ({
+        title:   r.title,
+        dueDate: r.offset == null ? '' : addDaysStr(base, r.offset),
+      }));
+    };
+
+    // 「次の一手が未設定」の主張度（個人設定 userPrefs['nextAction.hintLevel']）。
+    //   止まっている課題を見つけるための警告なので、出し方の好みは人によって割れる。
+    //   ボードが未設定だらけの立ち上げ期はうるさく、運用が回り出すと逆に見落とす——
+    //   どちらにも寄せられるように 4 段階から選べるようにした。
+    const NEXT_ACTION_HINT_LEVELS = [
+      { id: 'strong', label: '目立たせる' },
+      { id: 'normal', label: '標準' },
+      { id: 'quiet',  label: '控えめ' },
+      { id: 'off',    label: '表示しない' },
+    ];
+    const NEXT_ACTION_HINT_DEFAULT = 'normal';
+    const sanitizeHintLevel = (v) => NEXT_ACTION_HINT_LEVELS.some(o => o.id === v) ? v : NEXT_ACTION_HINT_DEFAULT;
+
     // ボード/一覧のカードに出す1行。
     //   interactive=false（スマホ）ではチェックボックスを描かない。ホバーが無い環境で
     //   タップを効かせると、カードを開くつもりの誤タップでアクションが完了してしまうため
     //   （スマホは外出先で見るだけ・操作はモーダル内で行う方針）。
     //   チェックの当たり判定はボックス自身に限定し、カーソルが枠内にあるときだけ反応する。
-    const NextActionCardRow = ({ task, onToggle = null, interactive = true, compact = false, busy = false }) => {
+    const NextActionCardRow = ({ task, onToggle = null, interactive = true, compact = false, busy = false, hintLevel = NEXT_ACTION_HINT_DEFAULT }) => {
       const [hover, setHover] = useState(false);
       const total = task.actionTotal || 0;
       const done  = task.actionDone  || 0;
@@ -2808,8 +2879,22 @@ if (!auth_is_logged_in()) {
 
       // 未設定: 「次の一手を誰も決めていない課題」を見つけられるようにする。
       //   compact 表示と完了済みの課題では出さない（完了列が警告行で埋まるのを防ぐ）。
+      //   主張度は個人設定（hintLevel）で 目立たせる / 標準 / 控えめ / 表示しない。
       if (total === 0) {
-        if (compact || task.status === 'done') return null;
+        const hint = sanitizeHintLevel(hintLevel);
+        if (compact || task.status === 'done' || hint === 'off') return null;
+        if (hint === 'quiet') {
+          // 枠線もアイコンも出さず、席だけ空けておく（見れば分かる／視界には入らない）
+          return <div className="text-[11px] text-gray-300 mt-2 mb-2">次の一手が未設定</div>;
+        }
+        if (hint === 'strong') {
+          return (
+            <div className="border border-amber-400 bg-amber-50 rounded py-1.5 px-1.5 mt-2 mb-2 flex items-center gap-1.5 text-amber-700">
+              <AlertTriangle size={13} className="shrink-0" />
+              <span className="text-[11px] font-bold">次の一手が未設定</span>
+            </div>
+          );
+        }
         return (
           <div className="border-t border-b border-dashed border-gray-300 py-1.5 mt-2 mb-2 flex items-center gap-1.5 text-gray-400">
             <AlertTriangle size={12} className="shrink-0" />
@@ -2885,6 +2970,7 @@ if (!auth_is_logged_in()) {
     <?php readfile(__DIR__ . '/ListView.html'); ?>
     <?php readfile(__DIR__ . '/TaskModal.html'); ?>
     <?php readfile(__DIR__ . '/TaskAutoGenerateModal.html'); ?>
+    <?php readfile(__DIR__ . '/TodayActionsModal.html'); ?>
     <?php readfile(__DIR__ . '/GanttView.html'); ?>
     <?php /* 制作物管理はオリジナル版限定。パッケージ版(dist)にはこの2ファイルを同梱しないため、
              ENABLE_PRODUCTION が真のときだけ読み込む（存在しないファイルの readfile 警告を防ぐ）。 */ ?>

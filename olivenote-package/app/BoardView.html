@@ -1,4 +1,4 @@
-function BoardView({ tasks, members, categories, onTaskClick, onDropTask, onToggleAction = null, compactMode = false, splitArea = null, hideColumnHeaders = false }) {
+function BoardView({ tasks, members, categories, onTaskClick, onDropTask, onToggleAction = null, compactMode = false, splitArea = null, hideColumnHeaders = false, actionHintLevel = NEXT_ACTION_HINT_DEFAULT }) {
       const [dragOverTaskId, setDragOverTaskId] = useState(null);
       const [dragOverInvalid, setDragOverInvalid] = useState(false);
       const scrollTimer = useRef(null);
@@ -92,6 +92,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, onTogg
             interactive={!isMobile && !!onToggleAction}
             compact={compactMode}
             busy={busyActionId === task.nextAction?.id}
+            hintLevel={actionHintLevel}
           />
         );
 

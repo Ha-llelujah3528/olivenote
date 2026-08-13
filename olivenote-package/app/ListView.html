@@ -8,16 +8,26 @@
 //     - visibleColumns: 表示する列の id 配列 / onColumnsChange(newCols)
 //     - splitArea: 'main' | 'sub' | null（分割描画されたときのラベル用）
 // ============================================================
+// 一覧の既定表示列（列設定を保存していないユーザー／初回）。App.html からも参照する。
+const LIST_DEFAULT_COLUMNS = [
+  'title', 'nextAction', 'category', 'type', 'assigneeName',
+  'subAssignees', 'status', 'startDate', 'dueDate', 'updatedAt',
+];
+
 function ListView({
   tasks, members, categories, taskTypes,
   onTaskClick,
   sort, onSortChange,
   visibleColumns, onColumnsChange,
   splitArea = null,
+  actionHintLevel = NEXT_ACTION_HINT_DEFAULT,
 }) {
   // 列定義（id 順は固定、表示/非表示のみ切替可能）
   const ALL_COLUMNS = [
     { id: 'title',         label: '課題名',     width: 'min-w-[220px] w-[28%]' },
+    // 「次の一手」= 先頭の未完了アクション1行（ボードのカードに出るのと同じ行）。
+    //   幅クラスは tailwind.css（静的ビルド）に存在するものだけを使う。
+    { id: 'nextAction',    label: '次の一手',   width: 'min-w-[220px] w-[12%]' },
     { id: 'category',      label: 'カテゴリ',    width: 'min-w-[100px] w-[10%]' },
     { id: 'type',          label: '種別',       width: 'min-w-[100px] w-[10%]' },
     { id: 'assigneeName',  label: '担当',       width: 'min-w-[100px] w-[10%]' },
@@ -36,6 +46,12 @@ function ListView({
     membersByEmail: new Map((members || []).map(m => [m.email, m])),
     categoriesByName: new Map((categories || []).map(c => [c.name, c])),
   }), [members, categories]);
+
+  // 「次の一手」列のソートキー（日付文字列と同じ土俵に載せるため 9997〜9999 を番兵に使う）
+  const nextActionSortKey = (t) => {
+    if (t.nextAction) return t.nextAction.dueDate || '9997';
+    return (t.actionTotal || 0) > 0 ? '9998' : '9999';
+  };
 
   // ソート適用
   const sortedTasks = useMemo(() => {
@@ -68,6 +84,10 @@ function ListView({
           va = a.dueDate || ''; vb = b.dueDate || ''; break;
         case 'updatedAt':
           va = a.updatedAt || ''; vb = b.updatedAt || ''; break;
+        case 'nextAction':
+          // 期限が近い順。期限なし → 全件完了 → 未設定 の順に後ろへ送り、
+          // 昇順にすると「今すぐ動くべき課題」が上、「止まっている課題」が下に固まる。
+          va = nextActionSortKey(a); vb = nextActionSortKey(b); break;
         default:
           va = ''; vb = '';
       }
@@ -119,6 +139,33 @@ function ListView({
             <span className={`shrink-0 w-1 h-5 rounded-sm ${colorBar}`}></span>
             <span className="text-[10px] text-gray-400 font-mono shrink-0">{task.id}</span>
             <span className="font-medium text-gray-800 truncate">{task.title}</span>
+          </div>
+        );
+      }
+      // 次の一手（先頭の未完了アクション1行）。全行はモーダルの中だけ、という原則は表でも同じ。
+      case 'nextAction': {
+        const total = task.actionTotal || 0;
+        const na    = task.nextAction || null;
+        if (!na) {
+          if (total > 0) {
+            return <span className="text-[11px] text-olive-700 flex items-center gap-1"><Check size={12}/>すべて完了</span>;
+          }
+          const hint = sanitizeHintLevel(actionHintLevel);
+          if (hint === 'off')   return <span className="text-gray-300 text-xs">—</span>;
+          if (hint === 'quiet') return <span className="text-[11px] text-gray-300">次の一手が未設定</span>;
+          if (hint === 'strong') {
+            return <span className="text-[11px] text-amber-700 font-bold flex items-center gap-1"><AlertTriangle size={12}/>次の一手が未設定</span>;
+          }
+          return <span className="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle size={12}/>次の一手が未設定</span>;
+        }
+        const info = getActionDueInfo(na.dueDate);
+        return (
+          <div className="flex items-center gap-2 min-w-0">
+            <NextActionProgress total={total} done={task.actionDone || 0} width={36} />
+            {info
+              ? <span className={`text-[11px] shrink-0 font-mono ${info.className}`} title={info.title}>{info.text}</span>
+              : <span className="text-[11px] text-gray-300 shrink-0">—</span>}
+            <span className="truncate text-gray-700" title={na.title}>{na.title}</span>
           </div>
         );
       }

@@ -2023,6 +2023,13 @@ function lwDefaultPrefs(): array {
         // 保留(hold)は期限を持たないステータスのため、そもそもリマインド対象にならない。
         'prodEnabled'      => true,
         'prodDue'          => ['d5' => true, 'd3' => true, 'd1' => true, 'd0' => true, 'overdue' => true],
+        // ---- ネクストアクション（次の一手）の期限リマインド ----
+        // 対象は「先頭の未完了1行」だけ。全行を送るとチェックリストの読み上げになり、
+        // 「見せるのは常に1つだけ」という機能そのものの設計が崩れる。
+        // バケットは課題の期限より短い視野（最長3日前）にしている——アクションは
+        // 数日で終わる粒度で書く前提なので、5日前に言われても手が動かない。
+        'naEnabled'        => true,
+        'naDue'            => ['d3' => true, 'd1' => true, 'd0' => true, 'overdue' => true],
     ];
 }
 function lwMergePrefs(array $def, array $p): array {
@@ -2242,6 +2249,19 @@ function lwFmtMd(string $ymd): string {
     try { return (new DateTime($ymd))->format('n/j'); } catch (Throwable $e) { return $ymd; }
 }
 
+// リマインドの課題1行に足す「次の一手」。載せるのは先頭の未完了1行だけ。
+//   通知を見た時点で「で、何をすればいいのか」まで分かるようにするのが目的なので、
+//   一覧の読み上げにならないよう長い内容は丸める。アクションが無ければ空文字。
+function lwNextActionSuffix(?array $summary): string {
+    $na = is_array($summary) ? ($summary['nextAction'] ?? null) : null;
+    if (!is_array($na)) return '';
+    $title = (string)($na['title'] ?? '');
+    if ($title === '') return '';
+    if (mb_strlen($title) > 40) $title = mb_substr($title, 0, 40) . '…';
+    $due = (string)($na['dueDate'] ?? '');
+    return "\n  → 次の一手: " . $title . ($due !== '' ? '（' . lwFmtMd($due) . '）' : '');
+}
+
 // ================================================================
 // LINE WORKS: 定期通知（cron）— 期限/開始日リマインド ＋ 週次サマリ
 //   入口: api.php?lw=cron&token=XXXX（セッション認証バイパス・トークン保護）
@@ -2263,7 +2283,10 @@ function lwRunScheduledNotifications(PDO $pdo): void {
     // 前回 cron で送信失敗したリマインドを先に再送（バケットが変わる前の救済）
     $resent = lwRetryFlush($pdo);
 
-    // ---- 日付系（期限・開始日）: ユーザー単位ダイジェスト ----
+    // ---- 日付系（期限・開始日・次の一手）: ユーザー単位ダイジェスト ----
+    //   ネクストアクションのサマリは 2 クエリでまとめて引く（課題ごとに引くと N+1 になる）。
+    //   テーブル未作成環境では空配列が返るだけで、他のリマインドには影響しない。
+    $naSummaries = fetchTaskActionSummaries($pdo);
     $perUser = [];
     $stmt = $pdo->query("SELECT id, title, start_date, due_date, status, assignee_email, sub_assignees FROM tasks WHERE deleted_at IS NULL AND status <> 'done'");
     while ($t = $stmt->fetch()) {
@@ -2292,11 +2315,25 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             elseif ($diff === 1) $startBucket = 'd1';
             elseif ($diff === 0) $startBucket = 'd0';
         }
-        if ($dueBucket === null && $startBucket === null) continue;
+        // 次の一手（先頭の未完了1行）の期限。課題そのものの期限とは別に追い立てる
+        //  —— 課題の期限はまだ先でも「今日やる1行」が期限切れなら、そこで止まっている。
+        $naBucket = null;
+        $na       = $naSummaries[$t['id']]['nextAction'] ?? null;
+        if (is_array($na) && !empty($na['dueDate'])) {
+            $d = new DateTime((string)$na['dueDate']); $d->setTime(0, 0, 0);
+            $diff = (int)$today->diff($d)->format('%r%a');
+            if ($diff === 3) $naBucket = 'd3';
+            elseif ($diff === 1) $naBucket = 'd1';
+            elseif ($diff === 0) $naBucket = 'd0';
+            elseif ($diff < 0) $naBucket = 'overdue';
+        }
+
+        if ($dueBucket === null && $startBucket === null && $naBucket === null) continue;
         foreach ($recipients as $em) {
-            if (!isset($perUser[$em])) $perUser[$em] = ['due' => [], 'start' => []];
+            if (!isset($perUser[$em])) $perUser[$em] = ['due' => [], 'start' => [], 'na' => []];
             if ($dueBucket)   $perUser[$em]['due'][$dueBucket][]     = $t;
             if ($startBucket) $perUser[$em]['start'][$startBucket][] = $t;
+            if ($naBucket)    $perUser[$em]['na'][$naBucket][]       = $t;
         }
     }
 
@@ -2316,7 +2353,8 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             $tl = [];
             foreach ($groups['due'][$b] as $t) {
                 $claims[] = [$email, $t['id'], 'due_' . $b, $todayStr];
-                $tl[] = '・' . $t['title'] . "\n  " . lwTaskUrl($t['id']);
+                // 課題名の下に「次の一手」1行を添える（通知だけで次の動きが分かるように）
+                $tl[] = '・' . $t['title'] . lwNextActionSuffix($naSummaries[$t['id']] ?? null) . "\n  " . lwTaskUrl($t['id']);
             }
             if ($tl) $lines[] = '【' . $dueLabels[$b] . "】\n" . implode("\n", $tl);
         }
@@ -2325,9 +2363,26 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             $tl = [];
             foreach ($groups['start'][$b] as $t) {
                 $claims[] = [$email, $t['id'], 'start_' . $b, $todayStr];
-                $tl[] = '・' . $t['title'] . "\n  " . lwTaskUrl($t['id']);
+                $tl[] = '・' . $t['title'] . lwNextActionSuffix($naSummaries[$t['id']] ?? null) . "\n  " . lwTaskUrl($t['id']);
             }
             if ($tl) $lines[] = '【' . $startLabels[$b] . "】\n" . implode("\n", $tl);
+        }
+        // 次の一手の期限（課題の期限リマインドとは独立した ON/OFF）。
+        //   outbox の kind にアクション id を含める＝先頭行が入れ替われば別リマインド扱いになり、
+        //   同じ課題でも「次の1行」ごとにきちんと1回ずつ届く。
+        $naLabels = ['d3' => '次の一手の期限3日前', 'd1' => '次の一手の期限1日前', 'd0' => '次の一手が本日期限', 'overdue' => '次の一手が期限超過'];
+        if (!empty($prefs['naEnabled'])) {
+            foreach (['d3', 'd1', 'd0', 'overdue'] as $b) {
+                if (empty($groups['na'][$b]) || empty($prefs['naDue'][$b])) continue;
+                $tl = [];
+                foreach ($groups['na'][$b] as $t) {
+                    $na = $naSummaries[$t['id']]['nextAction'] ?? null;
+                    if (!is_array($na)) continue;
+                    $claims[] = [$email, $t['id'], 'na' . (int)($na['id'] ?? 0) . '_' . $b, $todayStr];
+                    $tl[] = '・' . (string)$na['title'] . "\n  （課題: " . $t['title'] . "）\n  " . lwTaskUrl($t['id']);
+                }
+                if ($tl) $lines[] = '【' . $naLabels[$b] . "】\n" . implode("\n", $tl);
+            }
         }
         if (!$lines) continue;
 
@@ -2484,7 +2539,8 @@ function lwRunScheduledNotifications(PDO $pdo): void {
         if ($uid === null) continue;
 
         $tl = [];
-        foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . "）\n  " . lwTaskUrl($t['id']);
+        foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . '）'
+            . lwNextActionSuffix($naSummaries[$t['id']] ?? null) . "\n  " . lwTaskUrl($t['id']);
         $msg = "🫒 今週が期限の課題（{$weekPeriod}）\n\n" . implode("\n", $tl);
         if (lwSendToUserId($uid, lwTextContent($msg))) {
             lwOutboxClaim($pdo, $email, '', 'weekly_due', $todayStr);
@@ -2511,7 +2567,8 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             if ($uid === null) continue;
 
             $tl = [];
-            foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . "）\n  " . lwTaskUrl($t['id']);
+            foreach ($list as $t) $tl[] = '・' . $t['title'] . '（期限 ' . lwFmtMd($t['due_date']) . '）'
+                . lwNextActionSuffix($naSummaries[$t['id']] ?? null) . "\n  " . lwTaskUrl($t['id']);
             $msg = "🫒 {$monthLabel}が期限の課題（月初リマインド）\n\n" . implode("\n", $tl);
             if (lwSendToUserId($uid, lwTextContent($msg))) {
                 lwOutboxClaim($pdo, $email, '', 'monthly_due', $todayStr);
@@ -2904,6 +2961,8 @@ try {
                     'categories'    => $settings['categories'] ?? [],
                     'taskTypes'     => $settings['taskTypes'] ?? [],
                     'taskTemplates' => $settings['taskTemplates'] ?? new stdClass(),
+                    // 種別ごとの定型ネクストアクション: { 種別名: [{title, offset}] }
+                    'actionTemplates' => $settings['actionTemplates'] ?? new stdClass(),
                     'docTags'       => $settings['docTags'] ?? [],
                     'docFileTags'   => $settings['docFileTags'] ?? new stdClass(),
                     'docTemplates'  => $settings['docTemplates'] ?? [],
@@ -3239,7 +3298,7 @@ try {
 
                 // 設定キー: upsert
                 $ups  = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?,?) ON DUPLICATE KEY UPDATE setting_value=?");
-                $keys = ['categories', 'taskTypes', 'taskTemplates', 'docTags', 'docFileTags', 'docTemplates', 'releaseDocUrl'];
+                $keys = ['categories', 'taskTypes', 'taskTemplates', 'actionTemplates', 'docTags', 'docFileTags', 'docTemplates', 'releaseDocUrl'];
                 foreach ($keys as $key) {
                     if (array_key_exists($key, $s)) {
                         $val = json_encode($s[$key]);
@@ -3477,6 +3536,74 @@ try {
             break;
         }
 
+        // addTaskActions — 複数行の「末尾への追加」だけを行うバルク登録
+        //   用途: ①種別の定型アクションをまとめて入れる ②新規課題の保存時に
+        //         モーダルでためた行をまとめて登録する。
+        //   ★ 追記専用。既存行の更新も削除も絶対にしない（＝フル配列を送る経路ではない）ので、
+        //     他の人が同時に足した行を巻き戻す事故が原理的に起きない。
+        case 'addTaskActions': {
+            if (!task_actions_table_exists($pdo)) {
+                echo json_encode(['success' => false, 'error' => 'ネクストアクション用のテーブルが未作成です。管理者に migrate.php の実行を依頼してください。']);
+                break;
+            }
+            $taskId = trim((string)($payload['taskId'] ?? ''));
+            $items  = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+            // 履歴に出す由来ラベル（種別名など）。無ければただの「追加」として記録する
+            $source = mb_substr(trim((string)($payload['source'] ?? '')), 0, 60);
+            if ($taskId === '') {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            // 1回で入れられる件数の上限。テンプレートの暴発で数百行が入るのを防ぐ
+            $items = array_slice($items, 0, 100);
+
+            $clean = [];
+            foreach ($items as $it) {
+                if (!is_array($it)) continue;
+                $title = mb_substr(trim((string)($it['title'] ?? '')), 0, 500);
+                if ($title === '') continue;
+                $due   = trim((string)($it['dueDate'] ?? ''));
+                $clean[] = [
+                    'title'   => $title,
+                    'dueDate' => preg_match('/^\d{4}-\d{2}-\d{2}$/', $due) ? $due : null,
+                ];
+            }
+            if (!$clean) {
+                echo json_encode(['success' => false, 'error' => '追加できるアクションがありません。']);
+                break;
+            }
+
+            $stmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM task_actions WHERE task_id = ?");
+            $stmt->execute([$taskId]);
+            $nextOrder = (float)$stmt->fetchColumn();
+
+            $ins = $pdo->prepare("INSERT INTO task_actions (task_id, title, due_date, sort_order) VALUES (?,?,?,?)");
+            $pdo->beginTransaction();
+            try {
+                foreach ($clean as $row) {
+                    $nextOrder += 1000;
+                    $ins->execute([$taskId, $row['title'], $row['dueDate'], $nextOrder]);
+                }
+                $pdo->commit();
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                throw $e;
+            }
+
+            // 履歴は1行にまとめる（テンプレート適用で N 行が並ぶと履歴タブが読めなくなるため）
+            $names   = array_map(fn($r) => '「' . taskActionLabel($r['title']) . '」', array_slice($clean, 0, 5));
+            $rest    = count($clean) - count($names);
+            $histLine = '・ネクストアクションを' . count($clean) . '件追加'
+                      // 由来は種別名（定型）だけでなく「AI提案」も入るため、中立な語にしている
+                      . ($source !== '' ? "（由来: {$source}）" : '')
+                      . ': ' . implode('', $names) . ($rest > 0 ? "ほか{$rest}件" : '');
+
+            $data = taskActionsPayload($pdo, $taskId);
+            $data['historyComment'] = logTaskActionHistory($pdo, $taskId, $histLine);
+            echo json_encode(['success' => true, 'data' => $data]);
+            break;
+        }
+
         // toggleTaskAction — 完了 / 未完了の切り替え（ボードカードからも呼ばれる）
         case 'toggleTaskAction': {
             if (!task_actions_table_exists($pdo)) {
@@ -3581,6 +3708,187 @@ try {
                 throw $e;
             }
             echo json_encode(['success' => true, 'data' => taskActionsPayload($pdo, $taskId)]);
+            break;
+        }
+
+        // suggestTaskActions — AI に「次にやること」の候補を出させる
+        //   ★ 提案するだけで DB には一切書かない。採用は既存の addTaskActions（追記専用）が担う。
+        //     こうしておけば誤提案がそのまま課題に流れ込むことがなく、
+        //     「AI が勝手に増やした行」と「人が決めた行」が混ざる事故も起きない。
+        //   この機能の出発点は「次にやることを詳細欄とコメント欄から自分で探すのが面倒」なので、
+        //   読ませる文脈も本文＋コメントに置く（＝人が探しに行っていた場所と同じ）。
+        case 'suggestTaskActions': {
+            try {
+                $taskId       = trim((string)($payload['taskId'] ?? ''));
+                $instructions = mb_substr(trim((string)($payload['instructions'] ?? '')), 0, 500);
+                // 未保存の新規課題ではクライアントの入力値しか存在しないので、それを使う
+                $title    = mb_substr(trim((string)($payload['title'] ?? '')), 0, 200);
+                $desc     = stripBase64Images((string)($payload['description'] ?? ''));
+                $type     = mb_substr(trim((string)($payload['type'] ?? '')), 0, 60);
+                $category = mb_substr(trim((string)($payload['category'] ?? '')), 0, 60);
+                $dueDate  = '';
+                $statusId = '';
+
+                $existingTitles = [];
+                $commentLines   = [];
+
+                if ($taskId !== '') {
+                    // 保存済みの課題はサーバ側の値を正とする。一覧の軽量タスクの description は
+                    // 画像を剥がしたプレースホルダなので、クライアント値を信じると本文が痩せる。
+                    $st = $pdo->prepare("SELECT title, description, type, category, status, due_date FROM tasks WHERE id = ? AND deleted_at IS NULL");
+                    $st->execute([$taskId]);
+                    $trow = $st->fetch();
+                    if (!$trow) {
+                        echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '課題が見つかりません。']]);
+                        break;
+                    }
+                    $title    = (string)$trow['title'];
+                    $desc     = stripBase64Images((string)($trow['description'] ?? ''));
+                    $type     = (string)($trow['type'] ?? '');
+                    $category = (string)($trow['category'] ?? '');
+                    $statusId = (string)($trow['status'] ?? '');
+                    $dueDate  = (string)($trow['due_date'] ?? '');
+
+                    // 既存のアクション（重複提案を避けるために全行渡す。完了済みも「もう済んだこと」として効く）
+                    foreach (fetchTaskActions($pdo, $taskId) as $a) {
+                        $existingTitles[] = ($a['doneAt'] ? '[完了] ' : '[未完了] ') . $a['title'];
+                    }
+
+                    // コメント（新しい順に最大20件 → 時系列に戻す）。自動記録の履歴行は文脈にならないので除く
+                    $cs = $pdo->prepare("SELECT author_name, text, created_at FROM comments
+                                          WHERE task_id = ? AND id NOT LIKE 'comment_hist%'
+                                       ORDER BY created_at DESC LIMIT 20");
+                    $cs->execute([$taskId]);
+                    $rows = $cs->fetchAll();
+                    foreach (array_reverse($rows ?: []) as $c) {
+                        $txt = trim(stripBase64Images((string)($c['text'] ?? '')));
+                        if ($txt === '') continue;
+                        if (mb_strlen($txt) > 800) $txt = mb_substr($txt, 0, 800) . '…';
+                        $commentLines[] = '（' . (string)($c['author_name'] ?? '') . '）' . $txt;
+                    }
+                }
+
+                if ($title === '' && $desc === '') {
+                    echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => '課題名か詳細を入力してから実行してください。']]);
+                    break;
+                }
+                if (mb_strlen($desc) > 20000) $desc = mb_substr($desc, 0, 20000) . "\n…(以下省略)";
+
+                // 種別の定型アクション（settings.actionTemplates）は「この組織のいつものやり方」。
+                // 提案がそこから外れると採用されないので、参考として渡す。
+                $templateTitles = [];
+                if ($type !== '') {
+                    try {
+                        $ts = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'actionTemplates'");
+                        $ts->execute();
+                        $rawTpl = $ts->fetchColumn();
+                        $tpl    = ($rawTpl === false || $rawTpl === null) ? null : json_decode((string)$rawTpl, true);
+                        if (is_array($tpl) && is_array($tpl[$type] ?? null)) {
+                            foreach ($tpl[$type] as $r) {
+                                $tt = is_array($r) ? trim((string)($r['title'] ?? '')) : '';
+                                if ($tt !== '') $templateTitles[] = $tt;
+                            }
+                        }
+                    } catch (Throwable $e) { /* 設定が壊れていても提案自体は続行する */ }
+                }
+
+                $today = date('Y-m-d');
+                $systemInstruction =
+                    "あなたはタスク管理ツール「Olive Note」の『次にやること（ネクストアクション）』提案アシスタントです。\n" .
+                    "1つの課題について、担当者が次に取るべき具体的な行動を順番に並べた候補を JSON 配列で返してください。\n\n" .
+
+                    "【この機能の考え方】\n" .
+                    "- 利用者は『この課題、次に何をすればいいんだっけ』を詳細欄とコメント欄から探すのが面倒でこの機能を使う。\n" .
+                    "- 出すのは『行動』であって『状態』ではない。動詞で終える（例: ○ 見積書を作成して送付する / × 見積書の件）。\n" .
+                    "- 1行 = 1回の作業。数日で終わらない粒度なら分割する。\n" .
+                    "- 上から順にやれば課題が前に進む順序で並べる。\n\n" .
+
+                    "【厳守】\n" .
+                    "- 根拠は課題の詳細・コメント・ユーザーの追加指示に置く。書かれていない固有名詞・金額・日付・URL・人名を作らない。\n" .
+                    "- 課題の内容から誰でも導ける一般的な段取り（例: 相手に連絡する→日程を決める）は提案してよいが、その場合 reason に『推測』と明記する。\n" .
+                    "- 既存のアクション一覧と同じ内容は提案しない（言い換えも含めて重複させない）。\n" .
+                    "- 提案できる材料が無ければ空配列 [] を返す。水増ししない。\n" .
+                    "- 件数は最大8件。少なくてよい。\n\n" .
+
+                    "【出力フォーマット】前後の説明文・コードフェンス無しで、次の JSON 配列だけを返す:\n" .
+                    "[\n" .
+                    "  {\n" .
+                    "    \"title\":      \"...\",      // 60文字以内。行動を1つ、動詞で終える\n" .
+                    "    \"offsetDays\": 3,           // 今日から何日後を期限にするか。0=今日。根拠が無ければ null\n" .
+                    "    \"reason\":     \"...\"       // なぜこれが次なのか。30文字程度。推測ならその旨を書く\n" .
+                    "  }\n" .
+                    "]\n" .
+                    "注: 期限は絶対日付ではなく offsetDays（今日からの日数）で返すこと。\n\n" .
+
+                    "【現在の日付】 {$today}\n" .
+                    "【課題】 " . json_encode([
+                        'title'    => $title,
+                        'type'     => $type,
+                        'category' => $category,
+                        'status'   => $statusId,
+                        'dueDate'  => $dueDate,
+                    ], JSON_UNESCAPED_UNICODE) . "\n" .
+                    "【既に登録済みのアクション（重複禁止）】 " . json_encode($existingTitles, JSON_UNESCAPED_UNICODE) . "\n" .
+                    ($templateTitles ? "【この種別の定型アクション（言い回しの参考。そのまま重複させない）】 " . json_encode($templateTitles, JSON_UNESCAPED_UNICODE) . "\n" : '') .
+                    ($instructions !== '' ? "\n【ユーザーからの追加指示（最優先）】\n" . $instructions . "\n" : '');
+
+                $userText = "【課題の詳細】\n" . ($desc !== '' ? $desc : '（未記入）') . "\n\n"
+                          . "【コメント（古い順・抜粋）】\n" . ($commentLines ? implode("\n", $commentLines) : '（コメントなし）');
+
+                $rawOutput = callVertexAi('gemini-2.5-flash', [
+                    'system_instruction' => ['parts' => [['text' => $systemInstruction]]],
+                    'contents'           => [['role' => 'user', 'parts' => [['text' => $userText]]]],
+                    'generationConfig'   => [
+                        'temperature'      => 0.2,
+                        'topP'             => 0.8,
+                        'maxOutputTokens'  => 4096,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ]);
+
+                $jsonText = trim($rawOutput);
+                if (preg_match('/```(?:json)?\s*(.+?)\s*```/s', $jsonText, $m)) $jsonText = $m[1];
+                $parsed = json_decode($jsonText, true);
+                // オブジェクトで包んで返してくる場合の救済（{"suggestions": [...]}）
+                if (is_array($parsed) && isset($parsed['suggestions']) && is_array($parsed['suggestions'])) {
+                    $parsed = $parsed['suggestions'];
+                }
+                if (!is_array($parsed)) {
+                    echo json_encode(['success' => true, 'data' => [
+                        'success' => false,
+                        'error'   => 'AI 応答を JSON としてパースできませんでした。もう一度お試しください。',
+                    ]]);
+                    break;
+                }
+
+                // 既存行との重複はサーバ側でも落とす（AI の指示違反に備えた保険）
+                $seen = [];
+                foreach (fetchTaskActions($pdo, $taskId) as $a) {
+                    $seen[mb_strtolower(trim((string)$a['title']))] = true;
+                }
+                $suggestions = [];
+                foreach ($parsed as $s) {
+                    if (!is_array($s)) continue;
+                    $t = mb_substr(trim((string)($s['title'] ?? '')), 0, 500);
+                    if ($t === '') continue;
+                    $key = mb_strtolower($t);
+                    if (isset($seen[$key])) continue;
+                    $seen[$key] = true;
+                    $off = $s['offsetDays'] ?? null;
+                    $off = (is_numeric($off)) ? max(0, min(365, (int)$off)) : null;
+                    $suggestions[] = [
+                        'title'      => $t,
+                        'offsetDays' => $off,
+                        'reason'     => mb_substr(trim((string)($s['reason'] ?? '')), 0, 120),
+                    ];
+                    if (count($suggestions) >= 8) break;
+                }
+
+                echo json_encode(['success' => true, 'data' => ['success' => true, 'suggestions' => $suggestions]]);
+            } catch (Throwable $e) {
+                // AI 系は HTTP200＋内側 success:false で返す（callApi が一元的に throw する）
+                echo json_encode(['success' => true, 'data' => ['success' => false, 'error' => $e->getMessage()]]);
+            }
             break;
         }
 
@@ -4128,6 +4436,14 @@ try {
                     'd1'      => !empty($in['prodDue']['d1']),
                     'd0'      => !empty($in['prodDue']['d0']),
                     'overdue' => !empty($in['prodDue']['overdue']),
+                ],
+                // ネクストアクション（次の一手）の期限リマインド。同上
+                'naEnabled' => !empty($in['naEnabled']),
+                'naDue' => [
+                    'd3'      => !empty($in['naDue']['d3']),
+                    'd1'      => !empty($in['naDue']['d1']),
+                    'd0'      => !empty($in['naDue']['d0']),
+                    'overdue' => !empty($in['naDue']['overdue']),
                 ],
             ];
             lwSavePrefs($pdo, $email, $clean);

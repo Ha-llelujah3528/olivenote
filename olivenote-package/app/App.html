@@ -533,6 +533,8 @@ function App() {
   const [docs, setDocs] = useState([]);
   const [docFolderRootId, setDocFolderRootId] = useState(null);
   const [taskTemplates, setTaskTemplates] = useState({});
+  // 種別ごとの定型ネクストアクション { 種別名: [{title, offset}] }
+  const [actionTemplates, setActionTemplates] = useState({});
 
   const [docTags, setDocTags] = useState([]); 
   const [docFileTags, setDocFileTags] = useState({});
@@ -570,6 +572,9 @@ function App() {
   }, [activeTab]);
   const [isFilterExpanded, setIsFilterExpanded] = useState(true);
   const [isAutoGenOpen, setIsAutoGenOpen] = useState(false);  // AI課題自動生成モーダル
+  // 「今日の一手」= 課題単位ではなく行動単位で自分の次の一手だけを並べる横断ビュー。
+  // タブを増やさずフィルターエリアのボタンから開く（毎日見るが常駐はしない画面のため）。
+  const [isTodayActionsOpen, setIsTodayActionsOpen] = useState(false);
 
   // バージョン表示 + 管理者向けアップデート通知
   // window.APP_VERSION は index.php で埋め込み済 (dist は bootstrap.php / stg は VERSION ファイル経由)
@@ -614,6 +619,25 @@ function App() {
       });
     }, 500);
   }, []);
+
+  // 「次の一手が未設定」の出し方（ボード・一覧で共通の個人設定）。
+  //   止まっている課題の検出はこの警告が担うが、うるささの好みは人によって割れるので
+  //   目立たせる / 標準 / 控えめ / 表示しない から選べるようにしている。
+  const actionHintLevel = sanitizeHintLevel(userPrefs['nextAction.hintLevel']);
+
+  // 「今日の一手」ボタンに出す期限切れ件数（自分が担当・サブ担当の未完了課題の先頭1行だけを数える）。
+  //   モーダルを開かなくても取りこぼしの有無が分かるようにするためのバッジ。
+  //   ここで数えるのは nextAction（先頭の未完了1行）だけ＝一覧に出す行と同じ基準。
+  const todayActionOverdueCount = useMemo(() => {
+    const me = currentUser?.email;
+    if (!me) return 0;
+    const today = getTodayStr();
+    return tasks.filter(t =>
+      t.status !== 'done'
+      && t.nextAction && t.nextAction.dueDate && t.nextAction.dueDate < today
+      && (t.assigneeEmail === me || (t.subAssignees || []).includes(me))
+    ).length;
+  }, [tasks, currentUser]);
 
   // ★ フィルター条件をユーザー別にサーバー保存 → 次回・別ブラウザで復元（フィルター引き継ぎ）。
   //   初期ロード＆復元が完了するまで（filtersHydrated=false）は保存しない
@@ -757,6 +781,8 @@ function App() {
       setCurrentUser(data.currentUser); setMembers(data.members); setTaskTypes(data.taskTypes); setDocs(data.docs || []);
       setDocFolderRootId(data.docFolderRootId || null);
       setTaskTemplates(data.taskTemplates || {});
+      // 設定が未保存の環境では [] が返る（PHP の空配列 json_encode）。オブジェクトのときだけ採用する
+      setActionTemplates((data.actionTemplates && !Array.isArray(data.actionTemplates)) ? data.actionTemplates : {});
       // ★ ユーザー別表示設定とフィルタープリセット
       const loadedPrefs = data.userPreferences || {};
       setUserPrefs(loadedPrefs);
@@ -859,10 +885,23 @@ function App() {
   useEffect(() => {
     if (isInitializing) return;
     if (isFirstRender.current) { isFirstRender.current = false; return; }
-    api.saveSettings({ members, categories, taskTypes, taskTemplates, docTags, docFileTags, docTemplates, releaseDocUrl })
+    api.saveSettings({ members, categories, taskTypes, taskTemplates, actionTemplates, docTags, docFileTags, docTemplates, releaseDocUrl })
       .then(() => showToast('設定を保存しました'))
       .catch(() => showToast('設定の保存に失敗しました', 'error'));
-  }, [members, categories, taskTypes, taskTemplates, docTags, docFileTags, docTemplates, releaseDocUrl, isInitializing]);
+  }, [members, categories, taskTypes, taskTemplates, actionTemplates, docTags, docFileTags, docTemplates, releaseDocUrl, isInitializing]);
+
+  // 「次の一手」列は後から足した列。既に列設定を保存しているユーザーの一覧には
+  // 出てこない（保存済み配列に無いため）ので、一度だけ差し込んで気づけるようにする。
+  // 以後は列メニューでの選択をそのまま尊重する（消したら消えたまま）。
+  useEffect(() => {
+    if (isInitializing || !currentUser) return;                 // prefs 読み込み完了後だけ
+    if (userPrefs['list.nextActionColumnAdded']) return;         // 実施済み
+    savePref('list.nextActionColumnAdded', true);
+    const saved = userPrefs['list.visibleColumns'];
+    if (!Array.isArray(saved) || saved.length === 0) return;      // 既定を使う人は既定に入っている
+    if (saved.includes('nextAction')) return;
+    savePref('list.visibleColumns', LIST_DEFAULT_COLUMNS.filter(c => saved.includes(c) || c === 'nextAction'));
+  }, [isInitializing, currentUser, userPrefs, savePref]);
 
   // 各タスクの階層の深さ（0=親 / 1=子 / 2以上=孫）。parentId を辿って算出（循環は guard で打ち切り）。
   const taskLevelMap = useMemo(() => {
@@ -2441,6 +2480,44 @@ function App() {
                 </div>
               )}
 
+              {/* 「今日の一手」（横断ビュー）。ボード/一覧/ガントのどこからでも開ける。
+                  期限切れの件数をバッジで出す＝開かなくても「取りこぼしがあるか」だけは分かる。 */}
+              <div className="w-[calc(50%-0.375rem)] md:w-auto flex items-end pb-1">
+                <button
+                  type="button"
+                  onClick={() => setIsTodayActionsOpen(true)}
+                  title="自分の「次の一手」だけを期限順に一列で見る（課題単位ではなく行動単位）"
+                  className="w-full md:w-auto border border-olive-600 bg-olive-600 text-white px-2 py-1.5 rounded text-xs font-bold transition-colors shadow-sm flex items-center justify-center gap-1 hover:bg-olive-700"
+                >
+                  <CheckSquare size={14}/>今日の一手
+                  {todayActionOverdueCount > 0 && (
+                    <span className="bg-white/20 rounded px-1">{todayActionOverdueCount}</span>
+                  )}
+                </button>
+              </div>
+
+              {/* 「次の一手が未設定」の主張度（ボード・一覧）。個人設定なので他の人には影響しない。
+                  止まっている課題を炙り出す警告なので、うるささの好みに合わせて選べるようにしている。 */}
+              {(activeTab === 'board' || activeTab === 'list') && (
+                <div className="w-[calc(50%-0.375rem)] md:w-auto flex items-end pb-1">
+                  <label
+                    className="w-full md:w-auto flex items-center gap-1 border border-olive-200 bg-white rounded px-2 py-1.5 text-xs font-bold text-olive-700 shadow-sm"
+                    title="ネクストアクションが未設定の課題に出す警告の強さ（自分の画面だけ）"
+                  >
+                    <AlertTriangle size={14}/>
+                    <span className="hidden md:inline">未設定</span>
+                    <select
+                      value={actionHintLevel}
+                      onChange={(e) => savePref('nextAction.hintLevel', e.target.value)}
+                      className="bg-transparent outline-none text-xs font-bold text-olive-700 cursor-pointer"
+                      aria-label="次の一手が未設定の表示"
+                    >
+                      {NEXT_ACTION_HINT_LEVELS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
+
               {/* クリアボタン */}
               {(activeFilterCount > 0 || searchQuery) && (
                  <div className="w-full md:w-auto pb-1 text-right md:text-left">
@@ -2492,7 +2569,7 @@ function App() {
           const compact = !!userPrefs['board.compactMode'];
           const split   = !!userPrefs['board.splitByAssignee'] && isPcViewport && currentUser?.email;
           if (!split) {
-            return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} />;
+            return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} actionHintLevel={actionHintLevel} />;
           }
           // 分割表示は担当者フィルターに従う:
           //   filter 空（すべて） → メイン: 担当者が割当てられた全タスク / サブ: サブ担当が割当てられた全タスク（メイン側と重複したものは除外）
@@ -2514,13 +2591,13 @@ function App() {
               upper={
                 <div className="flex flex-col h-full min-h-0">
                   <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>メイン担当 <span className="text-gray-400 font-normal">({mainTasks.length})</span></div>
-                  <BoardView tasks={mainTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} splitArea="main" />
+                  <BoardView tasks={mainTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} actionHintLevel={actionHintLevel} splitArea="main" />
                 </div>
               }
               lower={
                 <div className="flex flex-col h-full min-h-0">
                   <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>サブ担当 <span className="text-gray-400 font-normal">({subTasks.length})</span></div>
-                  <BoardView tasks={subTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} splitArea="sub" hideColumnHeaders={true} />
+                  <BoardView tasks={subTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} actionHintLevel={actionHintLevel} splitArea="sub" hideColumnHeaders={true} />
                 </div>
               }
             />
@@ -2531,7 +2608,7 @@ function App() {
         {activeTab === 'list' && (() => {
           const visibleColumns = Array.isArray(userPrefs['list.visibleColumns']) && userPrefs['list.visibleColumns'].length > 0
             ? userPrefs['list.visibleColumns']
-            : ['title','category','type','assigneeName','subAssignees','status','startDate','dueDate','updatedAt'];
+            : LIST_DEFAULT_COLUMNS;
           const sort = userPrefs['list.sort'] || { column: 'dueDate', direction: 'asc' };
           const split = !!userPrefs['list.splitByAssignee'] && isPcViewport && currentUser?.email;
           const commonProps = {
@@ -2541,6 +2618,7 @@ function App() {
             onSortChange: (s) => savePref('list.sort', s),
             visibleColumns,
             onColumnsChange: (c) => savePref('list.visibleColumns', c),
+            actionHintLevel,
           };
           if (!split) {
             return <ListView tasks={filteredTasks} {...commonProps} />;
@@ -2584,7 +2662,7 @@ function App() {
         {activeTab === 'files' && <FilesView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}
         {activeTab === 'wiki' && <WikiView currentUser={currentUser} members={members} wikiTargetPageId={wikiTargetPageId} setWikiTargetPageId={setWikiTargetPageId} showToast={showToast} />}
         {activeTab === 'whiteboard' && <WhiteboardView currentUser={currentUser} members={members} categories={categories} onCreateTask={handleSaveTask} showToast={showToast} />}
-        {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} setProductionTasks={productionEnabled ? setProductionTasks : null} />}
+        {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} actionTemplates={actionTemplates} setActionTemplates={setActionTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} setProductionTasks={productionEnabled ? setProductionTasks : null} />}
       </main>
 
       {isOpeningTask && (
@@ -2601,6 +2679,7 @@ function App() {
           members={members} currentUser={currentUser} onClose={closeTaskModal} initialPane={modalInitialPane}
           onSave={handleSaveTask} onAutoSave={handleAutoSave} onDelete={handleDeleteTask} onOpenTask={handleOpenTask}
           taskTemplates={taskTemplates}
+          actionTemplates={actionTemplates}
           docTemplates={docTemplates}
           showToast={showToast}
           aiModelAdvisor={sanitizeAiModel(userPrefs['aiModelAdvisor'])}
@@ -2661,6 +2740,18 @@ function App() {
           });
         }}
       />
+
+      {/* 今日の一手（横断ビュー）。tasks はサーバ確定値で差し替わるので、
+          チェックすると自動的に次の行へ入れ替わる（この画面が持つ状態は表示条件だけ）。 */}
+      {isTodayActionsOpen && (
+        <TodayActionsModal
+          tasks={tasks}
+          currentUser={currentUser}
+          onToggleAction={handleToggleTaskAction}
+          onOpenTask={handleOpenTask}
+          onClose={() => setIsTodayActionsOpen(false)}
+        />
+      )}
 
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-2 px-5 py-3 rounded-xl shadow-xl text-white text-sm font-bold ${toast.action ? 'pointer-events-auto' : 'pointer-events-none'} ${toast.type === 'error' ? 'bg-red-500' : 'bg-green-500'}`}>
