@@ -1,7 +1,9 @@
-function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compactMode = false, splitArea = null, hideColumnHeaders = false }) {
+function BoardView({ tasks, members, categories, onTaskClick, onDropTask, onToggleAction = null, compactMode = false, splitArea = null, hideColumnHeaders = false }) {
       const [dragOverTaskId, setDragOverTaskId] = useState(null);
       const [dragOverInvalid, setDragOverInvalid] = useState(false);
       const scrollTimer = useRef(null);
+      // 連打で同じアクションを二重に送らないためのガード（通信中の action id）
+      const [busyActionId, setBusyActionId] = useState(null);
 
       // ★ スマホ判定（768px未満ならタブ切替式に変える）
       const [isMobile, setIsMobile] = useState(() =>
@@ -72,6 +74,27 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
         const cardBorderClass = cardColor ? cardColor.border : 'border-transparent';
         const cardHoverBorder = cardColor ? '' : 'hover:border-olive-200';
 
+        // ネクストアクション行（カード上で完了できる）。スマホはホバーが無く誤タップで
+        // アクションが完了してしまうため、チェックは PC のみ（interactive）。
+        const handleToggleAction = async (actionId, done) => {
+          if (!onToggleAction) return;
+          setBusyActionId(actionId);
+          try {
+            await onToggleAction(actionId, done);
+          } finally {
+            setBusyActionId(null);
+          }
+        };
+        const nextActionRow = (
+          <NextActionCardRow
+            task={task}
+            onToggle={handleToggleAction}
+            interactive={!isMobile && !!onToggleAction}
+            compact={compactMode}
+            busy={busyActionId === task.nextAction?.id}
+          />
+        );
+
         return (
           <div
             key={task.id} draggable
@@ -106,14 +129,17 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
             className={`${cardBgClass} ${compactMode ? 'p-2' : 'p-3'} rounded-lg cursor-pointer transition-all duration-200 group border ${cardBorderClass} ${cardHoverBorder} shadow-[0_1px_3px_rgba(0,0,0,0.12),_0_1px_2px_rgba(0,0,0,0.24)] hover:shadow-[0_4px_8px_rgba(0,0,0,0.15)]`}
           >
             {compactMode ? (
-              // 要件2: 簡略表示 — タイトル＋期限のみ
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="font-bold text-sm text-gray-800 group-hover:text-olive-600 transition-colors line-clamp-1 leading-relaxed flex-1 min-w-0">{task.title}</h4>
-                <div className={`flex items-center gap-1 text-xs shrink-0 ${dueInfo.color}`} title="期限">
-                  {dueInfo.isFlame ? <Flame size={12} className="text-red-500 fill-red-500" /> : <CalendarIcon size={11} />}
-                  <span>{task.dueDate?.substring(5).replace('-','/')}</span>
+              // 要件2: 簡略表示 — タイトル＋期限（＋ネクストアクションがあれば1行）
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-bold text-sm text-gray-800 group-hover:text-olive-600 transition-colors line-clamp-1 leading-relaxed flex-1 min-w-0">{task.title}</h4>
+                  <div className={`flex items-center gap-1 text-xs shrink-0 ${dueInfo.color}`} title="期限">
+                    {dueInfo.isFlame ? <Flame size={12} className="text-red-500 fill-red-500" /> : <CalendarIcon size={11} />}
+                    <span>{task.dueDate?.substring(5).replace('-','/')}</span>
+                  </div>
                 </div>
-              </div>
+                {nextActionRow}
+              </>
             ) : (
               <>
                 <div className="flex flex-wrap items-center justify-between mb-2 gap-1">
@@ -125,6 +151,7 @@ function BoardView({ tasks, members, categories, onTaskClick, onDropTask, compac
                 </div>
                 <h4 className="font-bold text-sm mb-3 text-gray-800 group-hover:text-olive-600 transition-colors line-clamp-2 leading-relaxed">{task.title}</h4>
                 {task.parentId && <div className="text-[10px] text-gray-500 mb-2 flex items-center gap-1 bg-gray-50 p-1.5 rounded border border-gray-100"><LinkIcon size={10} /> 親: {task.parentId}</div>}
+                {nextActionRow}
                 <div className="flex items-center justify-between text-xs mt-auto pt-2 border-t border-gray-100">
                   <div className={`flex items-center gap-1 ${dueInfo.color}`} title="期限">{dueInfo.isFlame ? <Flame size={14} className="text-red-500 fill-red-500" /> : <CalendarIcon size={12} />}{task.dueDate?.substring(5).replace('-','/')}</div>
                   <div className="flex items-center gap-3 text-gray-500">

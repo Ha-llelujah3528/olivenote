@@ -868,7 +868,7 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
                     {isEdit && editing.field === 'title' ? (
                       <textarea autoFocus value={editBuf} onChange={onStickyEditChange} onBlur={onStickyEditBlur}
                         onMouseDown={(e) => e.stopPropagation()} placeholder="タイトル"
-                        onKeyDown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }}
+                        onKeyDown={(e) => { if (window.isImeComposing?.(e)) return; if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }}
                         style={{ ...tArea, fontSize: titleFont, fontWeight: 700, color: '#1f2937', lineHeight: 1.2, overflow: 'hidden' }} />
                     ) : (
                       <div style={{ fontSize: titleFont, fontWeight: 700, color: (n.cd && n.cd.title) ? '#1f2937' : '#9ca3af',
@@ -882,7 +882,7 @@ function WhiteboardView({ currentUser, members, categories, onCreateTask, showTo
                     {isEdit && editing.field === 'body' ? (
                       <textarea autoFocus value={editBuf} onChange={onStickyEditChange} onBlur={onStickyEditBlur}
                         onMouseDown={(e) => e.stopPropagation()} placeholder="内容を入力"
-                        onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.target.blur(); } }}
+                        onKeyDown={(e) => { if (window.isImeComposing?.(e)) return; if (e.key === 'Escape') { e.preventDefault(); e.target.blur(); } }}
                         style={{ ...tArea, fontSize: bodyFont, color: '#374151', lineHeight: 1.35, textAlign: 'left' }} />
                     ) : (
                       <div style={{ fontSize: bodyFont, color: (n.cd && n.cd.body) ? '#374151' : '#9ca3af', lineHeight: 1.35,

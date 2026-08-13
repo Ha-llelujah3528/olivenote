@@ -1147,6 +1147,493 @@ function assignNextTaskId(PDO $pdo): string {
 }
 
 // ================================================================
+// ネクストアクション（task_actions）
+// ----------------------------------------------------------------
+// 課題ごとの「順序付きアクション行」。表に出るのは常に先頭の未完了 1 行だけで、
+// 一覧（getInitialData）には nextAction ＋ 件数だけを載せる（全行を積むと
+// json_encode のメモリを無駄に食うため。過去の 192M 超過障害と同じ理由）。
+// 全行は課題を開いたとき getTaskDetail で個別取得する。
+// ================================================================
+
+// migrate.php の 2026_08_13_task_next_actions 未適用環境でも API 全体を壊さないための
+// テーブル存在ガード。未適用ならネクストアクションが無い状態として素通りする。
+function task_actions_table_exists(PDO $pdo): bool {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt   = $pdo->query("SHOW TABLES LIKE 'task_actions'");
+        $cached = (bool)$stmt->fetch();
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+function taskActionFromRow(array $row): array {
+    return [
+        'id'         => (int)$row['id'],
+        'taskId'     => $row['task_id'],
+        'title'      => $row['title'],
+        'dueDate'    => $row['due_date'],
+        'sortOrder'  => (float)($row['sort_order'] ?? 0),
+        'doneAt'     => $row['done_at'],
+        'doneByName' => $row['done_by_name'] ?? '',
+    ];
+}
+
+// 1課題のアクション全行（表示順）。テーブル未作成なら空配列。
+function fetchTaskActions(PDO $pdo, string $taskId): array {
+    if (!task_actions_table_exists($pdo)) return [];
+    $stmt = $pdo->prepare("SELECT * FROM task_actions WHERE task_id = ? ORDER BY sort_order ASC, id ASC");
+    $stmt->execute([$taskId]);
+    $out = [];
+    while ($row = $stmt->fetch()) {
+        $out[] = taskActionFromRow($row);
+    }
+    return $out;
+}
+
+// 1課題ぶんのサマリ（カード表示に必要な最小データ）＋全行。
+// 各ミューテーションはこれを返し、フロントは丸ごと差し替える（サマリと全行の乖離を防ぐ）。
+function taskActionsPayload(PDO $pdo, string $taskId): array {
+    $actions = fetchTaskActions($pdo, $taskId);
+    $open    = array_values(array_filter($actions, fn($a) => empty($a['doneAt'])));
+    return [
+        'taskId'      => $taskId,
+        'actions'     => $actions,
+        'actionTotal' => count($actions),
+        'actionDone'  => count($actions) - count($open),
+        // 表に出るのは先頭の未完了1行だけ（期限順ではなく並び順で決める）
+        'nextAction'  => $open ? ['id' => $open[0]['id'], 'title' => $open[0]['title'], 'dueDate' => $open[0]['dueDate']] : null,
+    ];
+}
+
+// 一覧用: 全課題ぶんの [taskId => サマリ] を 2 クエリで作る（カード1枚ごとの N+1 を避ける）。
+function fetchTaskActionSummaries(PDO $pdo): array {
+    if (!task_actions_table_exists($pdo)) return [];
+    $summaries = [];
+
+    $stmt = $pdo->query("SELECT task_id, COUNT(*) AS total, SUM(CASE WHEN done_at IS NULL THEN 0 ELSE 1 END) AS done
+                         FROM task_actions GROUP BY task_id");
+    while ($row = $stmt->fetch()) {
+        $summaries[$row['task_id']] = [
+            'actionTotal' => (int)$row['total'],
+            'actionDone'  => (int)$row['done'],
+            'nextAction'  => null,
+        ];
+    }
+
+    // 未完了行を並び順で走査し、課題ごとに最初の1件だけ採用する
+    $stmt = $pdo->query("SELECT task_id, id, title, due_date FROM task_actions
+                         WHERE done_at IS NULL ORDER BY task_id ASC, sort_order ASC, id ASC");
+    while ($row = $stmt->fetch()) {
+        $tid = $row['task_id'];
+        if (!isset($summaries[$tid]) || $summaries[$tid]['nextAction'] !== null) continue;
+        $summaries[$tid]['nextAction'] = [
+            'id'      => (int)$row['id'],
+            'title'   => $row['title'],
+            'dueDate' => $row['due_date'],
+        ];
+    }
+    return $summaries;
+}
+
+// ネクストアクションの増減・変更を、課題モーダルの「履歴」タブへ1行として残す。
+// ----------------------------------------------------------------
+// 履歴タブの振り分けはフロント（TaskModal の isHistoryItem）が id の
+// `comment_hist_` プレフィックスで行うため、同じ書式で comments に入れる。
+// 課題本文の変更履歴はモーダルを閉じたときにフロントがまとめて書くが、
+// アクションは1行ずつ即時コミットなので、変更したサーバ側で記録する
+// （ボードのカードから完了にした場合も同じ経路を通る）。
+// 記録に失敗しても本体の更新は成功として扱う（履歴は付随情報のため）。
+function logTaskActionHistory(PDO $pdo, string $taskId, string $line): ?array {
+    if ($taskId === '' || $line === '') return null;
+    try {
+        $email = (string)($_SESSION['user_email'] ?? '');
+        $name  = '';
+        if ($email !== '') {
+            $nm = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+            $nm->execute([$email]);
+            $name = (string)($nm->fetchColumn() ?: '');
+        }
+        // comments.id は VARCHAR(40)。`comment_hist_act_` + 12桁hex = 29文字。
+        $id   = 'comment_hist_act_' . bin2hex(random_bytes(6));
+        $text = "📝 **【更新履歴】**\n" . $line;
+        $pdo->prepare("
+            INSERT INTO comments (id, task_id, author_email, author_name, text, likes, read_by, created_at)
+            VALUES (:id, :task_id, :author_email, :author_name, :text, '[]', '[]', NOW())
+        ")->execute([
+            ':id'           => $id,
+            ':task_id'      => $taskId,
+            ':author_email' => $email,
+            ':author_name'  => $name !== '' ? $name : 'システム自動記録',
+            ':text'         => $text,
+        ]);
+        $stmt = $pdo->prepare("SELECT * FROM comments WHERE id = ?");
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? commentFromRow($row) : null;
+    } catch (Throwable $e) {
+        error_log('logTaskActionHistory failed: ' . $e->getMessage());
+        return null;
+    }
+}
+
+// 履歴文中でアクション名が長すぎると読みづらいので丸める
+function taskActionLabel(string $title): string {
+    $t = trim($title);
+    return mb_strlen($t) > 60 ? (mb_substr($t, 0, 60) . '…') : $t;
+}
+
+// ================================================================
+// 制作物管理（制作チケット）— オリジナル版（STG/PRD）限定機能
+// ----------------------------------------------------------------
+// config.php の ENABLE_PRODUCTION=true でのみ有効。dist パッケージ版には
+// この define が無い（＝API ごと無効）。テーブルは docs/sql-production-tickets.sql
+// を STG/PRD に手動適用する。
+// ================================================================
+function productionEnabled(): bool {
+    return defined('ENABLE_PRODUCTION') && ENABLE_PRODUCTION;
+}
+
+// 制作系アクションの入口ガード（無効環境では明示エラーで即返す）
+function requireProduction(): void {
+    if (!productionEnabled()) {
+        echo json_encode(['success' => false, 'error' => 'この環境では制作物管理機能が有効化されていません。']);
+        exit;
+    }
+}
+
+function prodTaskFromRow(array $row, array $comments = []): array {
+    return [
+        'id'              => $row['id'],
+        'title'           => $row['title'],
+        'description'     => $row['description'] ?? '',
+        'status'          => $row['status'],
+        'priority'        => $row['priority'],
+        'cardColor'       => $row['card_color'] ?? null,
+        'businessTaskId'  => $row['business_task_id'] ?? null,
+        'creator'         => $row['creator'] ?? '',
+        'assignees'       => json_decode($row['assignees'] ?? '[]', true) ?: [],
+        'startDate'       => $row['start_date'],
+        'statusDeadlines' => json_decode($row['status_deadlines'] ?? '{}', true) ?: new stdClass(),
+        'milestones'      => json_decode($row['milestones'] ?? '[]', true) ?: [],
+        'productUrls'     => json_decode($row['product_urls'] ?? '[]', true) ?: [],
+        // スマウトリンク＋そのOGPプレビュー（列未適用の環境でも空で通す）
+        'smoutUrl'        => (string)($row['smout_url'] ?? ''),
+        'smoutMeta'       => json_decode($row['smout_meta'] ?? 'null', true) ?: null,
+        'attachments'     => json_decode($row['attachments'] ?? '[]', true) ?: [],
+        'likes'           => json_decode($row['likes'] ?? '[]', true) ?: [],
+        'order'           => (float)($row['sort_order'] ?? 0),
+        'updatedAt'       => $row['updated_at'] ?? '',
+        'comments'        => $comments,
+    ];
+}
+
+// 一覧用の軽量版（事業チケットの taskFromRowLight と同じ流儀：
+// description は画像除去テキスト、コメントは件数のみ）
+function prodTaskFromRowLight(array $row, int $commentCount): array {
+    $t = prodTaskFromRow($row, []);
+    $t['description']  = stripBase64FromText($t['description'] ?? '');
+    $t['commentCount'] = $commentCount;
+    return $t;
+}
+
+// スマウトリンクの正規化。
+//   空 → null / スキーム省略（smout.jp/… 等）→ https:// を補う /
+//   javascript: や data: など http(s) 以外のスキーム → false（＝呼び出し側でエラー応答）
+function prodNormalizeSmoutUrl($v) {
+    $s = trim((string)$v);
+    if ($s === '') return null;
+    if (preg_match('#^https?://#i', $s)) return $s;
+    if (preg_match('#^[A-Za-z][A-Za-z0-9+.\-]*:#', $s)) return false;
+    return 'https://' . $s;
+}
+
+// production_tasks の列存在ガード（migrate.php 未適用環境でも保存が 500 で落ちないように）。
+//   smout_url … 2026_07_31_production_smout_url
+//   smout_meta… 2026_07_31_production_smout_meta
+// 列が無い環境では該当項目を保存しないだけで、他の項目は通常どおり動く。
+// 判定は information_schema で行う（SHOW COLUMNS … LIKE ? は
+// EMULATE_PREPARES=false のネイティブプリペアド環境で通らないことがあるため）。
+function prod_has_col(PDO $pdo, string $col): bool {
+    static $cache = [];
+    if (array_key_exists($col, $cache)) return $cache[$col];
+    try {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS
+                               WHERE TABLE_SCHEMA = DATABASE()
+                                 AND TABLE_NAME   = 'production_tasks'
+                                 AND COLUMN_NAME  = ?");
+        $stmt->execute([$col]);
+        $cache[$col] = ((int)$stmt->fetchColumn() > 0);
+    } catch (Throwable $e) {
+        error_log('[OliveNote] prod_has_col(' . $col . ') failed: ' . $e->getMessage());
+        $cache[$col] = false;
+    }
+    return $cache[$col];
+}
+
+// ================================================================
+// リンクプレビュー（OGP 取得）— スマウトリンクのサムネイル表示用
+//   外部URLへサーバーが取りに行くため SSRF 対策を必須にする:
+//     - http/https・80/443 のみ / DNS 解決結果が公開IPのときだけ接続
+//     - リダイレクトは自動追従せず、各ホップで同じ検証をやり直す（最大3回）
+//     - CURLOPT_RESOLVE で「検証したIP」に固定（DNS リバインディング対策）
+//     - タイムアウト 8秒・受信 512KB で打ち切り
+// ================================================================
+const LINK_PREVIEW_MAX_BYTES     = 524288;   // 512KB
+const LINK_PREVIEW_TIMEOUT_SEC   = 8;
+const LINK_PREVIEW_MAX_REDIRECTS = 3;
+
+// 接続先として許可してよいURLか検証し、[host, port, ip] を返す。危険なら RuntimeException。
+function linkPreviewAssertSafeUrl(string $url): array {
+    $p = parse_url($url);
+    if (!$p || empty($p['scheme']) || empty($p['host'])) {
+        throw new RuntimeException('URLの形式が正しくありません');
+    }
+    $scheme = strtolower($p['scheme']);
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        throw new RuntimeException('http/https 以外のURLは取得できません');
+    }
+    $port = (int)($p['port'] ?? ($scheme === 'https' ? 443 : 80));
+    if (!in_array($port, [80, 443], true)) {
+        throw new RuntimeException('80/443 以外のポートには接続しません');
+    }
+    $host = $p['host'];
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips = [$host];
+    } else {
+        $v4  = gethostbynamel($host) ?: [];
+        $v6  = array_column(@dns_get_record($host, DNS_AAAA) ?: [], 'ipv6');
+        $ips = array_values(array_filter(array_merge($v4, $v6)));
+    }
+    if (!$ips) {
+        throw new RuntimeException('ホスト名を解決できませんでした');
+    }
+    foreach ($ips as $ip) {
+        // プライベート/予約アドレス（社内ネットワーク・メタデータサービス等）は一切許可しない
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+            || linkPreviewIsBlockedIp($ip)) {
+            throw new RuntimeException('内部ネットワーク宛のURLは取得できません');
+        }
+    }
+    return [$host, $port, $ips[0]];
+}
+
+// filter_var の NO_PRIV_RANGE / NO_RES_RANGE では弾かれない到達禁止レンジの補完。
+//   100.64.0.0/10  … CGNAT（共有アドレス空間。クラウド事業者の内部経路になりうる）
+//   192.0.0.0/24   … IETF プロトコル割当
+//   198.18.0.0/15  … ベンチマーク用
+function linkPreviewIsBlockedIp(string $ip): bool {
+    if (strpos($ip, ':') !== false) return false;   // IPv6 は filter_var 側の判定に委ねる
+    $long = ip2long($ip);
+    if ($long === false) return true;
+    foreach ([['100.64.0.0', 10], ['192.0.0.0', 24], ['198.18.0.0', 15]] as [$net, $bits]) {
+        $mask = -1 << (32 - $bits);
+        if (($long & $mask) === (ip2long($net) & $mask)) return true;
+    }
+    return false;
+}
+
+// 1ホップ分の取得。[body, contentType, redirectUrl] を返す（redirectUrl があれば呼び出し側で追う）
+function linkPreviewFetchOnce(string $url): array {
+    [$host, $port, $ip] = linkPreviewAssertSafeUrl($url);
+
+    $body = '';
+    $ch   = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $url,
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_FOLLOWLOCATION => false,                       // 追従は手動（各ホップを検証するため）
+        CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        // 検証済みIPに固定（IPv6 は角括弧で囲まないと curl が host:port と誤解釈する）
+        CURLOPT_RESOLVE        => ["$host:$port:" . (strpos($ip, ':') !== false ? "[$ip]" : $ip)],
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => LINK_PREVIEW_TIMEOUT_SEC,
+        CURLOPT_USERAGENT      => 'OliveNote-LinkPreview/1.0 (+https://shodoshima.work/)',
+        CURLOPT_HTTPHEADER     => ['Accept: text/html,application/xhtml+xml'],
+        CURLOPT_HEADER         => false,
+        CURLOPT_WRITEFUNCTION  => function ($ch, $chunk) use (&$body) {
+            $body .= $chunk;
+            // 上限超過は書き込みエラーを返して転送を打ち切る（そこまでの本文は使う）
+            return strlen($body) > LINK_PREVIEW_MAX_BYTES ? 0 : strlen($chunk);
+        },
+    ]);
+    curl_exec($ch);
+    $errno       = curl_errno($ch);
+    $status      = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    $redirect    = (string)curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+    $err         = curl_error($ch);
+    curl_close($ch);
+
+    // CURLE_WRITE_ERROR(23) はサイズ上限による意図的な打ち切りなので成功扱い
+    if ($errno !== 0 && $errno !== CURLE_WRITE_ERROR) {
+        throw new RuntimeException('接続できませんでした（' . $err . '）');
+    }
+    if ($status >= 300 && $status < 400 && $redirect !== '') {
+        return ['', $contentType, $redirect];
+    }
+    if ($status >= 400 || $status === 0) {
+        throw new RuntimeException('ページを取得できませんでした（HTTP ' . $status . '）');
+    }
+    return [$body, $contentType, ''];
+}
+
+// 相対URL（/img/a.png や ../a.png）を絶対URLへ
+function linkPreviewAbsoluteUrl(string $url, string $baseUrl): string {
+    $url = trim($url);
+    if ($url === '' || preg_match('#^https?://#i', $url)) return $url;
+    $b = parse_url($baseUrl);
+    if (!$b || empty($b['scheme']) || empty($b['host'])) return '';
+    $origin = $b['scheme'] . '://' . $b['host'] . (isset($b['port']) ? ':' . $b['port'] : '');
+    if (strpos($url, '//') === 0)  return $b['scheme'] . ':' . $url;
+    if (strpos($url, '/')  === 0)  return $origin . $url;
+    $dir = rtrim(dirname($b['path'] ?? '/'), '/');
+    return $origin . $dir . '/' . $url;
+}
+
+// HTML から OGP / Twitter Card / <title> を拾う
+function linkPreviewParseHtml(string $html, string $contentType, string $finalUrl): array {
+    // 文字コード（Content-Type ヘッダ → meta charset の順に見て UTF-8 へ寄せる）
+    $charset = '';
+    if (preg_match('/charset\s*=\s*["\']?([A-Za-z0-9_\-]+)/i', $contentType, $m)) $charset = $m[1];
+    if ($charset === '' && preg_match('/<meta[^>]+charset\s*=\s*["\']?([A-Za-z0-9_\-]+)/i', $html, $m)) $charset = $m[1];
+    if ($charset !== '' && strtolower($charset) !== 'utf-8') {
+        $converted = @mb_convert_encoding($html, 'UTF-8', $charset);
+        if ($converted !== false && $converted !== '') $html = $converted;
+    }
+
+    $meta = [];
+    if (preg_match_all('/<meta\b[^>]*>/i', $html, $tags)) {
+        foreach ($tags[0] as $tag) {
+            if (!preg_match('/\b(?:property|name)\s*=\s*["\']([^"\']+)["\']/i', $tag, $k)) continue;
+            if (!preg_match('/\bcontent\s*=\s*["\']([^"\']*)["\']/i', $tag, $c)) continue;
+            $key = strtolower(trim($k[1]));
+            if ($key !== '' && !isset($meta[$key])) {
+                $meta[$key] = html_entity_decode($c[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }
+        }
+    }
+
+    $title = $meta['og:title'] ?? $meta['twitter:title'] ?? '';
+    if ($title === '' && preg_match('/<title[^>]*>(.*?)<\/title>/is', $html, $t)) {
+        $title = html_entity_decode(strip_tags($t[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    return [
+        'url'         => $finalUrl,
+        'title'       => $title,
+        'description' => $meta['og:description'] ?? $meta['twitter:description'] ?? ($meta['description'] ?? ''),
+        'image'       => linkPreviewAbsoluteUrl((string)($meta['og:image'] ?? $meta['twitter:image'] ?? ''), $finalUrl),
+        'siteName'    => $meta['og:site_name'] ?? '',
+    ];
+}
+
+// URL → プレビュー情報（失敗時は RuntimeException）
+function fetchLinkPreview(string $url): array {
+    $current = $url;
+    for ($i = 0; $i <= LINK_PREVIEW_MAX_REDIRECTS; $i++) {
+        [$body, $contentType, $redirect] = linkPreviewFetchOnce($current);
+        if ($redirect !== '') {
+            $current = linkPreviewAbsoluteUrl($redirect, $current);
+            if ($current === '') throw new RuntimeException('リダイレクト先を解決できませんでした');
+            continue;   // 次のホップも linkPreviewAssertSafeUrl で検証される
+        }
+        if (stripos($contentType, 'html') === false && $contentType !== '') {
+            throw new RuntimeException('HTMLページではありません（' . $contentType . '）');
+        }
+        $meta = linkPreviewParseHtml($body, $contentType, $current);
+        $meta['fetchedAt'] = date('Y-m-d H:i:s');
+        return prodSanitizeSmoutMeta($meta) ?? [];
+    }
+    throw new RuntimeException('リダイレクトが多すぎます');
+}
+
+// クライアントから来たプレビュー情報を検査して保存できる形に整える（<img src> に出るため必須）。
+// 不正・空なら null（＝保存しない）。
+function prodSanitizeSmoutMeta($v): ?array {
+    if (!is_array($v)) return null;
+    $httpUrl = function ($u) {
+        $u = trim((string)$u);
+        return preg_match('#^https?://#i', $u) ? mb_substr($u, 0, 1000) : '';
+    };
+    $text = function ($s, $len) {
+        $s = trim(preg_replace('/\s+/u', ' ', strip_tags((string)$s)) ?? '');
+        return mb_substr($s, 0, $len);
+    };
+    $out = [
+        'url'         => $httpUrl($v['url'] ?? ''),
+        'title'       => $text($v['title'] ?? '', 200),
+        'description' => $text($v['description'] ?? '', 300),
+        'image'       => $httpUrl($v['image'] ?? ''),
+        'siteName'    => $text($v['siteName'] ?? '', 100),
+        'fetchedAt'   => $text($v['fetchedAt'] ?? '', 40),
+    ];
+    return $out['url'] === '' ? null : $out;
+}
+
+// 制作チケットIDを採番（PROD-XXXX、settings.lastProductionTaskId カウンタ）
+function assignNextProductionTaskId(PDO $pdo): string {
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'lastProductionTaskId' FOR UPDATE");
+        $last = (int)($stmt->fetchColumn() ?: 0);
+        if ($last === 0) {
+            $s2   = $pdo->query("SELECT MAX(CAST(REPLACE(id,'PROD-','') AS UNSIGNED)) FROM production_tasks WHERE id REGEXP '^PROD-[0-9]+$'");
+            $last = (int)($s2->fetchColumn() ?: 0);
+        }
+        $next = $last + 1;
+        $pdo->prepare("INSERT INTO settings (setting_key,setting_value) VALUES ('lastProductionTaskId',?) ON DUPLICATE KEY UPDATE setting_value=?")
+            ->execute([$next, $next]);
+        $pdo->commit();
+        return 'PROD-' . str_pad($next, 4, '0', STR_PAD_LEFT);
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+// settings の JSON 配列マスタ（productionCreators / productionMilestoneNames）へ
+// 値を追記する（既存はそのまま・重複追加しない・失敗は非致命でログのみ）。
+// 制作者名やマイルストーン名を「一度登録したらプルダウンで選べる」ためのマスタ蓄積。
+function prodAppendMasterValues(PDO $pdo, string $settingKey, array $values): void {
+    $values = array_values(array_filter(array_map(fn($v) => trim((string)$v), $values), fn($v) => $v !== ''));
+    if (!$values) return;
+    try {
+        $pdo->beginTransaction();
+        $st = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = ? FOR UPDATE");
+        $st->execute([$settingKey]);
+        $cur = json_decode((string)($st->fetchColumn() ?: '[]'), true);
+        if (!is_array($cur)) $cur = [];
+        $changed = false;
+        foreach ($values as $v) {
+            if (!in_array($v, $cur, true)) { $cur[] = $v; $changed = true; }
+        }
+        if ($changed) {
+            $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?,?)
+                ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)")
+                ->execute([$settingKey, json_encode($cur, JSON_UNESCAPED_UNICODE)]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('[production] master append failed (' . $settingKey . '): ' . $e->getMessage());
+    }
+}
+
+// Drive の各種URL（file/d/… や document/d/… 等）からファイルIDを抽出する。
+// 抽出できなければ null（＝Drive 以外のURL）。
+function extractDriveFileId(string $url): ?string {
+    $u = trim($url);
+    if ($u === '') return null;
+    if (preg_match('#https?://(?:drive|docs)\.google\.com/[^\s]*?/d/([A-Za-z0-9_-]{10,})#', $u, $m)) return $m[1];
+    if (preg_match('#https?://drive\.google\.com/drive/(?:u/\d+/)?folders/([A-Za-z0-9_-]{10,})#', $u, $m)) return $m[1];
+    if (preg_match('#https?://(?:drive|docs)\.google\.com/[^\s]*[?&]id=([A-Za-z0-9_-]{10,})#', $u, $m)) return $m[1];
+    return null;
+}
+
+// ================================================================
 // Wiki 用 UUID v4 採番（フレームワーク非依存・ランダム）
 // ================================================================
 function generateWikiUuid(): string {
@@ -1238,7 +1725,7 @@ function pusher_cluster(): string {
  * ホワイトボード/Wiki の presence・private チャンネルのみ許可する。
  */
 function pusher_channel_allowed(string $channel): bool {
-    foreach (['presence-wb-', 'private-wb-', 'presence-wiki-', 'private-wiki-'] as $p) {
+    foreach (['presence-wb-', 'private-wb-', 'presence-wiki-', 'private-wiki-', 'presence-task-'] as $p) {
         if (strncmp($channel, $p, strlen($p)) === 0) return true;
     }
     return false;
@@ -1278,13 +1765,16 @@ function pusher_auth_response(string $socketId, string $channel, string $email, 
  * 高頻度な描画差分はフロントの client events で流すため、ここは
  * 「保存完了通知」など低頻度のブロードキャストに用いる想定。失敗は false。
  */
-function pusher_trigger(array $channels, string $event, array $data): bool {
+function pusher_trigger(array $channels, string $event, array $data, string $excludeSocketId = ''): bool {
     if (!pusher_enabled()) return false;
-    $body = json_encode([
+    $payload = [
         'name'     => $event,
         'channels' => array_values($channels),
         'data'     => json_encode($data, JSON_UNESCAPED_UNICODE),
-    ], JSON_UNESCAPED_UNICODE);
+    ];
+    // 送信元クライアント（保存した本人）へのエコーバックを抑止する（Pusher 標準の socket_id 除外）。
+    if ($excludeSocketId !== '') $payload['socket_id'] = $excludeSocketId;
+    $body = json_encode($payload, JSON_UNESCAPED_UNICODE);
     $params = [
         'auth_key'       => PUSHER_KEY,
         'auth_timestamp' => (string)time(),
@@ -1302,6 +1792,9 @@ function pusher_trigger(array $channels, string $event, array $data): bool {
         CURLOPT_POSTFIELDS     => $body,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        // saveTask 応答の同期パスで呼ばれるため、Pusher 障害時に保存を長く待たせない
+        // （接続 2s / 全体 5s。失敗は false 返却のみでメイン処理は壊さない）
+        CURLOPT_CONNECTTIMEOUT => 2,
         CURLOPT_TIMEOUT        => 5,
     ]);
     curl_exec($ch);
@@ -1337,7 +1830,9 @@ function appBaseUrl(): string {
 }
 
 function lwTaskUrl(string $taskId, bool $commentsPane = false): string {
-    $u = appBaseUrl() . '?task=' . rawurlencode($taskId);
+    // PROD- 始まりは制作チケット（?prod= ディープリンク）。それ以外は事業チケット（?task=）。
+    $param = (strpos($taskId, 'PROD-') === 0) ? 'prod' : 'task';
+    $u = appBaseUrl() . '?' . $param . '=' . rawurlencode($taskId);
     if ($commentsPane) $u .= '&pane=comments';
     return $u;
 }
@@ -1522,6 +2017,12 @@ function lwDefaultPrefs(): array {
         'weeklyDue'        => true,
         'weeklyDueWeekday' => 'mon',
         'monthlyDue'       => true,
+        // ---- 制作チケット（オリジナル版限定）----
+        // 事業チケットとは独立した ON/OFF 群。prodEnabled が制作通知のマスター。
+        // prodDue は「現在ステータスの期限」に対する相対バケット。
+        // 保留(hold)は期限を持たないステータスのため、そもそもリマインド対象にならない。
+        'prodEnabled'      => true,
+        'prodDue'          => ['d5' => true, 'd3' => true, 'd1' => true, 'd0' => true, 'overdue' => true],
     ];
 }
 function lwMergePrefs(array $def, array $p): array {
@@ -1843,6 +2344,76 @@ function lwRunScheduledNotifications(PDO $pdo): void {
             // 送信失敗 → claim せず退避。翌日 cron 冒頭の lwRetryFlush で再送する
             //（これをしないと相対バケットがずれてこの日のリマインドは恒久消失する）。
             lwRetryEnqueue($uid, $email, $msg, $claims, $todayStr);
+        }
+    }
+
+    // ---- 制作チケット（オリジナル版限定）: 現在ステータスの期限リマインド ----
+    //   事業チケットとは独立した prefs（prodEnabled / prodDue）で ON/OFF。
+    //   対象日付は status_deadlines[現在ステータス]。完了(done)と保留(hold)は対象外
+    //   （hold は期限を持たないステータス。止まっている間は日付で追い立てない）。
+    //   テーブル未作成環境でも cron 全体を壊さない（try/catch で握りつぶしログのみ）。
+    if (productionEnabled()) {
+        try {
+            $prodPerUser = [];
+            $pstmt = $pdo->query("SELECT id, title, status, status_deadlines, assignees FROM production_tasks WHERE deleted_at IS NULL AND status NOT IN ('done', 'hold')");
+            while ($pt = $pstmt->fetch()) {
+                $deadlines = json_decode($pt['status_deadlines'] ?? '{}', true);
+                $deadline  = is_array($deadlines) ? (string)($deadlines[$pt['status']] ?? '') : '';
+                if ($deadline === '') continue;
+                $d = DateTime::createFromFormat('Y-m-d', $deadline);
+                if (!$d) continue;
+                $d->setTime(0, 0, 0);
+                $diff = (int)$today->diff($d)->format('%r%a');
+                $bucket = null;
+                if ($diff === 5) $bucket = 'd5';
+                elseif ($diff === 3) $bucket = 'd3';
+                elseif ($diff === 1) $bucket = 'd1';
+                elseif ($diff === 0) $bucket = 'd0';
+                elseif ($diff < 0) $bucket = 'overdue';
+                if ($bucket === null) continue;
+
+                $recipients = array_values(array_unique(array_filter(json_decode($pt['assignees'] ?? '[]', true) ?: [])));
+                foreach ($recipients as $em) {
+                    $prodPerUser[$em][$bucket][] = $pt;
+                }
+            }
+
+            $prodStatusLabels = ['hold' => '保留', 'plan' => '企画', 'making' => '制作中', 'ready' => '発信待ち', 'done' => '完了'];
+            foreach ($prodPerUser as $email => $buckets) {
+                $prefs = lwGetPrefs($pdo, $email);
+                if (empty($prefs['enabled']) || empty($prefs['prodEnabled'])) continue;
+                $uid = lwResolveUserId($pdo, $email);
+                if ($uid === null) continue;
+
+                $lines  = [];
+                $claims = [];
+                foreach (['d5', 'd3', 'd1', 'd0', 'overdue'] as $b) {
+                    if (empty($buckets[$b]) || empty($prefs['prodDue'][$b])) continue;
+                    $tl = [];
+                    foreach ($buckets[$b] as $pt) {
+                        // outbox の kind に現在ステータスも含める＝ステータスが進んだら別リマインド扱い
+                        $claims[] = [$email, $pt['id'], 'prod_' . $pt['status'] . '_' . $b, $todayStr];
+                        $sLabel = $prodStatusLabels[$pt['status']] ?? $pt['status'];
+                        $tl[] = '・[' . $sLabel . '] ' . $pt['title'] . "\n  " . lwTaskUrl($pt['id']);
+                    }
+                    if ($tl) $lines[] = '【' . $dueLabels[$b] . "】\n" . implode("\n", $tl);
+                }
+                if (!$lines) continue;
+
+                $anyNew = false;
+                foreach ($claims as $c) { if (!lwOutboxExists($pdo, $c[0], $c[1], $c[2], $c[3])) { $anyNew = true; break; } }
+                if (!$anyNew) continue;
+
+                $msg = "🎨 OliveNote 制作リマインド（" . $today->format('n/j') . "）\n※現在ステータスの期限です\n\n" . implode("\n\n", $lines);
+                if (lwSendToUserId($uid, lwTextContent($msg))) {
+                    foreach ($claims as $c) lwOutboxClaim($pdo, $c[0], $c[1], $c[2], $c[3]);
+                    $sent++;
+                } else {
+                    lwRetryEnqueue($uid, $email, $msg, $claims, $todayStr);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[lineworks] production digest failed: ' . $e->getMessage());
         }
     }
 
@@ -2255,10 +2826,14 @@ try {
 
             // Tasks（削除されていないもの）— 軽量版。description は画像除去テキスト、
             //   コメントは件数のみ。フル本文＋全コメントは getTaskDetail で取得する。
+            // ネクストアクションは「先頭の未完了1行＋件数」だけを載せる（全行は getTaskDetail）
+            $actionSummaries = fetchTaskActionSummaries($pdo);
             $stmt  = $pdo->query("SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC");
             $tasks = [];
             while ($row = $stmt->fetch()) {
-                $tasks[] = taskFromRowLight($row, $commentCountByTask[$row['id']] ?? 0);
+                $t = taskFromRowLight($row, $commentCountByTask[$row['id']] ?? 0);
+                $sum = $actionSummaries[$row['id']] ?? ['actionTotal' => 0, 'actionDone' => 0, 'nextAction' => null];
+                $tasks[] = $t + $sum;
             }
 
             // Documents（削除されていないもの、最終更新の新しい順）
@@ -2271,6 +2846,25 @@ try {
             $docs = [];
             while ($row = $stmt->fetch()) {
                 $docs[] = docFromRow($row);
+            }
+
+            // 制作チケット（オリジナル版限定・軽量版）。コメント件数は事業チケットと同じ
+            // comments テーブル（task_id='PROD-…'）から拾えるため $commentCountByTask を共用。
+            // テーブル未作成（SQL 未適用）でも getInitialData 全体は壊さない。
+            $productionTasks          = [];
+            $productionCreators       = [];
+            $productionMilestoneNames = [];
+            if (productionEnabled()) {
+                try {
+                    $stmt = $pdo->query("SELECT * FROM production_tasks WHERE deleted_at IS NULL ORDER BY sort_order ASC");
+                    while ($row = $stmt->fetch()) {
+                        $productionTasks[] = prodTaskFromRowLight($row, $commentCountByTask[$row['id']] ?? 0);
+                    }
+                    $productionCreators       = is_array($settings['productionCreators'] ?? null) ? $settings['productionCreators'] : [];
+                    $productionMilestoneNames = is_array($settings['productionMilestoneNames'] ?? null) ? $settings['productionMilestoneNames'] : [];
+                } catch (Throwable $e) {
+                    error_log('[getInitialData] production_tasks load failed: ' . $e->getMessage());
+                }
             }
 
             // User preferences（ログイン中ユーザーの表示設定）
@@ -2319,6 +2913,11 @@ try {
                     'docFolderRootId' => DOC_FOLDER_ID,
                     'userPreferences' => $userPrefs,
                     'filterPresets'   => $filterPresets,
+                    // 制作物管理（オリジナル版限定）。無効環境では enabled=false + 空配列。
+                    'productionEnabled'        => productionEnabled(),
+                    'productionTasks'          => $productionTasks,
+                    'productionCreators'       => $productionCreators,
+                    'productionMilestoneNames' => $productionMilestoneNames,
                 ],
             ]);
             break;
@@ -2334,7 +2933,7 @@ try {
                 echo json_encode(['success' => false, 'error' => 'taskId is required']);
                 break;
             }
-            $stmt = $pdo->prepare("SELECT description FROM tasks WHERE id = ? AND deleted_at IS NULL");
+            $stmt = $pdo->prepare("SELECT * FROM tasks WHERE id = ? AND deleted_at IS NULL");
             $stmt->execute([$taskId]);
             $trow = $stmt->fetch();
             if (!$trow) {
@@ -2347,9 +2946,17 @@ try {
             while ($crow = $cstmt->fetch()) {
                 $detailComments[] = commentFromRow($crow);
             }
+            $actionsPayload = taskActionsPayload($pdo, $taskId);
             echo json_encode(['success' => true, 'data' => [
                 'description' => $trow['description'] ?? '',
                 'comments'    => $detailComments,
+                // 同時編集の差し替え用にフルタスクも返す（description/comments は上と重複するが後方互換のため残す）
+                'task'        => taskFromRow($trow, $detailComments),
+                // ネクストアクション全行＋サマリ（モーダルの編集UI用）
+                'actions'     => $actionsPayload['actions'],
+                'actionTotal' => $actionsPayload['actionTotal'],
+                'actionDone'  => $actionsPayload['actionDone'],
+                'nextAction'  => $actionsPayload['nextAction'],
             ]]);
             break;
 
@@ -2360,20 +2967,121 @@ try {
             $task  = $payload['task'] ?? [];
             $isNew = empty($task['id']);
 
+            // ---- 差分保存モード（同時編集の相互上書き防止）----
+            //   フロントが「ユーザーが実際に変更したフィールド一覧」を changedFields で送ってきた場合、
+            //   そのフィールドだけを UPDATE する。触っていないフィールドは DB の現在値（＝他の人の
+            //   更新）を一切上書きしない。changedFields が無い旧クライアントは従来のフル upsert。
+            //   description のみ CAS（compare-and-swap）: descBaseHash（クライアントが最後に
+            //   サーバから受け取った本文の sha256）が現在値と一致しない＝他の人が本文を更新済み
+            //   なら、本文の適用を拒否して descConflict=true を返す（他フィールドは適用する）。
+            $changedFields = (isset($payload['changedFields']) && is_array($payload['changedFields'])) ? $payload['changedFields'] : null;
+            $descBaseHash  = (string)($payload['descBaseHash'] ?? '');
+            $saverSocketId = (string)($payload['socketId'] ?? '');
+            $descConflict  = false;
+
             if ($isNew) {
                 $task['id'] = assignNextTaskId($pdo);
             }
 
             // 親子階層バリデーション（最大3階層、循環参照防止）
-            $hierErr = validateTaskParentHierarchy(
-                $pdo,
-                $isNew ? null : $task['id'],
-                !empty($task['parentId']) ? $task['parentId'] : null
-            );
-            if ($hierErr !== null) {
-                echo json_encode(['success' => false, 'error' => $hierErr]);
-                break;
+            //   差分保存で parentId を変更しない場合は現状維持なので検証不要（誤検知防止）。
+            if ($isNew || $changedFields === null || in_array('parentId', $changedFields, true)) {
+                $hierErr = validateTaskParentHierarchy(
+                    $pdo,
+                    $isNew ? null : $task['id'],
+                    !empty($task['parentId']) ? $task['parentId'] : null
+                );
+                if ($hierErr !== null) {
+                    echo json_encode(['success' => false, 'error' => $hierErr]);
+                    break;
+                }
             }
+
+            // ---- 差分保存パス（既存タスクのみ）----
+            if (!$isNew && $changedFields !== null) {
+                // フィールド → [カラム名, 値整形] の対応表（許可リスト＝これ以外は無視）
+                $taskFieldMap = [
+                    'title'              => ['title',               fn($v) => (string)$v],
+                    'description'        => ['description',         fn($v) => (string)$v],
+                    'status'             => ['status',              fn($v) => (string)($v ?? 'todo')],
+                    'priority'           => ['priority',            fn($v) => (string)($v ?? 'medium')],
+                    'type'               => ['type',                fn($v) => (string)$v],
+                    'category'           => ['category',            fn($v) => (string)$v],
+                    'cardColor'          => ['card_color',          fn($v) => !empty($v) ? $v : null],
+                    'parentId'           => ['parent_id',           fn($v) => !empty($v) ? $v : null],
+                    'startDate'          => ['start_date',          fn($v) => !empty($v) ? $v : null],
+                    'dueDate'            => ['due_date',            fn($v) => !empty($v) ? $v : null],
+                    'implementationDate' => ['implementation_date', fn($v) => !empty($v) ? $v : null],
+                    'implementationDays' => ['implementation_days', fn($v) => (int)($v ?? 1)],
+                    'assigneeEmail'      => ['assignee_email',      fn($v) => (string)$v],
+                    'assigneeName'       => ['assignee_name',       fn($v) => (string)$v],
+                    'subAssignees'       => ['sub_assignees',       fn($v) => json_encode(is_array($v) ? $v : [])],
+                    'likes'              => ['likes',               fn($v) => json_encode(is_array($v) ? $v : [])],
+                    'attachments'        => ['attachments',         fn($v) => json_encode(is_array($v) ? $v : [])],
+                    'order'              => ['sort_order',          fn($v) => (float)($v ?? 0)],
+                ];
+
+                $pdo->beginTransaction();
+                try {
+                    // 行ロックで同時保存を直列化（CAS 判定と UPDATE の間の割り込みを防ぐ）
+                    $curStmt = $pdo->prepare("SELECT * FROM tasks WHERE id = ? FOR UPDATE");
+                    $curStmt->execute([$task['id']]);
+                    $cur = $curStmt->fetch();
+
+                    if (!$cur) {
+                        // 行が無い（並行削除等）→ 従来のフル upsert にフォールバック
+                        $pdo->rollBack();
+                        $changedFields = null;
+                    } else {
+                        $descIsBlank = function ($s) {
+                            $s = str_replace(["\xEF\xBB\xBF", "\xC2\xA0", "&nbsp;"], '', (string)$s);
+                            return trim($s) === '';
+                        };
+
+                        $apply = [];
+                        foreach ($changedFields as $f) {
+                            if (!isset($taskFieldMap[$f]) || !array_key_exists($f, $task)) continue;
+                            $apply[$f] = $taskFieldMap[$f][1]($task[$f]);
+                        }
+
+                        // description ガード（差分保存版）
+                        if (array_key_exists('description', $apply)) {
+                            $newDesc = (string)$apply['description'];
+                            $curDesc = (string)($cur['description'] ?? '');
+                            if (empty($task['descriptionCleared']) && $descIsBlank($newDesc) && !$descIsBlank($curDesc)) {
+                                // 空上書き拒否（iOS Safari 空描画 autosave 対策）: 本文は適用しない
+                                unset($apply['description']);
+                                error_log('[OliveNote] saveTask(diff): blocked blank description overwrite for task ' . $task['id']);
+                            } elseif (empty($task['descriptionCleared'])
+                                      && $descBaseHash !== ''
+                                      && hash('sha256', $curDesc) !== $descBaseHash
+                                      && $curDesc !== $newDesc) {
+                                // CAS 不一致＝ベースが古い（他の人が本文を更新済み）→ 本文の適用を拒否
+                                $descConflict = true;
+                                unset($apply['description']);
+                            }
+                        }
+
+                        if (!empty($apply)) {
+                            $set = []; $bind = [];
+                            foreach ($apply as $f => $v) {
+                                $col = $taskFieldMap[$f][0];
+                                $set[] = "`$col` = :$col";
+                                $bind[":$col"] = $v;
+                            }
+                            $bind[':id'] = $task['id'];
+                            $pdo->prepare("UPDATE tasks SET " . implode(', ', $set) . " WHERE id = :id")->execute($bind);
+                        }
+                        $pdo->commit();
+                    }
+                } catch (Throwable $e) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $e;
+                }
+            }
+
+            // ---- 従来のフル upsert パス（新規作成 or changedFields 無しの旧クライアント）----
+            if ($isNew || $changedFields === null) {
 
             // ★ データ消失ガード（最重要）:
             //   既存課題で「送られてきた description が実質空」なのに DB 側に本文がある場合は、
@@ -2450,6 +3158,8 @@ try {
                 ':sort_order'          => (float)($task['order'] ?? 0),
             ]);
 
+            } // ---- フル upsert パスここまで ----
+
             // 週次サマリ用のアクティビティ記録（更新者＝ログイン中ユーザー）。
             lwLogActivity($pdo, $_SESSION['user_email'] ?? '', $task['id'], $isNew ? 'create' : 'update');
 
@@ -2458,8 +3168,22 @@ try {
             $stmt->execute([$task['id']]);
             $saved = $stmt->fetch();
 
+            // 同じ課題を開いている他のクライアントへ「更新あり」を1発だけ通知する（低頻度・
+            //   本文などの実データは載せず、受信側が getTaskDetail で取り直す）。保存した本人は
+            //   socket_id 除外でエコーバックしない。失敗してもメイン処理は壊さない。
+            if (!$isNew && pusher_enabled()) {
+                pusher_trigger(['presence-task-' . $task['id']], 'task-updated', [
+                    'taskId'    => $task['id'],
+                    'by'        => (string)($_SESSION['user_email'] ?? ''),
+                    'updatedAt' => (string)($saved['updated_at'] ?? ''),
+                ], $saverSocketId);
+            }
+
             // コメントはリクエストからそのまま引き継ぐ（コメントはsaveComment経由で管理）
-            echo json_encode(['success' => true, 'data' => taskFromRow($saved, $task['comments'] ?? [])]);
+            // descConflict: 本文が他の人の更新と競合して適用されなかったことをフロントへ伝える
+            $taskOut = taskFromRow($saved, $task['comments'] ?? []);
+            $taskOut['descConflict'] = $descConflict;
+            echo json_encode(['success' => true, 'data' => $taskOut]);
             break;
 
         // ============================================================
@@ -2653,8 +3377,603 @@ try {
             $stmt = $pdo->prepare("SELECT * FROM tasks WHERE id = ?");
             $stmt->execute([$taskId]);
             $row = $stmt->fetch();
-            // SettingsView が res.success と res.restoredTask を参照するため data に success を含める
-            echo json_encode(['success' => true, 'data' => ['success' => true, 'restoredTask' => taskFromRow($row)]]);
+            // SettingsView が res.success と res.restoredTask を参照するため data に success を含める。
+            // 復元後の課題をそのまま tasks state へ積むので、ネクストアクションのサマリも載せる
+            //（載せないとカードが「次の一手が未設定」に見えてしまう。行は削除されていない）。
+            $restoreActions = taskActionsPayload($pdo, $taskId);
+            $restored = taskFromRow($row) + [
+                'actionTotal' => $restoreActions['actionTotal'],
+                'actionDone'  => $restoreActions['actionDone'],
+                'nextAction'  => $restoreActions['nextAction'],
+                'actions'     => $restoreActions['actions'],
+            ];
+            echo json_encode(['success' => true, 'data' => ['success' => true, 'restoredTask' => $restored]]);
+            break;
+
+        // ============================================================
+        // ネクストアクション（task_actions）API
+        //   行単位で即時コミットする（課題本文のような差分保存／CAS は行わない）。
+        //   1行 = 1レコードなので相互上書きが起こらず、フル配列を送る経路も作らない。
+        //   どのアクションも成功時は taskActionsPayload（サマリ＋全行）を返し、
+        //   フロントはそれで丸ごと差し替える（カードのサマリと全行の乖離を防ぐ）。
+        // ============================================================
+
+        // getTaskActions — 1課題のアクション全行（モーダル再取得・複製直後など）
+        case 'getTaskActions': {
+            $taskId = trim((string)($payload['taskId'] ?? ''));
+            if ($taskId === '') {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            echo json_encode(['success' => true, 'data' => taskActionsPayload($pdo, $taskId)]);
+            break;
+        }
+
+        // saveTaskAction — 1行の追加 or 更新（title / dueDate）
+        case 'saveTaskAction': {
+            if (!task_actions_table_exists($pdo)) {
+                echo json_encode(['success' => false, 'error' => 'ネクストアクション用のテーブルが未作成です。管理者に migrate.php の実行を依頼してください。']);
+                break;
+            }
+            $taskId  = trim((string)($payload['taskId'] ?? ''));
+            $actId   = (int)($payload['id'] ?? 0);
+            $title   = trim((string)($payload['title'] ?? ''));
+            $dueDate = trim((string)($payload['dueDate'] ?? ''));
+            // 空文字は「期限なし」= NULL。日付書式だけ受け付ける（不正値は期限なし扱い）
+            $dueVal  = preg_match('/^\d{4}-\d{2}-\d{2}$/', $dueDate) ? $dueDate : null;
+
+            if ($title === '') {
+                echo json_encode(['success' => false, 'error' => 'アクションの内容を入力してください。']);
+                break;
+            }
+            // VARCHAR(500) 相当。マルチバイトで切るため mb_substr を使う
+            $title = mb_substr($title, 0, 500);
+
+            $histLine = '';
+            if ($actId > 0) {
+                // 更新: task_id は変えない（付け替えは想定しない）。既存行から taskId を引く
+                $stmt = $pdo->prepare("SELECT task_id, title, due_date FROM task_actions WHERE id = ?");
+                $stmt->execute([$actId]);
+                $prev = $stmt->fetch();
+                if (!$prev) {
+                    echo json_encode(['success' => false, 'error' => 'アクションが見つかりません（他の方が削除した可能性があります）。']);
+                    break;
+                }
+                $pdo->prepare("UPDATE task_actions SET title = ?, due_date = ? WHERE id = ?")
+                    ->execute([$title, $dueVal, $actId]);
+                $taskId = (string)$prev['task_id'];
+
+                // 履歴は「変わった項目だけ」。内容と期限の同時変更は1行にまとめる
+                $prevTitle = (string)$prev['title'];
+                $prevDue   = (string)($prev['due_date'] ?? '');
+                $parts     = [];
+                if ($prevTitle !== $title) {
+                    $parts[] = "内容を「" . taskActionLabel($prevTitle) . "」から「" . taskActionLabel($title) . "」に変更";
+                }
+                if ($prevDue !== (string)$dueVal) {
+                    $parts[] = "期限を「" . ($prevDue !== '' ? $prevDue : '期限なし') . "」から「"
+                             . ($dueVal !== null ? $dueVal : '期限なし') . "」に変更";
+                }
+                if ($parts) {
+                    $histLine = '・ネクストアクション: ' . implode(' / ', $parts);
+                }
+            } else {
+                if ($taskId === '') {
+                    echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                    break;
+                }
+                // 末尾に追加（既存の最大 sort_order + 1000）
+                $stmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order), 0) FROM task_actions WHERE task_id = ?");
+                $stmt->execute([$taskId]);
+                $nextOrder = (float)$stmt->fetchColumn() + 1000;
+                $pdo->prepare("INSERT INTO task_actions (task_id, title, due_date, sort_order) VALUES (?,?,?,?)")
+                    ->execute([$taskId, $title, $dueVal, $nextOrder]);
+                $histLine = '・ネクストアクション「' . taskActionLabel($title) . '」を追加'
+                          . ($dueVal !== null ? "（期限: {$dueVal}）" : '（期限なし）');
+            }
+            $data = taskActionsPayload($pdo, $taskId);
+            $data['historyComment'] = $histLine !== '' ? logTaskActionHistory($pdo, $taskId, $histLine) : null;
+            echo json_encode(['success' => true, 'data' => $data]);
+            break;
+        }
+
+        // toggleTaskAction — 完了 / 未完了の切り替え（ボードカードからも呼ばれる）
+        case 'toggleTaskAction': {
+            if (!task_actions_table_exists($pdo)) {
+                echo json_encode(['success' => false, 'error' => 'ネクストアクション用のテーブルが未作成です。管理者に migrate.php の実行を依頼してください。']);
+                break;
+            }
+            $actId = (int)($payload['id'] ?? 0);
+            $done  = !empty($payload['done']);
+            if ($actId <= 0) {
+                echo json_encode(['success' => false, 'error' => 'id is required']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT task_id, title, done_at FROM task_actions WHERE id = ?");
+            $stmt->execute([$actId]);
+            $prev = $stmt->fetch();
+            if (!$prev) {
+                echo json_encode(['success' => false, 'error' => 'アクションが見つかりません（他の方が削除した可能性があります）。']);
+                break;
+            }
+            $taskId  = (string)$prev['task_id'];
+            $wasDone = !empty($prev['done_at']);
+            // 状態が変わらない操作（連打・多重クリック）では何も書かない。
+            // UPDATE してしまうと「誰がいつ終わらせたか」が履歴も残さず後勝ちで塗り替わる。
+            if ($wasDone !== $done) {
+                if ($done) {
+                    // 誰がいつ終わらせたかを記録する（担当の割り当てではなく事実の記録）
+                    $email = (string)($_SESSION['user_email'] ?? '');
+                    $nm    = $pdo->prepare("SELECT name FROM members WHERE email = ?");
+                    $nm->execute([$email]);
+                    $name  = (string)($nm->fetchColumn() ?: '');
+                    $pdo->prepare("UPDATE task_actions SET done_at = NOW(), done_by = ?, done_by_name = ? WHERE id = ?")
+                        ->execute([$email, $name, $actId]);
+                } else {
+                    $pdo->prepare("UPDATE task_actions SET done_at = NULL, done_by = '', done_by_name = '' WHERE id = ?")
+                        ->execute([$actId]);
+                }
+            }
+            $data = taskActionsPayload($pdo, $taskId);
+            // 履歴も状態が実際に変わったときだけ
+            $data['historyComment'] = ($wasDone === $done) ? null : logTaskActionHistory(
+                $pdo, $taskId,
+                '・ネクストアクション「' . taskActionLabel((string)$prev['title']) . '」を'
+                . ($done ? '完了にしました' : '未完了に戻しました')
+            );
+            echo json_encode(['success' => true, 'data' => $data]);
+            break;
+        }
+
+        // deleteTaskAction — 1行の削除（物理削除。1行のテキストなのでゴミ箱は設けない）
+        case 'deleteTaskAction': {
+            if (!task_actions_table_exists($pdo)) {
+                echo json_encode(['success' => false, 'error' => 'ネクストアクション用のテーブルが未作成です。管理者に migrate.php の実行を依頼してください。']);
+                break;
+            }
+            $actId = (int)($payload['id'] ?? 0);
+            if ($actId <= 0) {
+                echo json_encode(['success' => false, 'error' => 'id is required']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT task_id, title FROM task_actions WHERE id = ?");
+            $stmt->execute([$actId]);
+            $prev = $stmt->fetch();
+            if (!$prev) {
+                // 既に消えている＝目的は達成済み。最新状態だけ返す（エラーにしない）
+                $fallbackId = trim((string)($payload['taskId'] ?? ''));
+                echo json_encode(['success' => true, 'data' => taskActionsPayload($pdo, $fallbackId)]);
+                break;
+            }
+            $taskId = (string)$prev['task_id'];
+            $pdo->prepare("DELETE FROM task_actions WHERE id = ?")->execute([$actId]);
+            $data = taskActionsPayload($pdo, $taskId);
+            $data['historyComment'] = logTaskActionHistory(
+                $pdo, $taskId,
+                '・ネクストアクション「' . taskActionLabel((string)$prev['title']) . '」を削除'
+            );
+            echo json_encode(['success' => true, 'data' => $data]);
+            break;
+        }
+
+        // reorderTaskActions — 並べ替え（ids の順に sort_order を振り直す）
+        case 'reorderTaskActions': {
+            if (!task_actions_table_exists($pdo)) {
+                echo json_encode(['success' => false, 'error' => 'ネクストアクション用のテーブルが未作成です。管理者に migrate.php の実行を依頼してください。']);
+                break;
+            }
+            $taskId = trim((string)($payload['taskId'] ?? ''));
+            $ids    = is_array($payload['ids'] ?? null) ? $payload['ids'] : [];
+            if ($taskId === '' || !$ids) {
+                echo json_encode(['success' => false, 'error' => 'taskId and ids are required']);
+                break;
+            }
+            // task_id 条件を付けて更新する（他課題の行 id を混ぜられても動かせない）
+            $upd = $pdo->prepare("UPDATE task_actions SET sort_order = ? WHERE id = ? AND task_id = ?");
+            $pdo->beginTransaction();
+            try {
+                foreach (array_values($ids) as $i => $rawId) {
+                    $upd->execute([($i + 1) * 1000, (int)$rawId, $taskId]);
+                }
+                $pdo->commit();
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                throw $e;
+            }
+            echo json_encode(['success' => true, 'data' => taskActionsPayload($pdo, $taskId)]);
+            break;
+        }
+
+        // ============================================================
+        // 制作物管理（制作チケット）API — オリジナル版限定（ENABLE_PRODUCTION）
+        // ============================================================
+
+        // getProductionTaskDetail — 1制作チケットの重いデータ（フル本文＋全コメント）
+        case 'getProductionTaskDetail':
+            requireProduction();
+            $taskId = $payload['taskId'] ?? '';
+            if ($taskId === '') {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            $stmt = $pdo->prepare("SELECT * FROM production_tasks WHERE id = ? AND deleted_at IS NULL");
+            $stmt->execute([$taskId]);
+            $trow = $stmt->fetch();
+            if (!$trow) {
+                echo json_encode(['success' => false, 'error' => 'production task not found']);
+                break;
+            }
+            $cstmt = $pdo->prepare("SELECT * FROM comments WHERE task_id = ? ORDER BY created_at ASC");
+            $cstmt->execute([$taskId]);
+            $detailComments = [];
+            while ($crow = $cstmt->fetch()) {
+                $detailComments[] = commentFromRow($crow);
+            }
+            echo json_encode(['success' => true, 'data' => [
+                'description' => $trow['description'] ?? '',
+                'comments'    => $detailComments,
+                'task'        => prodTaskFromRow($trow, $detailComments),
+            ]]);
+            break;
+
+        // saveProductionTask — 新規作成 or 更新（changedFields 差分保存対応）
+        case 'saveProductionTask':
+            requireProduction();
+            $task  = $payload['task'] ?? [];
+            $isNew = empty($task['id']);
+            $changedFields = (isset($payload['changedFields']) && is_array($payload['changedFields'])) ? $payload['changedFields'] : null;
+
+            if ($isNew) {
+                $task['id'] = assignNextProductionTaskId($pdo);
+            }
+
+            // 関連事業チケットの存在チェック（指定時のみ。空は「紐づけなし」で許容）
+            if (!empty($task['businessTaskId']) && ($isNew || $changedFields === null || in_array('businessTaskId', $changedFields, true))) {
+                $bstmt = $pdo->prepare("SELECT 1 FROM tasks WHERE id = ? AND deleted_at IS NULL");
+                $bstmt->execute([$task['businessTaskId']]);
+                if (!$bstmt->fetchColumn()) {
+                    echo json_encode(['success' => false, 'error' => '関連事業チケットが見つかりません: ' . $task['businessTaskId']]);
+                    break;
+                }
+            }
+
+            // スマウトリンクは保存前に正規化（不正スキームはここで弾く）
+            if (array_key_exists('smoutUrl', $task)) {
+                $normalizedSmout = prodNormalizeSmoutUrl($task['smoutUrl']);
+                if ($normalizedSmout === false) {
+                    echo json_encode(['success' => false, 'error' => 'スマウトリンクは http:// または https:// のURLを入力してください。']);
+                    break;
+                }
+                $task['smoutUrl'] = $normalizedSmout;
+                // URLを消したらプレビューも捨てる（別記事のサムネが残らないように）
+                if ($normalizedSmout === null) {
+                    $task['smoutMeta'] = null;
+                    if ($changedFields !== null && !in_array('smoutMeta', $changedFields, true)) {
+                        $changedFields[] = 'smoutMeta';
+                    }
+                }
+            }
+            $hasSmoutCol     = prod_has_col($pdo, 'smout_url');
+            $hasSmoutMetaCol = prod_has_col($pdo, 'smout_meta');
+
+            // 列が無い環境では該当項目が保存されない。黙って捨てると「保存したのに消える」に
+            // 見えるため、警告を応答に載せてフロントでトースト表示する（無言の保存失敗を作らない）。
+            $prodWarning = '';
+            $missingCols = [];
+            if (!$hasSmoutCol     && !empty($task['smoutUrl']))  $missingCols[] = 'smout_url';
+            if (!$hasSmoutMetaCol && !empty($task['smoutMeta'])) $missingCols[] = 'smout_meta';
+            if ($missingCols) {
+                $prodWarning = 'スマウトリンク用の列（' . implode(' / ', $missingCols) . '）がこのDBにありません。'
+                             . 'migrate.php を実行するまで、この項目は保存されません。';
+                error_log('[OliveNote] saveProductionTask: missing columns ' . implode(',', $missingCols));
+            }
+
+            // フィールド → [カラム名, 値整形]（許可リスト）。事業チケット saveTask と同じ流儀。
+            $prodFieldMap = [
+                'title'           => ['title',            fn($v) => (string)$v],
+                'description'     => ['description',      fn($v) => (string)$v],
+                'status'          => ['status',           fn($v) => (string)($v ?? 'plan')],
+                'priority'        => ['priority',         fn($v) => (string)($v ?? 'medium')],
+                'cardColor'       => ['card_color',       fn($v) => !empty($v) ? $v : null],
+                'businessTaskId'  => ['business_task_id', fn($v) => !empty($v) ? $v : null],
+                'creator'         => ['creator',          fn($v) => (string)$v],
+                'assignees'       => ['assignees',        fn($v) => json_encode(is_array($v) ? array_values($v) : [])],
+                'startDate'       => ['start_date',       fn($v) => !empty($v) ? $v : null],
+                'statusDeadlines' => ['status_deadlines', fn($v) => json_encode(is_array($v) ? $v : new stdClass())],
+                'milestones'      => ['milestones',       fn($v) => json_encode(is_array($v) ? array_values($v) : [])],
+                'productUrls'     => ['product_urls',     fn($v) => json_encode(is_array($v) ? array_values($v) : [])],
+                'attachments'     => ['attachments',      fn($v) => json_encode(is_array($v) ? array_values($v) : [])],
+                'likes'           => ['likes',            fn($v) => json_encode(is_array($v) ? array_values($v) : [])],
+                'order'           => ['sort_order',       fn($v) => (float)($v ?? 0)],
+            ];
+            // 列が無い環境（migrate.php 未適用）では保存対象から外す
+            if ($hasSmoutCol) {
+                $prodFieldMap['smoutUrl'] = ['smout_url', fn($v) => ($v === null || $v === '') ? null : (string)$v];
+            }
+            if ($hasSmoutMetaCol) {
+                $prodFieldMap['smoutMeta'] = ['smout_meta', function ($v) {
+                    $m = prodSanitizeSmoutMeta($v);
+                    return $m ? json_encode($m, JSON_UNESCAPED_UNICODE) : null;
+                }];
+            }
+
+            $descIsBlankProd = function ($s) {
+                $s = str_replace(["\xEF\xBB\xBF", "\xC2\xA0", "&nbsp;"], '', (string)$s);
+                return trim($s) === '';
+            };
+
+            // ---- 差分保存パス（既存チケットのみ）----
+            if (!$isNew && $changedFields !== null) {
+                $pdo->beginTransaction();
+                try {
+                    $curStmt = $pdo->prepare("SELECT * FROM production_tasks WHERE id = ? FOR UPDATE");
+                    $curStmt->execute([$task['id']]);
+                    $cur = $curStmt->fetch();
+                    if (!$cur) {
+                        // 行が無い（並行削除等）→ フル upsert にフォールバック
+                        $pdo->rollBack();
+                        $changedFields = null;
+                    } else {
+                        $apply = [];
+                        foreach ($changedFields as $f) {
+                            if (!isset($prodFieldMap[$f]) || !array_key_exists($f, $task)) continue;
+                            $apply[$f] = $prodFieldMap[$f][1]($task[$f]);
+                        }
+                        // 空本文での上書きガード（事業チケットと同じ最終防衛）
+                        if (array_key_exists('description', $apply)
+                            && empty($task['descriptionCleared'])
+                            && $descIsBlankProd((string)$apply['description'])
+                            && !$descIsBlankProd((string)($cur['description'] ?? ''))) {
+                            unset($apply['description']);
+                            error_log('[OliveNote] saveProductionTask(diff): blocked blank description overwrite for ' . $task['id']);
+                        }
+                        if (!empty($apply)) {
+                            $set = []; $bind = [];
+                            foreach ($apply as $f => $v) {
+                                $col = $prodFieldMap[$f][0];
+                                $set[] = "`$col` = :$col";
+                                $bind[":$col"] = $v;
+                            }
+                            $bind[':id'] = $task['id'];
+                            $pdo->prepare("UPDATE production_tasks SET " . implode(', ', $set) . " WHERE id = :id")->execute($bind);
+                        }
+                        $pdo->commit();
+                    }
+                } catch (Throwable $e) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    throw $e;
+                }
+            }
+
+            // ---- フル upsert パス（新規 or changedFields 無し）----
+            if ($isNew || $changedFields === null) {
+                if (!$isNew && empty($task['descriptionCleared']) && $descIsBlankProd($task['description'] ?? '')) {
+                    $curStmt = $pdo->prepare("SELECT description FROM production_tasks WHERE id = ?");
+                    $curStmt->execute([$task['id']]);
+                    $curDesc = (string)($curStmt->fetchColumn() ?: '');
+                    if (!$descIsBlankProd($curDesc)) {
+                        $task['description'] = $curDesc;
+                        error_log('[OliveNote] saveProductionTask: blocked blank description overwrite for ' . $task['id']);
+                    }
+                }
+                // smout_url 列が無い環境（migrate.php 未適用）ではカラムごと式から外す
+                //（他項目の保存は通常どおり継続する）
+                $smoutCol = ($hasSmoutCol     ? 'smout_url, '                       : '')
+                          . ($hasSmoutMetaCol ? 'smout_meta, '                      : '');
+                $smoutVal = ($hasSmoutCol     ? ':smout_url, '                      : '')
+                          . ($hasSmoutMetaCol ? ':smout_meta, '                     : '');
+                $smoutUpd = ($hasSmoutCol     ? 'smout_url = VALUES(smout_url), '   : '')
+                          . ($hasSmoutMetaCol ? 'smout_meta = VALUES(smout_meta), ' : '');
+
+                $bindProd = [
+                    ':id'               => $task['id'],
+                    ':title'            => $task['title'] ?? '',
+                    ':description'      => $task['description'] ?? '',
+                    ':status'           => $task['status'] ?? 'plan',
+                    ':priority'         => $task['priority'] ?? 'medium',
+                    ':card_color'       => !empty($task['cardColor']) ? $task['cardColor'] : null,
+                    ':business_task_id' => !empty($task['businessTaskId']) ? $task['businessTaskId'] : null,
+                    ':creator'          => $task['creator'] ?? '',
+                    ':assignees'        => json_encode(is_array($task['assignees'] ?? null) ? array_values($task['assignees']) : []),
+                    ':start_date'       => !empty($task['startDate']) ? $task['startDate'] : null,
+                    ':status_deadlines' => json_encode(is_array($task['statusDeadlines'] ?? null) ? $task['statusDeadlines'] : new stdClass()),
+                    ':milestones'       => json_encode(is_array($task['milestones'] ?? null) ? array_values($task['milestones']) : []),
+                    ':product_urls'     => json_encode(is_array($task['productUrls'] ?? null) ? array_values($task['productUrls']) : []),
+                    ':attachments'      => json_encode(is_array($task['attachments'] ?? null) ? array_values($task['attachments']) : []),
+                    ':likes'            => json_encode(is_array($task['likes'] ?? null) ? array_values($task['likes']) : []),
+                    ':sort_order'       => (float)($task['order'] ?? 0),
+                ];
+                if ($hasSmoutCol) {
+                    $bindProd[':smout_url'] = !empty($task['smoutUrl']) ? (string)$task['smoutUrl'] : null;
+                }
+                if ($hasSmoutMetaCol) {
+                    $sanitizedMeta           = prodSanitizeSmoutMeta($task['smoutMeta'] ?? null);
+                    $bindProd[':smout_meta'] = $sanitizedMeta ? json_encode($sanitizedMeta, JSON_UNESCAPED_UNICODE) : null;
+                }
+
+                $pdo->prepare("
+                    INSERT INTO production_tasks (
+                        id, title, description, status, priority, card_color, business_task_id,
+                        creator, assignees, start_date, status_deadlines, milestones,
+                        product_urls, {$smoutCol}attachments, likes, sort_order
+                    ) VALUES (
+                        :id, :title, :description, :status, :priority, :card_color, :business_task_id,
+                        :creator, :assignees, :start_date, :status_deadlines, :milestones,
+                        :product_urls, {$smoutVal}:attachments, :likes, :sort_order
+                    ) ON DUPLICATE KEY UPDATE
+                        title            = VALUES(title),
+                        description      = VALUES(description),
+                        status           = VALUES(status),
+                        priority         = VALUES(priority),
+                        card_color       = VALUES(card_color),
+                        business_task_id = VALUES(business_task_id),
+                        creator          = VALUES(creator),
+                        assignees        = VALUES(assignees),
+                        start_date       = VALUES(start_date),
+                        status_deadlines = VALUES(status_deadlines),
+                        milestones       = VALUES(milestones),
+                        product_urls     = VALUES(product_urls),
+                        {$smoutUpd}attachments      = VALUES(attachments),
+                        likes            = VALUES(likes),
+                        sort_order       = VALUES(sort_order)
+                ")->execute($bindProd);
+            }
+
+            // 制作者・マイルストーン名をマスタへ蓄積（一度登録したらプルダウンで選べる）。非致命。
+            if (!empty($task['creator']) && ($isNew || $changedFields === null || in_array('creator', $changedFields, true))) {
+                prodAppendMasterValues($pdo, 'productionCreators', [(string)$task['creator']]);
+            }
+            if (!empty($task['milestones']) && is_array($task['milestones'])
+                && ($isNew || $changedFields === null || in_array('milestones', $changedFields, true))) {
+                prodAppendMasterValues($pdo, 'productionMilestoneNames',
+                    array_map(fn($m) => (string)($m['name'] ?? ''), $task['milestones']));
+            }
+
+            // 週次サマリ用のアクティビティ記録（既存の仕組みへ相乗り）
+            lwLogActivity($pdo, $_SESSION['user_email'] ?? '', $task['id'], $isNew ? 'create' : 'update');
+
+            $stmt = $pdo->prepare("SELECT * FROM production_tasks WHERE id = ?");
+            $stmt->execute([$task['id']]);
+            $saved     = $stmt->fetch();
+            $savedTask = prodTaskFromRow($saved, $task['comments'] ?? []);
+            if ($prodWarning !== '') $savedTask['_warning'] = $prodWarning;
+            echo json_encode(['success' => true, 'data' => $savedTask]);
+            break;
+
+        // getLinkPreview — 外部URLの OGP を取得（スマウトリンクのサムネイル表示用）
+        //   SSRF 対策は fetchLinkPreview 側（公開IPのみ・手動リダイレクト検証・8秒/512KB上限）。
+        case 'getLinkPreview':
+            requireProduction();
+            $rawUrl = prodNormalizeSmoutUrl($payload['url'] ?? '');
+            if ($rawUrl === false || $rawUrl === null) {
+                echo json_encode(['success' => false, 'error' => 'http:// または https:// のURLを入力してください。']);
+                break;
+            }
+            try {
+                $meta = fetchLinkPreview($rawUrl);
+                if (!$meta) {
+                    echo json_encode(['success' => false, 'error' => 'このページからはプレビュー情報を取得できませんでした。']);
+                    break;
+                }
+                echo json_encode(['success' => true, 'data' => $meta]);
+            } catch (Throwable $e) {
+                error_log('[OliveNote] getLinkPreview failed: ' . $rawUrl . ' / ' . $e->getMessage());
+                // 自前の RuntimeException（理由が説明可能なもの）だけ本文を返し、
+                // 想定外の例外は内部情報を出さない
+                $reason = ($e instanceof RuntimeException) ? $e->getMessage() : '不明なエラー';
+                echo json_encode(['success' => false, 'error' => 'プレビューを取得できませんでした: ' . $reason]);
+            }
+            break;
+
+        // saveProdSmoutMeta — スマウトのOGPプレビューだけを保存する軽量アクション
+        //   モーダルを開いたときの自動取得用。saveProductionTask と違い、
+        //   本文や他項目に触らず、活動ログ（LW週次サマリ）にも記録しない。
+        //   updated_at = updated_at で「開いただけで最終更新が動く」のも防ぐ。
+        case 'saveProdSmoutMeta':
+            requireProduction();
+            $taskId = $payload['taskId'] ?? '';
+            if (!$taskId) {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            if (!prod_has_col($pdo, 'smout_meta')) {
+                echo json_encode(['success' => false, 'error' =>
+                    'スマウトのプレビュー用の列（smout_meta）がこのDBにありません。migrate.php を実行してください。']);
+                break;
+            }
+            $metaToSave = prodSanitizeSmoutMeta($payload['meta'] ?? null);
+            $pdo->prepare("UPDATE production_tasks SET smout_meta = ?, updated_at = updated_at
+                           WHERE id = ? AND deleted_at IS NULL")
+                ->execute([$metaToSave ? json_encode($metaToSave, JSON_UNESCAPED_UNICODE) : null, $taskId]);
+            echo json_encode(['success' => true, 'data' => $metaToSave]);
+            break;
+
+        // deleteProductionTask — ソフトデリート（ゴミ箱へ）
+        case 'deleteProductionTask':
+            requireProduction();
+            $taskId = $payload['taskId'] ?? '';
+            if (!$taskId) {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            $pdo->prepare("UPDATE production_tasks SET deleted_at = NOW() WHERE id = ?")->execute([$taskId]);
+            echo json_encode(['success' => true, 'data' => null]);
+            break;
+
+        // getDeletedProductionTasks — 制作チケットのゴミ箱一覧
+        case 'getDeletedProductionTasks':
+            requireProduction();
+            $stmt    = $pdo->query("SELECT * FROM production_tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC");
+            $deleted = [];
+            while ($row = $stmt->fetch()) {
+                $t              = prodTaskFromRow($row);
+                $t['deletedAt'] = $row['deleted_at'];
+                $deleted[]      = $t;
+            }
+            echo json_encode(['success' => true, 'data' => $deleted]);
+            break;
+
+        // restoreProductionTask — ゴミ箱から復元
+        case 'restoreProductionTask':
+            requireProduction();
+            $taskId = $payload['taskId'] ?? '';
+            if (!$taskId) {
+                echo json_encode(['success' => false, 'error' => 'taskId is required']);
+                break;
+            }
+            $pdo->prepare("UPDATE production_tasks SET deleted_at = NULL WHERE id = ?")->execute([$taskId]);
+            $stmt = $pdo->prepare("SELECT * FROM production_tasks WHERE id = ?");
+            $stmt->execute([$taskId]);
+            $row = $stmt->fetch();
+            if (!$row) {
+                // 存在しない/競合削除済み ID。prodTaskFromRow(false) の TypeError 500 を防ぐ
+                echo json_encode(['success' => false, 'error' => '復元対象の制作チケットが見つかりません: ' . $taskId]);
+                break;
+            }
+            echo json_encode(['success' => true, 'data' => ['success' => true, 'restoredTask' => prodTaskFromRow($row)]]);
+            break;
+
+        // getDriveParentFolder — 制作物URL（Driveファイル）の原本フォルダURLを返す
+        //   「プレビューをクリックしたら原本フォルダを別タブで開く」用。
+        //   Drive 以外のURL（IDが抽出できない）は folderUrl=null で返す。
+        case 'getDriveParentFolder':
+            requireProduction();
+            $fileUrl = (string)($payload['fileUrl'] ?? '');
+            $fileId  = extractDriveFileId($fileUrl);
+            if ($fileId === null) {
+                echo json_encode(['success' => true, 'data' => ['folderUrl' => null, 'reason' => 'not_drive_url']]);
+                break;
+            }
+            if (!isDriveConfigured()) {
+                echo json_encode(['success' => false, 'error' => 'この環境では Google Drive 連携が設定されていません。']);
+                break;
+            }
+            try {
+                $token = getGoogleAccessToken('https://www.googleapis.com/auth/drive.readonly');
+                // supportsAllDrives=true は共有ドライブ内ファイルに必須（取りこぼすと 404 になる）
+                $ch = curl_init("https://www.googleapis.com/drive/v3/files/{$fileId}?supportsAllDrives=true&fields=id,name,parents");
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HTTPHEADER     => ["Authorization: Bearer {$token}"],
+                ]);
+                $res  = curl_exec($ch);
+                $err  = curl_error($ch);
+                $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                assertDriveApiOk($res, $err, $code, 'ファイル情報の取得');
+                $meta    = json_decode((string)$res, true);
+                $parents = is_array($meta['parents'] ?? null) ? $meta['parents'] : [];
+                if (!$parents) {
+                    echo json_encode(['success' => true, 'data' => ['folderUrl' => null, 'reason' => 'no_parent']]);
+                    break;
+                }
+                echo json_encode(['success' => true, 'data' => [
+                    'folderUrl' => 'https://drive.google.com/drive/folders/' . rawurlencode($parents[0]),
+                    'fileName'  => (string)($meta['name'] ?? ''),
+                ]]);
+            } catch (Throwable $e) {
+                echo json_encode(['success' => false, 'error' => '原本フォルダの取得に失敗しました: ' . $e->getMessage()]);
+            }
             break;
 
         // ============================================================
@@ -2795,6 +4114,21 @@ try {
                 'weeklySummary'  => !empty($in['weeklySummary']),
                 'summaryWeekday' => in_array(($in['summaryWeekday'] ?? 'mon'), ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], true)
                                     ? $in['summaryWeekday'] : 'mon',
+                // 今週/今月期限ダイジェスト。ここに載せないと保存時に捨てられ、
+                // lwGetPrefs の既定値（ON）に戻ってしまう＝OFF にできない
+                'weeklyDue'        => !empty($in['weeklyDue']),
+                'weeklyDueWeekday' => in_array(($in['weeklyDueWeekday'] ?? 'mon'), ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], true)
+                                      ? $in['weeklyDueWeekday'] : 'mon',
+                'monthlyDue'       => !empty($in['monthlyDue']),
+                // 制作チケット（オリジナル版限定）。同上の理由で必ず正規化して保存する
+                'prodEnabled' => !empty($in['prodEnabled']),
+                'prodDue' => [
+                    'd5'      => !empty($in['prodDue']['d5']),
+                    'd3'      => !empty($in['prodDue']['d3']),
+                    'd1'      => !empty($in['prodDue']['d1']),
+                    'd0'      => !empty($in['prodDue']['d0']),
+                    'overdue' => !empty($in['prodDue']['overdue']),
+                ],
             ];
             lwSavePrefs($pdo, $email, $clean);
             echo json_encode(['success' => true, 'data' => ['prefs' => $clean]]);

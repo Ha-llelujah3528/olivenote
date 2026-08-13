@@ -95,6 +95,9 @@ if (!auth_is_logged_in()) {
       cluster: <?= json_encode(defined('PUSHER_CLUSTER') && PUSHER_CLUSTER !== '' ? PUSHER_CLUSTER : 'ap3', JSON_HEX_TAG | JSON_HEX_AMP) ?>,
       enabled: <?= (defined('PUSHER_KEY') && PUSHER_KEY !== '') ? 'true' : 'false' ?>
     };
+    // 制作物管理（オリジナル版限定）。config.php の ENABLE_PRODUCTION=true でのみ「制作」タブが出る。
+    // dist パッケージ版には define が無い＝false（機能ごと非表示）。
+    window.ENABLE_PRODUCTION = <?= (defined('ENABLE_PRODUCTION') && ENABLE_PRODUCTION) ? 'true' : 'false' ?>;
   </script>
   <!-- ★バージョン固定（v15.0.12）＋SRI。未固定だと jsdelivr が "marked.min.js が残る最新版" へ
        勝手にフォールバックし（16系以降はルートの marked.min.js が廃止）、メジャー版の破壊的変更や
@@ -495,6 +498,111 @@ if (!auth_is_logged_in()) {
         } catch (e) {}
       })();
     </script>
+    <script>
+      // ============================================================
+      // IME（日本語入力）保護ガード
+      //
+      // 背景（2026-08-13 の不具合報告）:
+      //   macOS の Chrome では「変換（composition）中に、フォーカス中の入力要素が
+      //   blur される / disabled にされる / DOM から取り除かれる」と、compositionend が
+      //   届かないまま IME コンテキストが宙に浮き、以後そのウィンドウ全体で日本語が
+      //   打てなくなる。英数は打てるのに変換だけ死ぬ・リロードしても直らない・
+      //   PWA を再起動（＝別レンダラプロセスになる）と直る、という症状になる。
+      //   別タブの Chrome が無事なのはレンダラが別だから。
+      //
+      //   引き金は「変換確定の Enter」「変換取消の Escape」。これらは IME へのキーで
+      //   あってアプリのショートカットではないのに、アプリ側が拾って blur / 再マウント /
+      //   API 送信をしてしまうと上記の状態に落ちる。
+      //
+      // 2 段構えで守る:
+      //   (1) 予防 … window の capture フェーズで最初に keydown を受け、変換中の
+      //       Enter/Escape/Tab/矢印 は以降のリスナへ一切渡さない。React はルート
+      //       コンテナで委譲するので、ここで止めれば全 onKeyDown が走らない。
+      //   (2) 復旧 … それでも変換中の要素が DOM から消えた場合に、使い捨ての input へ
+      //       一瞬フォーカスを当てて IME コンテキストを張り直す。
+      // ============================================================
+      (function () {
+        // IME 変換中か。React の SyntheticEvent は isComposing を持たないので
+        // nativeEvent も見る。keyCode 229 は古い Safari / 一部 IME 向けの保険。
+        function isImeComposing(e) {
+          if (!e) return false;
+          var n = e.nativeEvent || e;
+          return !!(e.isComposing || n.isComposing || e.keyCode === 229 || n.keyCode === 229);
+        }
+        window.isImeComposing = isImeComposing;
+
+        // 変換中にアプリ側へ渡してはいけないキー
+        var GUARDED = { Enter: 1, Escape: 1, Tab: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };
+
+        window.addEventListener('keydown', function (e) {
+          if (!GUARDED[e.key] || !isImeComposing(e)) return;
+          // ProseMirror(TipTap) / Excalidraw は composition を自前で正しく扱うので素通しする。
+          // この 2 つの内側にあるアプリ独自ハンドラは個別に isImeComposing() で弾いている。
+          var t = e.target;
+          if (t && t.closest && t.closest('.ProseMirror, .excalidraw')) return;
+          // preventDefault はしない（確定・取消そのものは IME に届ける）。
+          // 以降のリスナだけを止める。
+          e.stopImmediatePropagation();
+        }, true);
+
+        // ---- 復旧: 変換中の要素が DOM から消えたら IME を張り直す ----
+        var composingEl = null;
+        var observer = null;
+
+        function stopWatch() {
+          if (observer) { observer.disconnect(); observer = null; }
+          composingEl = null;
+        }
+
+        function reattachIme() {
+          try {
+            if (!document.body) return;
+            var prev = document.activeElement;
+            var probe = document.createElement('input');
+            probe.type = 'text';
+            probe.tabIndex = -1;
+            probe.setAttribute('aria-hidden', 'true');
+            probe.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:1px;opacity:0;';
+            document.body.appendChild(probe);
+            probe.focus();
+            requestAnimationFrame(function () {
+              try {
+                probe.blur();
+                probe.remove();
+                // 元のフォーカス位置は奪いっぱなしにしない
+                if (prev && prev !== document.body && prev.isConnected && typeof prev.focus === 'function') prev.focus();
+              } catch (err) {}
+            });
+          } catch (err) {}
+        }
+
+        document.addEventListener('compositionstart', function (e) {
+          stopWatch();
+          composingEl = e.target;
+          if (typeof MutationObserver !== 'function') return;
+          observer = new MutationObserver(function () {
+            if (composingEl && !composingEl.isConnected) {
+              stopWatch();
+              reattachIme();
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        }, true);
+
+        document.addEventListener('compositionend', stopWatch, true);
+
+        // 変換中にウィンドウがバックグラウンドへ回ると compositionend が来ないことがある。
+        // 戻ってきた時点で「変換中だった要素がもう DOM に居ない」なら張り直す。
+        // 正常に変換が続いている（要素が生きている）ときは触らない
+        // ＝未確定の入力中文字を壊さないため。
+        window.addEventListener('focus', function () {
+          if (composingEl && !composingEl.isConnected) { stopWatch(); reattachIme(); }
+        });
+
+        // 最後の手段。万一詰まったときに手で叩ける復旧口。
+        window.oliveFixIme = reattachIme;
+      })();
+    </script>
 </head>
 <body class="bg-olive-50 m-0 p-0 overflow-hidden h-screen">
 
@@ -512,7 +620,8 @@ if (!auth_is_logged_in()) {
       CheckCircle, XCircle, LogOut, RefreshCw, Folder, FolderPlus, Home, ChevronRight, Printer,
       UploadCloud, Check, Edit3, Table, Palette,
       Bookmark, Minimize2, Rows, ArrowUp, ArrowDown, ArrowUpDown,
-      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown, StickyNote, User, Clock
+      History, ChevronLeft, BookOpen, GitBranch, RotateCcw, FileDown, StickyNote, User, Clock,
+      Brush, Users, Globe
     } from 'lucide-react';
 
     // ===== TipTap (ProseMirror) — description 用 WYSIWYG エディタ =====
@@ -599,6 +708,45 @@ if (!auth_is_logged_in()) {
       { id: 'medium', label: '中', textColor: 'text-yellow-700', bgColor: 'bg-yellow-50', borderColor: 'border-yellow-200' },
       { id: 'high', label: '高', textColor: 'text-red-700', bgColor: 'bg-red-50', borderColor: 'border-red-200' }
     ];
+
+    // ===== 制作チケットのステータス（オリジナル版限定・ボード左→右の順に遷移）=====
+    //   Tailwind クラスは静的ビルド済み tailwind.css に存在するもの（STATUSES と同一セット）のみ
+    //   使用する（新規クラスは CSS が無く無効化されるため）。hex はガントバー等の inline style 用。
+    const PROD_STATUSES = [
+      { id: 'hold',     label: '保留',     bgColor: 'bg-gray-100',   borderColor: 'border-gray-200',   textColor: 'text-gray-500',   barColor: 'bg-gray-300',   hex: '#d1d5db' },
+      { id: 'plan',     label: '企画',     bgColor: 'bg-orange-100', borderColor: 'border-orange-200', textColor: 'text-orange-800', barColor: 'bg-orange-400', hex: '#fb923c' },
+      { id: 'making',   label: '制作中',   bgColor: 'bg-blue-100',   borderColor: 'border-blue-200',   textColor: 'text-blue-800',   barColor: 'bg-blue-500',   hex: '#3b82f6' },
+      { id: 'ready',    label: '発信待ち', bgColor: 'bg-purple-100', borderColor: 'border-purple-200', textColor: 'text-purple-800', barColor: 'bg-purple-400', hex: '#c084fc' },
+      { id: 'done',     label: '完了',     bgColor: 'bg-gray-300',   borderColor: 'border-gray-400',   textColor: 'text-gray-600',   barColor: 'bg-gray-500',   hex: '#6b7280' }
+    ];
+    // 新規作成時の既定ステータス（「保留」を左端に置いても既定は「企画」のまま）
+    const PROD_DEFAULT_STATUS = 'plan';
+    // 「保留」は期限を持たないステータス。期限入力・ガントの区間・期限リマインドの
+    // すべてで対象外にする（＝止まっている間は日付で追い立てない）。
+    const PROD_NO_DEADLINE_STATUSES = ['hold'];
+    const PROD_DEADLINE_STATUSES = PROD_STATUSES.filter(s => !PROD_NO_DEADLINE_STATUSES.includes(s.id));
+    // ===== マイルストーン★の色（ガント / ミニガント / モーダルのピッカー共通）=====
+    //   tailwind.css は静的ビルドのため動的なクラス名は使えない。★とラベルは
+    //   inline style（hex / textHex）で着色する。未設定（旧データ）は黄＝従来の見た目。
+    //   hex=★本体の色 / textHex=白背景に載る名前ラベル用の濃いめの色
+    const MILESTONE_COLORS = [
+      { id: 'yellow', label: '黄', hex: '#facc15', textHex: '#a16207' },
+      { id: 'red',    label: '赤', hex: '#ef4444', textHex: '#b91c1c' },
+      { id: 'orange', label: '橙', hex: '#fb923c', textHex: '#c2410c' },
+      { id: 'green',  label: '緑', hex: '#22c55e', textHex: '#15803d' },
+      { id: 'blue',   label: '青', hex: '#3b82f6', textHex: '#1d4ed8' },
+      { id: 'purple', label: '紫', hex: '#a855f7', textHex: '#7e22ce' },
+      { id: 'pink',   label: '桃', hex: '#ec4899', textHex: '#be185d' },
+      { id: 'gray',   label: '灰', hex: '#9ca3af', textHex: '#4b5563' }
+    ];
+    const getMilestoneColor = (id) => MILESTONE_COLORS.find(c => c.id === id) || MILESTONE_COLORS[0];
+
+    // 現在ステータスの期限（statusDeadlines[status]）を取り出す共通ヘルパ
+    const getProdCurrentDeadline = (task) => {
+      if (!task || !task.statusDeadlines) return '';
+      if (PROD_NO_DEADLINE_STATUSES.includes(task.status)) return '';
+      return task.statusDeadlines[task.status] || '';
+    };
 
     const CATEGORY_COLORS = [
       { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-200' },
@@ -729,7 +877,7 @@ if (!auth_is_logged_in()) {
             placeholder={placeholder || 'YYYY-MM-DD'}
             onChange={(e) => { setText(e.target.value); if (invalid) setInvalid(false); }}
             onBlur={commit}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !window.isImeComposing?.(e)) { e.preventDefault(); commit(); } }}
             className={`${baseCls} pr-9${invalidCls}`}
           />
           <input
@@ -1613,6 +1761,10 @@ if (!auth_is_logged_in()) {
           const onKeyDown = (e) => {
             const ms = mentionSuggestRef.current;
             if (!ms.active) return;
+            // IME 変換中の Enter/Escape/矢印 は変換操作そのもの。ここで横取りすると
+            // 変換中にエディタ内容を書き換えてしまい、日本語入力が壊れる。
+            // （このハンドラは .ProseMirror 上なので index.php の全体ガードの対象外）
+            if (window.isImeComposing?.(e)) return;
             if (e.key === 'Escape') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, active: false })); return; }
             if (e.key === 'ArrowDown') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex + 1) % prev.members.length })); return; }
             if (e.key === 'ArrowUp') { e.preventDefault(); setMentionSuggest(prev => ({ ...prev, selectedIndex: (prev.selectedIndex - 1 + prev.members.length) % prev.members.length })); return; }
@@ -2179,7 +2331,7 @@ if (!auth_is_logged_in()) {
       // ---- コアデータ ----
       getInitialData:        ()                                        => callApi('getInitialData'),
       getTaskDetail:         (taskId)                                  => callApi('getTaskDetail', { taskId }),
-      saveTask:              (taskData) => {
+      saveTask:              (taskData, opts = {}) => {
                                // 遅延ロード対応の安全ガード:
                                //   一覧の軽量タスクは description が画像除去済みのプレースホルダ
                                //   文字列。これを既存課題に保存すると DB の本文（画像込み）を破壊
@@ -2188,13 +2340,61 @@ if (!auth_is_logged_in()) {
                                //   維持する。新規課題（id 無し/TEMP）はユーザー入力なので送る。
                                const t = { ...taskData };
                                const isExisting = t.id && !String(t.id).startsWith('TASK-TEMP-');
-                               if (isExisting && !t._detailLoaded) delete t.description;
+                               let changedFields = Array.isArray(opts.changedFields) ? opts.changedFields : null;
+                               if (isExisting && !t._detailLoaded) {
+                                 delete t.description;
+                                 if (changedFields) changedFields = changedFields.filter(f => f !== 'description');
+                               }
                                delete t._detailLoaded;
                                delete t.commentCount;
-                               return callApi('saveTask', { task: t });
+                               const payload = { task: t };
+                               // 差分保存（同時編集の相互上書き防止）: 変更フィールド一覧＋本文CAS用ハッシュ
+                               if (isExisting && changedFields) {
+                                 payload.changedFields = changedFields;
+                                 if (opts.descBaseHash && changedFields.includes('description')) {
+                                   payload.descBaseHash = opts.descBaseHash;
+                                 }
+                               }
+                               // 保存した本人へのPusherエコーバック抑止用
+                               if (opts.socketId) payload.socketId = opts.socketId;
+                               return callApi('saveTask', payload);
                              },
       deleteTask:            (taskId)                                  => callApi('deleteTask', { taskId }),
       saveSettings:          (settingsData)                            => callApi('saveSettings', settingsData),
+
+      // ---- ネクストアクション（task_actions）----
+      //   行単位の即時コミット。どのメソッドも { taskId, actions, actionTotal, actionDone, nextAction }
+      //   を返すので、呼び出し側はそれで丸ごと差し替える（サマリと全行の乖離を防ぐ）。
+      getTaskActions:        (taskId)                                  => callApi('getTaskActions', { taskId }),
+      saveTaskAction:        ({ taskId, id = 0, title, dueDate = '' }) => callApi('saveTaskAction', { taskId, id, title, dueDate }),
+      toggleTaskAction:      (id, done)                                => callApi('toggleTaskAction', { id, done }),
+      deleteTaskAction:      (id, taskId = '')                         => callApi('deleteTaskAction', { id, taskId }),
+      reorderTaskActions:    (taskId, ids)                             => callApi('reorderTaskActions', { taskId, ids }),
+
+      // ---- 制作物管理（オリジナル版限定・ENABLE_PRODUCTION）----
+      getProductionTaskDetail:   (taskId) => callApi('getProductionTaskDetail', { taskId }),
+      saveProductionTask:        (taskData, opts = {}) => {
+                                   // 事業チケット saveTask と同じ遅延ロード安全ガード:
+                                   // 詳細未ロードの既存チケットでは description を送らない。
+                                   const t = { ...taskData };
+                                   const isExisting = t.id && !String(t.id).startsWith('PROD-TEMP-');
+                                   let changedFields = Array.isArray(opts.changedFields) ? opts.changedFields : null;
+                                   if (isExisting && !t._detailLoaded) {
+                                     delete t.description;
+                                     if (changedFields) changedFields = changedFields.filter(f => f !== 'description');
+                                   }
+                                   delete t._detailLoaded;
+                                   delete t.commentCount;
+                                   const payload = { task: t };
+                                   if (isExisting && changedFields) payload.changedFields = changedFields;
+                                   return callApi('saveProductionTask', payload);
+                                 },
+      deleteProductionTask:      (taskId)  => callApi('deleteProductionTask', { taskId }),
+      getDeletedProductionTasks: ()        => callApi('getDeletedProductionTasks'),
+      restoreProductionTask:     (taskId)  => callApi('restoreProductionTask', { taskId }),
+      getDriveParentFolder:      (fileUrl) => callApi('getDriveParentFolder', { fileUrl }),
+      getLinkPreview:            (url)     => callApi('getLinkPreview', { url }),
+      saveProdSmoutMeta:         (taskId, meta) => callApi('saveProdSmoutMeta', { taskId, meta }),
 
       // ---- コメント ----
       saveComment:           (commentData)                             => callApi('saveComment', { comment: commentData }),
@@ -2313,6 +2513,41 @@ if (!auth_is_logged_in()) {
       })();
       try { return await __pusherLoading; }
       finally { __pusherLoading = null; }
+    };
+
+    // ============================================================
+    // 課題の差分保存ユーティリティ（同時編集の相互上書き防止）
+    //   App.html（ボードD&D/ガント）と TaskModal.html（自動保存）から共通参照。
+    //   「ベースライン（最後にサーバから受け取った値）から実際に変わったフィールドだけ」を
+    //   saveTask へ送るための変更検出。サーバはそのフィールドしか UPDATE しないため、
+    //   触っていないフィールドが他の人の更新を巻き戻すことが無くなる。
+    // ============================================================
+    const TASK_DIFF_FIELDS = [
+      'title', 'description', 'status', 'priority', 'type', 'category', 'cardColor', 'parentId',
+      'startDate', 'dueDate', 'implementationDate', 'implementationDays',
+      'assigneeEmail', 'assigneeName', 'subAssignees', 'likes', 'attachments', 'order',
+    ];
+    // 1フィールド分の値比較。配列/オブジェクト（subAssignees / likes / attachments）は JSON 比較、
+    // スカラーは null/undefined/'' を同一視（DB の NULL とフォームの '' の揺れを吸収）。
+    const taskFieldDiffers = (a, b) => {
+      if ((a && typeof a === 'object') || (b && typeof b === 'object')) {
+        return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+      }
+      const na = (a === null || a === undefined) ? '' : a;
+      const nb = (b === null || b === undefined) ? '' : b;
+      return na !== nb;
+    };
+    const computeTaskChangedFields = (next, base) => {
+      if (!base) return [...TASK_DIFF_FIELDS];
+      return TASK_DIFF_FIELDS.filter((f) => taskFieldDiffers(next?.[f], base?.[f]));
+    };
+    // 本文 CAS 用の sha256（HTTPS 前提。crypto.subtle が無い環境は null → サーバ側は LWW 動作）
+    const sha256Hex = async (s) => {
+      try {
+        if (!window.crypto?.subtle) return null;
+        const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s ?? '')));
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      } catch (_) { return null; }
     };
 
     // marked.parse の出力 HTML に画像幅トークンを反映する後処理。
@@ -2506,12 +2741,154 @@ if (!auth_is_logged_in()) {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
+    // ============================================================
+    // ネクストアクション（task_actions）— 共通UI・共通ロジック
+    //   設計の要点: 内部には順序付きの行が N 個あるが、ボード/一覧に出すのは
+    //   「先頭の未完了 1 行」だけ。全行を見せるのはモーダルの中だけ。
+    //   App.html / BoardView.html / TaskModal.html から共通参照（同一 <script> スコープ）。
+    // ============================================================
+
+    // 区切り付きプログレスバー。バーの全幅は固定で、セグメント幅を可変にする
+    //   → アクションが増えてもカード幅を押し広げない。
+    // セグメントが細くなり過ぎたら（3px 未満 or 14件以上）区切りなしの連続バーへ自動で切替。
+    //   14 件のチェックリストは実質「進捗率」しか読めないため、そこで表現を変える。
+    // ※ 塗りは「N 件中 M 件完了」を左から詰めて描く（行ごとの完了状態ではなく件数の表現）。
+    const NEXT_ACTION_MAX_SEGMENTS = 13;
+    const NEXT_ACTION_SEG_MIN_W    = 3;
+    const NEXT_ACTION_COLOR_DONE   = '#4D7A2D';
+    const NEXT_ACTION_COLOR_REST   = '#d1d5db';
+    const NextActionProgress = ({ total = 0, done = 0, width = 60, height = 4 }) => {
+      if (!total) return null;
+      const gap  = 1.5;
+      const segW = (width - (total - 1) * gap) / total;
+      const label = `ネクストアクション ${done}/${total} 完了`;
+      if (total > NEXT_ACTION_MAX_SEGMENTS || segW < NEXT_ACTION_SEG_MIN_W) {
+        const pct = Math.round((done / total) * 100);
+        return (
+          <span title={label} aria-label={label}
+                style={{ display: 'inline-block', width, height, background: NEXT_ACTION_COLOR_REST, borderRadius: 1, overflow: 'hidden' }}>
+            <span style={{ display: 'block', width: pct + '%', height: '100%', background: NEXT_ACTION_COLOR_DONE }} />
+          </span>
+        );
+      }
+      return (
+        <span title={label} aria-label={label} style={{ display: 'inline-flex', gap: gap + 'px' }}>
+          {Array.from({ length: total }, (_, i) => (
+            <span key={i} style={{
+              width: segW, height, borderRadius: 1,
+              background: i < done ? NEXT_ACTION_COLOR_DONE : NEXT_ACTION_COLOR_REST,
+            }} />
+          ))}
+        </span>
+      );
+    };
+
+    // アクション期限の表示情報。カードでは日付の「文字色」だけで状態を示す
+    //   （帯や背景を塗るとカードの色付け機能・カテゴリ色・優先度バッジと混同するため）。
+    //   期限なしは何も出さない（カードを静かに保つ）。
+    const getActionDueInfo = (dueDate) => {
+      if (!dueDate) return null;
+      const text = String(dueDate).substring(5).replace('-', '/');
+      const diffDays = Math.ceil((new Date(dueDate) - new Date(getTodayStr())) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0)  return { text, className: 'text-red-600 font-bold',    title: `期限 ${dueDate}（${-diffDays}日超過）` };
+      if (diffDays <= 3) return { text, className: 'text-red-600',              title: `期限 ${dueDate}（あと${diffDays}日）` };
+      return               { text, className: 'text-olive-700',                 title: `期限 ${dueDate}` };
+    };
+
+    // ボード/一覧のカードに出す1行。
+    //   interactive=false（スマホ）ではチェックボックスを描かない。ホバーが無い環境で
+    //   タップを効かせると、カードを開くつもりの誤タップでアクションが完了してしまうため
+    //   （スマホは外出先で見るだけ・操作はモーダル内で行う方針）。
+    //   チェックの当たり判定はボックス自身に限定し、カーソルが枠内にあるときだけ反応する。
+    const NextActionCardRow = ({ task, onToggle = null, interactive = true, compact = false, busy = false }) => {
+      const [hover, setHover] = useState(false);
+      const total = task.actionTotal || 0;
+      const done  = task.actionDone  || 0;
+      const na    = task.nextAction || null;
+
+      // 未設定: 「次の一手を誰も決めていない課題」を見つけられるようにする。
+      //   compact 表示と完了済みの課題では出さない（完了列が警告行で埋まるのを防ぐ）。
+      if (total === 0) {
+        if (compact || task.status === 'done') return null;
+        return (
+          <div className="border-t border-b border-dashed border-gray-300 py-1.5 mt-2 mb-2 flex items-center gap-1.5 text-gray-400">
+            <AlertTriangle size={12} className="shrink-0" />
+            <span className="text-[11px]">次の一手が未設定</span>
+          </div>
+        );
+      }
+
+      // 全件完了
+      if (!na) {
+        return (
+          <div className={`border-t border-b border-gray-100 py-1.5 ${compact ? 'mt-1.5' : 'mt-2 mb-2'} flex items-center gap-1.5`}>
+            <Check size={13} className="shrink-0 text-olive-600" />
+            <span className="text-[11px] text-gray-500 flex-1 min-w-0">アクションはすべて完了</span>
+            {!compact && <NextActionProgress total={total} done={done} />}
+          </div>
+        );
+      }
+
+      const dueInfo = getActionDueInfo(na.dueDate);
+      const checkbox = interactive ? (
+        <button
+          type="button"
+          title="完了にする"
+          aria-label={`「${na.title}」を完了にする`}
+          disabled={busy}
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          onMouseDown={(e) => e.stopPropagation()}
+          // 親カードは draggable。HTML5 のドラッグ判定はイベント伝播ではなく
+          // 「押した位置から最も近い draggable 祖先」で決まるため、stopPropagation では止まらない。
+          // チェックボックス上での押下→わずかな移動でカードのドラッグが始まると click が発火せず、
+          // チェックが付かないまま列（ステータス）が変わる事故になる。ここで dragstart を打ち消す。
+          draggable={false}
+          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          onClick={(e) => { e.stopPropagation(); if (!busy && onToggle) onToggle(na.id, true); }}
+          className="shrink-0"
+          style={{
+            width: 15, height: 15, marginTop: 1, borderRadius: 3, padding: 0,
+            border: `1.5px solid ${hover ? NEXT_ACTION_COLOR_DONE : '#9ca3af'}`,
+            background: hover ? '#F2F6EE' : 'transparent',
+            boxShadow: hover ? `0 0 0 3px rgba(77,122,45,0.15)` : 'none',
+            cursor: busy ? 'wait' : 'pointer',
+            opacity: busy ? 0.5 : 1,
+          }}
+        />
+      ) : (
+        <span className="shrink-0" style={{
+          width: 15, height: 15, marginTop: 1, borderRadius: 3,
+          border: '1.5px solid #9ca3af', display: 'inline-block',
+        }} />
+      );
+
+      return (
+        <div className={`border-t border-b border-gray-100 py-1.5 ${compact ? 'mt-1.5' : 'mt-2 mb-2'} flex items-start gap-1.5`}>
+          {checkbox}
+          <div className="flex-1 min-w-0">
+            <div className="text-[11px] text-gray-700 line-clamp-1" title={na.title}>{na.title}</div>
+            {!compact && (
+              <div className="flex items-center gap-2 mt-1">
+                <NextActionProgress total={total} done={done} />
+                {dueInfo && <span className={`text-[10px] ml-auto ${dueInfo.className}`} title={dueInfo.title}>{dueInfo.text}</span>}
+              </div>
+            )}
+          </div>
+          {compact && dueInfo && <span className={`text-[10px] shrink-0 ${dueInfo.className}`} title={dueInfo.title}>{dueInfo.text}</span>}
+        </div>
+      );
+    };
+
     <?php readfile(__DIR__ . '/App.html'); ?>
     <?php readfile(__DIR__ . '/BoardView.html'); ?>
     <?php readfile(__DIR__ . '/ListView.html'); ?>
     <?php readfile(__DIR__ . '/TaskModal.html'); ?>
     <?php readfile(__DIR__ . '/TaskAutoGenerateModal.html'); ?>
     <?php readfile(__DIR__ . '/GanttView.html'); ?>
+    <?php /* 制作物管理はオリジナル版限定。パッケージ版(dist)にはこの2ファイルを同梱しないため、
+             ENABLE_PRODUCTION が真のときだけ読み込む（存在しないファイルの readfile 警告を防ぐ）。 */ ?>
+    <?php if (defined('ENABLE_PRODUCTION') && ENABLE_PRODUCTION) { readfile(__DIR__ . '/ProductionView.html'); readfile(__DIR__ . '/ProductionTaskModal.html'); } ?>
     <?php readfile(__DIR__ . '/CalendarView.html'); ?>
     <?php readfile(__DIR__ . '/FilesView.html'); ?>
     <?php readfile(__DIR__ . '/WikiView.html'); ?>
