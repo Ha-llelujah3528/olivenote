@@ -13,6 +13,9 @@ function LineWorksNotifyPanel() {
     start: { d3: true, d1: true, d0: true },
     weeklySummary: true, summaryWeekday: 'mon',
     weeklyDue: true, weeklyDueWeekday: 'mon', monthlyDue: true,
+    // 制作チケット（オリジナル版限定）— 事業チケットとは独立した ON/OFF 群
+    prodEnabled: true,
+    prodDue: { d5: true, d3: true, d1: true, d0: true, overdue: true },
   };
   const WEEKDAYS = [['mon','月'],['tue','火'],['wed','水'],['thu','木'],['fri','金'],['sat','土'],['sun','日']];
 
@@ -31,8 +34,9 @@ function LineWorksNotifyPanel() {
   }, []);
 
   const disabled = !status || !status.enabled || !status.hasId || !status.valid;
-  const setDue   = (k, v) => setPrefs(p => ({ ...p, due:   { ...p.due,   [k]: v } }));
-  const setStart = (k, v) => setPrefs(p => ({ ...p, start: { ...p.start, [k]: v } }));
+  const setDue     = (k, v) => setPrefs(p => ({ ...p, due:     { ...p.due,     [k]: v } }));
+  const setStart   = (k, v) => setPrefs(p => ({ ...p, start:   { ...p.start,   [k]: v } }));
+  const setProdDue = (k, v) => setPrefs(p => ({ ...p, prodDue: { ...(p.prodDue || {}), [k]: v } }));
 
   const save = async () => {
     setSaving(true); setSavedMsg('');
@@ -102,6 +106,25 @@ function LineWorksNotifyPanel() {
           <Toggle checked={prefs.start.d0} onChange={v => setStart('d0', v)} label="開始当日" />
         </div>
 
+        {/* 制作チケット通知（オリジナル版限定）。事業チケットの期限リマインドとは独立して ON/OFF できる */}
+        {window.ENABLE_PRODUCTION && (
+          <div className="mb-4 border border-olive-200 bg-olive-50/40 rounded-lg p-3">
+            <div className="text-xs font-bold text-olive-800 mb-1">制作チケット通知（事業チケットとは別設定）</div>
+            <Toggle checked={prefs.prodEnabled} onChange={v => setPrefs(p => ({ ...p, prodEnabled: v }))} label="制作チケットの通知を受け取る（制作マスター）" />
+            <div className="text-[11px] text-gray-500 mb-1 mt-1">現在ステータス（企画/制作中/発信待ち）の期限に対するリマインド:</div>
+            <div className={prefs.prodEnabled ? '' : 'opacity-50 pointer-events-none'}>
+              <Toggle checked={prefs.prodDue?.d5}      onChange={v => setProdDue('d5', v)}      label="期限5日前" />
+              <Toggle checked={prefs.prodDue?.d3}      onChange={v => setProdDue('d3', v)}      label="期限3日前" />
+              <Toggle checked={prefs.prodDue?.d1}      onChange={v => setProdDue('d1', v)}      label="期限1日前" />
+              <Toggle checked={prefs.prodDue?.d0}      onChange={v => setProdDue('d0', v)}      label="期限当日" />
+              <Toggle checked={prefs.prodDue?.overdue} onChange={v => setProdDue('overdue', v)} label="期限超過" />
+              <div className="text-[11px] text-gray-500 mt-2 pt-2 border-t border-olive-200/70">
+                ※「保留」は期限を持たないステータスのため、リマインドは送られません。
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mb-4">
           <div className="text-xs font-bold text-gray-500 mb-1">週次サマリ</div>
           <Toggle checked={prefs.weeklySummary} onChange={v => setPrefs(p => ({ ...p, weeklySummary: v }))} label="自分が更新した課題を週1でまとめて受け取る" />
@@ -135,12 +158,13 @@ function LineWorksNotifyPanel() {
 }
 
 function SettingsView({
-  categories, setCategories, taskTypes, setTaskTypes, 
-  members, setMembers, tasks, setTasks, 
-  taskTemplates, setTaskTemplates, 
+  categories, setCategories, taskTypes, setTaskTypes,
+  members, setMembers, tasks, setTasks,
+  taskTemplates, setTaskTemplates,
   docTags, setDocTags, docFileTags, setDocFileTags,
   docTemplates, setDocTemplates,
-  releaseDocUrl, setReleaseDocUrl
+  releaseDocUrl, setReleaseDocUrl,
+  setProductionTasks = null
 }) {
   const [activeMenu, setActiveMenu] = useState('members');
   const [isUpdatingTasks, setIsUpdatingTasks] = useState(false);
@@ -183,6 +207,7 @@ function SettingsView({
 
   // --- ゴミ箱（管理者用） State ---
   const [deletedTasks, setDeletedTasks] = useState([]);
+  const [deletedProdTasks, setDeletedProdTasks] = useState([]); // 制作チケット（オリジナル版限定）
   const [isLoadingTrash, setIsLoadingTrash] = useState(false);
   const [currentUserIsAdmin, setCurrentUserIsAdmin] = useState(false);
 
@@ -223,6 +248,10 @@ function SettingsView({
       } else {
          setIsLoadingTrash(false);
       }
+      // 制作チケットのゴミ箱（オリジナル版限定・失敗しても課題ゴミ箱は壊さない）
+      if (window.ENABLE_PRODUCTION && typeof api.getDeletedProductionTasks === 'function') {
+        api.getDeletedProductionTasks().then(res => setDeletedProdTasks(res || [])).catch(() => {});
+      }
     }
   }, [members]);
 
@@ -238,6 +267,19 @@ function SettingsView({
       }
     } catch(e) { alert(e.message); }
     setIsLoadingTrash(false);
+  };
+
+  // 制作チケットの復元（オリジナル版限定）
+  const handleRestoreProdTask = async (taskId) => {
+    if (!window.confirm("この制作チケットをゴミ箱から復元しますか？")) return;
+    try {
+      const res = await api.restoreProductionTask(taskId);
+      if (res.success) {
+        setDeletedProdTasks(prev => prev.filter(t => t.id !== taskId));
+        if (typeof setProductionTasks === 'function') setProductionTasks(prev => [...prev, res.restoredTask]);
+        alert("復元しました！");
+      }
+    } catch(e) { alert(e.message); }
   };
 
   const moveItem = (arr, setter, idx, direction) => { 
@@ -1033,6 +1075,27 @@ function SettingsView({
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* 制作チケットのゴミ箱（オリジナル版限定） */}
+              {window.ENABLE_PRODUCTION && deletedProdTasks.length > 0 && (
+                <div className="mt-8">
+                  <h3 className="font-bold text-red-800 mb-4 border-b border-red-200 pb-2 flex items-center gap-2"><Brush size={16}/> ゴミ箱（制作チケット）</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {deletedProdTasks.map(t => (
+                      <div key={t.id} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col gap-2">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="text-[10px] font-mono text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">{t.id}</span>
+                          <span className="text-[10px] bg-red-100 text-red-600 px-2 py-1 rounded-full font-bold">削除: {t.deletedAt}</span>
+                        </div>
+                        <h4 className="font-bold text-sm text-gray-800 line-clamp-2 mb-2">{t.title}</h4>
+                        <button onClick={() => handleRestoreProdTask(t.id)} className="mt-auto bg-white border border-red-300 text-red-600 hover:bg-red-50 hover:border-red-400 py-2 rounded text-xs font-bold transition-colors shadow-sm w-full">
+                          復元して制作画面に戻す
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

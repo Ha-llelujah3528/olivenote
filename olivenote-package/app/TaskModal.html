@@ -82,6 +82,9 @@ function useMentionSuggest(members) {
 
   const handleKeyDown = (e, textareaRef, currentText, setText) => {
     if (!state.active) return false;
+    // IME 変換中の Enter/Escape/矢印 は変換操作。ここで横取りして本文を
+    // 書き換えるとキャレット移動＋再描画が走り、日本語入力が壊れる。
+    if (window.isImeComposing?.(e)) return false;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setState(p => ({ ...p, selectedIndex: (p.selectedIndex + 1) % p.members.length }));
@@ -109,7 +112,55 @@ function useMentionSuggest(members) {
   return { state, detectMention, insertMention, handleKeyDown, reset };
 }
 
-function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast, initialPane = null, aiModelAdvisor = AI_MODEL_DEFAULT, onAdvisorModelChange = () => {} }) {
+// ============================================================
+// ネクストアクションの「内容」入力（1行）
+//   非制御 input ＋「フォーカスが当たっていないときだけサーバ値へ追従」で動かす。
+//   以前は key に title を含めて値の変化で再マウントさせていたが、
+//     ① 変換中に他メンバーの更新（Pusher）が届く
+//     ② 自分の保存レスポンスが返る
+//   のどちらでも「変換中のフォーカス要素が作り替えられる」ことになり、
+//   macOS Chrome ではウィンドウ全体の日本語入力が死ぬ経路になっていた。
+//   → 編集中の行は絶対に作り替えない。
+// ============================================================
+function ActionTitleInput({ action, isDone, disabled, onCommit, showToast }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (document.activeElement === el) return;   // 編集中（＝変換中かもしれない）は触らない
+    const next = action.title || '';
+    if (el.value !== next) el.value = next;
+  }, [action.title]);
+
+  return (
+    <input
+      ref={ref}
+      type="text"
+      defaultValue={action.title}
+      disabled={disabled}
+      onBlur={(e) => {
+        // 空は不許可。非制御運用なので DOM の値を直接元へ戻す
+        const v = e.target.value.trim();
+        if (!v) {
+          e.target.value = action.title;
+          showToast && showToast('アクションの内容は空にできません', 'error');
+          return;
+        }
+        onCommit(v);
+      }}
+      onKeyDown={(e) => {
+        // 変換確定の Enter で blur してはいけない（IME コンテキストが切れて日本語が打てなくなる）
+        if (e.key !== 'Enter' || window.isImeComposing?.(e)) return;
+        e.preventDefault();
+        e.currentTarget.blur();
+      }}
+      className="flex-1 min-w-0 text-sm bg-white border border-gray-200 rounded p-1 outline-none focus:ring-2 focus:ring-olive-500 hover:border-olive-300 disabled:opacity-50"
+      style={{ textDecoration: isDone ? 'line-through' : 'none' }}
+    />
+  );
+}
+
+function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, currentUser, onClose, onSave, onAutoSave, onDelete, onOpenTask, taskTemplates, docTemplates, showToast, initialPane = null, aiModelAdvisor = AI_MODEL_DEFAULT, onAdvisorModelChange = () => {}, productionTasks = [], onOpenProductionTask = null }) {
       const isNew = !task || !task.id;
 
       // この課題への共有用ディープリンクをクリップボードへコピー
@@ -158,6 +209,208 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         subAssignees: [], // ★ サブ担当
         comments: [], likes: [], attachments: [], updatedAt: ''
       });
+
+      // ============================================================
+      // ネクストアクション（task_actions）
+      //   課題本文（差分保存＋CAS）とは別系統で、1行 = 1レコードを即時コミットする。
+      //   フル配列を送る経路は作らない（相互上書きの温床になるため）。
+      //   サーバは毎回「サマリ＋全行」を返すので、それで丸ごと差し替える。
+      //   未保存の新規課題（id 無し）では pendingActions にためておき、保存で ID が
+      //   発番された時点でまとめて登録する（作成前でも手順を書けるようにするため）。
+      // ============================================================
+      const [actions, setActions] = useState(() => (task?.actions || []));
+      const [pendingActions, setPendingActions] = useState([]);   // 新規課題用: [{title, dueDate}]
+      const [newActionTitle, setNewActionTitle] = useState('');
+      const [newActionDue, setNewActionDue] = useState('');
+      const [busyActionId, setBusyActionId] = useState(null);      // 通信中の行 id（連打ガード）
+      const [isAddingAction, setIsAddingAction] = useState(false);
+      const [hoverCheckId, setHoverCheckId] = useState(null);
+      const newActionInputRef = useRef(null);
+
+      // 下ペイン（本文をスクロールしても常に見える位置）としての表示状態。
+      //   左ペインにすると本文の横幅がつぶれるため下に置く。
+      //   折りたたみ・高さは localStorage に覚えさせる（右ペインと同じ流儀）。
+      const [isActionPaneCollapsed, setIsActionPaneCollapsed] = useState(() => {
+        try {
+          const saved = localStorage.getItem('olivenote_taskmodal_action_pane_collapsed');
+          if (saved !== null) return saved === '1';
+        } catch (e) {}
+        return window.innerWidth < 768;   // スマホは既定で折りたたむ（本文の面積を優先）
+      });
+      useEffect(() => {
+        try { localStorage.setItem('olivenote_taskmodal_action_pane_collapsed', isActionPaneCollapsed ? '1' : '0'); } catch (e) {}
+      }, [isActionPaneCollapsed]);
+      const [actionPaneHeight, setActionPaneHeight] = useState(() => {
+        try {
+          const saved = parseInt(localStorage.getItem('olivenote_taskmodal_action_pane_height') || '', 10);
+          if (Number.isFinite(saved)) return Math.max(120, Math.min(560, saved));
+        } catch (e) {}
+        return 220;
+      });
+      useEffect(() => {
+        try { localStorage.setItem('olivenote_taskmodal_action_pane_height', String(actionPaneHeight)); } catch (e) {}
+      }, [actionPaneHeight]);
+      // 下ペインのドラッグリサイズ（上端の境界線を上へ引くと広がる）
+      const startActionPaneResize = (e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = actionPaneHeight;
+        const handleMouseMove = (ev) => {
+          setActionPaneHeight(Math.max(120, Math.min(560, startHeight + (startY - ev.clientY))));
+        };
+        const handleMouseUp = () => {
+          window.removeEventListener('mousemove', handleMouseMove);
+          window.removeEventListener('mouseup', handleMouseUp);
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+      };
+
+      // task prop（＝App 側 state）のアクションが差し替わったら追従する。
+      // ボードカードでトグルした結果もここへ流れてくる。
+      useEffect(() => {
+        if (Array.isArray(task?.actions)) setActions(task.actions);
+      }, [task?.actions]);
+
+      // サーバ確定値をモーダル内と一覧（ボード/リスト）の両方へ反映する。
+      // アクションの追加/変更/削除/完了はサーバ側が履歴コメントを1件書き、
+      // その確定行が payload.historyComment で返る → 履歴タブへ即座に積む。
+      const applyActionsPayload = (payload) => {
+        if (!payload) return;
+        setActions(payload.actions || []);
+        const hist = payload.historyComment || null;
+        if (hist) {
+          setFormData(prev => (prev.comments || []).some(c => c.id === hist.id)
+            ? prev
+            : { ...prev, comments: [...(prev.comments || []), hist] });
+        }
+        if (!payload.taskId) return;
+        setTasks(prev => prev.map(t => {
+          if (t.id !== payload.taskId) return t;
+          // comments 未取得の課題へ1件だけ足すとカードの件数表示が壊れる（App.html と同じ理由）
+          const isNewHist = !!hist && !(t.comments || []).some(c => c.id === hist.id);
+          return {
+            ...t,
+            actions:     payload.actions,
+            actionTotal: payload.actionTotal,
+            actionDone:  payload.actionDone,
+            nextAction:  payload.nextAction,
+            comments:     isNewHist && t._detailLoaded ? [...(t.comments || []), hist] : t.comments,
+            commentCount: isNewHist ? (t.commentCount || 0) + 1 : t.commentCount,
+          };
+        }));
+      };
+
+      const actionErrorToast = (e) => {
+        showToast && showToast('ネクストアクションの更新に失敗しました: ' + e.message, 'error');
+      };
+
+      // 追加。新規課題（ID 未発番）のときは pendingActions に積むだけ。
+      const handleAddAction = async () => {
+        const title = newActionTitle.trim();
+        if (!title) return;
+        const dueDate = newActionDue;
+        if (!task?.id) {
+          setPendingActions(prev => [...prev, { title, dueDate }]);
+          setNewActionTitle('');
+          setNewActionDue('');
+          newActionInputRef.current?.focus();
+          return;
+        }
+        setIsAddingAction(true);
+        try {
+          applyActionsPayload(await api.saveTaskAction({ taskId: task.id, title, dueDate }));
+          setNewActionTitle('');
+          setNewActionDue('');
+          newActionInputRef.current?.focus();   // Enter で続けて追加できるようにフォーカスを戻す
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setIsAddingAction(false);
+        }
+      };
+
+      // 保存で ID が発番されたら、たまっていた行をその順番どおりに登録する
+      useEffect(() => {
+        if (!task?.id || pendingActions.length === 0) return;
+        let cancelled = false;
+        (async () => {
+          const queued = pendingActions;
+          setPendingActions([]);
+          try {
+            let payload = null;
+            for (const a of queued) {
+              payload = await api.saveTaskAction({ taskId: task.id, title: a.title, dueDate: a.dueDate || '' });
+            }
+            if (!cancelled) applyActionsPayload(payload);
+          } catch (e) {
+            if (!cancelled) actionErrorToast(e);
+          }
+        })();
+        return () => { cancelled = true; };
+      }, [task?.id]);
+
+      // 1行の title / dueDate を更新（変化が無ければ通信しない）
+      //   空タイトルは呼び出し側（onBlur）で弾く。ここへは非空だけが来る。
+      const handleUpdateAction = async (action, patch) => {
+        const nextTitle = (patch.title !== undefined ? patch.title : action.title).trim();
+        const nextDue   = patch.dueDate !== undefined ? (patch.dueDate || '') : (action.dueDate || '');
+        if (!nextTitle) return;
+        if (nextTitle === action.title && nextDue === (action.dueDate || '')) return;
+        setBusyActionId(action.id);
+        try {
+          applyActionsPayload(await api.saveTaskAction({ id: action.id, title: nextTitle, dueDate: nextDue }));
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setBusyActionId(null);
+        }
+      };
+
+      const handleToggleAction = async (action) => {
+        setBusyActionId(action.id);
+        try {
+          applyActionsPayload(await api.toggleTaskAction(action.id, !action.doneAt));
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setBusyActionId(null);
+        }
+      };
+
+      const handleDeleteAction = async (action) => {
+        setBusyActionId(action.id);
+        try {
+          applyActionsPayload(await api.deleteTaskAction(action.id, task?.id || ''));
+        } catch (e) {
+          actionErrorToast(e);
+        } finally {
+          setBusyActionId(null);
+        }
+      };
+
+      // 並べ替え（1つ上/下と入れ替え）。ドラッグではなく ▲▼ にしているのは、
+      // モーダル内 D&D が TipTap／添付のドラッグと競合しやすく、行数も少ないため。
+      const handleMoveAction = async (index, delta) => {
+        const target = index + delta;
+        if (target < 0 || target >= actions.length) return;
+        const reordered = [...actions];
+        [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+        setActions(reordered);   // 見た目は即入れ替え（並び順はサーバ確定値で上書きされる）
+        try {
+          applyActionsPayload(await api.reorderTaskActions(task.id, reordered.map(a => a.id)));
+        } catch (e) {
+          actionErrorToast(e);
+        }
+      };
+
+      const actionTotal    = actions.length;
+      const actionDone     = actions.filter(a => a.doneAt).length;
+      const firstOpenIndex = actions.findIndex(a => !a.doneAt);
 
       // ============================================================
       // 表示中の課題を CSV エクスポート（コメント・画像は除く、description は Markdown）
@@ -443,7 +696,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       };
 
       const handleAdvisorKeyDown = (e) => {
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !window.isImeComposing?.(e)) {
           handleAdvisorSend();
         }
       };
@@ -647,6 +900,9 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       useEffect(() => {
         const handleUndo = (e) => {
+          // 変換中の Cmd/Ctrl+Z は IME の取消。アプリの undo で本文を差し替えると
+          // 変換中の要素が作り替えられて日本語入力が壊れる。
+          if (window.isImeComposing?.(e)) return;
           if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
             const active = document.activeElement;
             // TipTap (ProseMirror) エディタ内部での Ctrl+Z はエディタ独自の undo に任せる
@@ -668,10 +924,29 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
       const draftKey = `draft_${task ? task.id : 'new'}`;
 
+      // ============================================================
+      // 同時編集ガード用ベースライン
+      //   baselineRef   : 「最後にサーバと同期できた値」。自動保存はここからの差分フィールド
+      //                   だけを送る（触っていないフィールドで他の人の更新を巻き戻さない）。
+      //   historyBaseRef: クローズ時の更新履歴コメントの比較基準。開いた時点の値から始め、
+      //                   他の人の更新を取り込んだフィールドはその値へ進める
+      //                   （＝履歴コメントには「自分が変更した分」だけが載る）。
+      //   socketIdRef   : Pusher 接続中の socket_id（自分の保存のエコーバック抑止用）。
+      // ============================================================
+      const baselineRef = useRef(null);
+      const historyBaseRef = useRef(null);
+      const socketIdRef = useRef(null);
+      const [taskViewers, setTaskViewers] = useState([]); // この課題を開いている presence メンバー
+      const otherTaskViewers = taskViewers.filter(v => v.id !== currentUserId); // 自分以外の閲覧者
+
       useEffect(() => {
         if (task) {
           setFormData(task);
+          baselineRef.current = { ...task };
+          historyBaseRef.current = { ...task };
         } else {
+          baselineRef.current = null;
+          historyBaseRef.current = null;
           const initialType = '';
           const initialTemplate = '';
           const defaultCat = currentUser?.defaultCategory || categories[0]?.name || '';
@@ -789,15 +1064,206 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         return { ...base, description };
       };
 
+      // ============================================================
+      // リモート（他クライアント）の確定値をフィールド単位で取り込む共通ルール。
+      //   自分の保存レスポンス・Pusher 通知後の getTaskDetail の両方から呼ばれる。
+      //   - sentFields   : 自分がこの保存で送ったフィールド → サーバ確定値をベースラインへ
+      //                    （履歴基準は進めない＝自分の変更として履歴コメントに載る）
+      //   - それ以外で自分が編集中でないフィールド → リモート値を画面へ反映
+      //     （＝閲覧しているだけの人には他の人の更新がほぼリアルタイムで見える）
+      //   - 本文(description)だけ特別扱い: 自分も編集中に他の人の本文が確定した場合は
+      //     サーバ本文を正として取り込み直し、トーストで通知する（無言の相互上書きを根絶）
+      //   - 本文以外の同時変更はフィールド単位 LWW（自分の編集を残し、次の保存で確定）
+      // ============================================================
+      const mergeRemoteTask = (remote, { sentFields = [], descConflict = false, remoteComments = null } = {}) => {
+        if (!remote || isNew) return;
+        const base  = baselineRef.current || {};
+        const hist  = historyBaseRef.current || {};
+        const local = formDataRef.current || {};
+        const nextBase = { ...base };
+        const nextHist = { ...hist };
+        const adopt = {};                  // formData へ反映する値
+        let adoptDesc = false, descWasConflict = false;
+
+        for (const f of TASK_DIFF_FIELDS) {
+          const mine = sentFields.includes(f) && !(f === 'description' && descConflict);
+          if (mine) { nextBase[f] = remote[f]; continue; }
+          const localDirty  = taskFieldDiffers(local[f], base[f]);
+          const remoteMoved = taskFieldDiffers(remote[f], base[f]);
+          if (!remoteMoved) continue;      // リモートに動きなし → 何もしない
+          if (!localDirty) {
+            adopt[f] = remote[f];
+            nextBase[f] = remote[f];
+            nextHist[f] = remote[f];       // 他の人の変更＝自分の履歴コメントに載せない
+            if (f === 'description') adoptDesc = true;
+          } else if (f === 'description') {
+            // 双方が本文を編集 → サーバ本文（先に確定した方）を正として取り込み直す
+            adopt[f] = remote[f];
+            nextBase[f] = remote[f];
+            nextHist[f] = remote[f];
+            adoptDesc = true;
+            descWasConflict = true;
+          } else {
+            // 本文以外はフィールド単位 LWW: 自分の編集値を残す（次の保存で自分の値が確定）
+            nextBase[f] = remote[f];
+          }
+        }
+
+        baselineRef.current = nextBase;
+        historyBaseRef.current = nextHist;
+
+        const hasAdopt = Object.keys(adopt).length > 0;
+        if (hasAdopt || remoteComments) {
+          setFormData(prev => ({
+            ...prev,
+            ...adopt,
+            ...(remoteComments ? { comments: remoteComments } : {}),
+            ...(remote.updatedAt ? { updatedAt: remote.updatedAt } : {}),
+          }));
+          // ボード/一覧側の state も追従させる（開いている課題はフル本文保持対象）
+          setTasks(prev => prev.map(t => t.id === remote.id
+            ? {
+                ...t, ...adopt,
+                ...(remoteComments ? { comments: remoteComments, commentCount: remoteComments.length } : {}),
+                ...(remote.updatedAt ? { updatedAt: remote.updatedAt } : {}),
+              }
+            : t));
+        }
+        if (adoptDesc && richEditorRef.current?.setMarkdown) {
+          // setMarkdown は emitUpdate=false（onUpdate の幽霊ガードと干渉しない）
+          try { richEditorRef.current.setMarkdown(adopt.description || ''); } catch (_) {}
+        }
+        if (descWasConflict) {
+          showToast && showToast('他の方が本文を更新したため、最新の本文を取り込みました', 'error');
+        }
+      };
+
+      // ベースラインとの差分フィールドだけをサーバへ保存する共通処理。
+      //   差分ゼロなら通信しない。保存を実行したら true を返す。
+      //   保存レスポンス（サーバ確定値）は mergeRemoteTask でベースラインへ反映する。
+      const saveDiff = async (live) => {
+        const base = baselineRef.current || task || {};
+        const changedFields = computeTaskChangedFields(live, base);
+        if (changedFields.length === 0) return false;
+        const opts = { changedFields };
+        if (changedFields.includes('description')) {
+          // 本文 CAS: ベース本文のハッシュを添え、他の人が先に本文を更新していたら上書きさせない
+          const h = await sha256Hex(base.description ?? '');
+          if (h) opts.descBaseHash = h;
+        }
+        if (socketIdRef.current) opts.socketId = socketIdRef.current;
+        setSaveStatus('saving');
+        try {
+          const res = await onAutoSave({ ...live, comments: task?.comments || [] }, opts);
+          if (res && res.savedTask) {
+            mergeRemoteTask(res.savedTask, { sentFields: changedFields, descConflict: !!res.descConflict });
+          }
+          setSaveStatus('saved');
+          return true;
+        } catch (e) {
+          setSaveStatus('error');
+          throw e;
+        }
+      };
+
+      // ============================================================
+      // 同じ課題を開いている他クライアントとのリアルタイム連携（Pusher / 低頻度設計）
+      //   - presence-task-<id> を購読 → 「閲覧中メンバー」を表示
+      //   - 誰かの保存完了通知 (task-updated) を受けたら getTaskDetail で取り直し、
+      //     自分が編集中でないフィールドへ反映する
+      //   ※ Wiki 同時編集のようなキーストローク同期はしない。流れるのは
+      //     「保存イベント1発＋presence の出入り」だけなので、無料枠(20万msg/日)を
+      //     消費しない（Wiki の枠超過はカーソル同期の高頻度送信が主因だった）。
+      //   ※ PUSHER_KEY 未設定環境では何もしない（従来どおり単独編集）。
+      // ============================================================
+      const mergeRemoteTaskRef = useRef(null);
+      mergeRemoteTaskRef.current = mergeRemoteTask;
+
+      useEffect(() => {
+        if (isNew || !task?.id || !window.PUSHER || !window.PUSHER.enabled) { setTaskViewers([]); return; }
+        const taskId = task.id;
+        const channelName = 'presence-task-' + taskId;
+        let pusher = null, disposed = false;
+        let refetchTimer = null, refetching = false, refetchQueued = false;
+
+        // 保存通知を受けて最新タスクを取り直し、編集中でないフィールドへ反映する。
+        // 連続通知（相手の autosave 連打）は 400ms デバウンス＋実行中は1件だけキューして潰す。
+        const refetchAndMerge = async () => {
+          if (refetching) { refetchQueued = true; return; }
+          refetching = true;
+          try {
+            const detail = await api.getTaskDetail(taskId);
+            if (disposed) return;
+            if (detail?.task) {
+              mergeRemoteTaskRef.current?.(detail.task, { remoteComments: detail.comments || null });
+            }
+            // ネクストアクションも取り直した内容へ揃える（他の人が行を足した/完了した場合）
+            if (Array.isArray(detail?.actions)) {
+              applyActionsPayload({
+                taskId,
+                actions:     detail.actions,
+                actionTotal: detail.actionTotal,
+                actionDone:  detail.actionDone,
+                nextAction:  detail.nextAction,
+              });
+            }
+          } catch (_) {
+            /* 取得失敗は次の task-updated 通知で自然にリトライされる */
+          } finally {
+            refetching = false;
+            if (refetchQueued && !disposed) { refetchQueued = false; refetchAndMerge(); }
+          }
+        };
+
+        (async () => {
+          try { pusher = await ensurePusher(); } catch (_) { pusher = null; }
+          if (!pusher || disposed) return;
+          socketIdRef.current = pusher.connection?.socket_id || null;
+          const channel = pusher.subscribe(channelName);
+          channel.bind('pusher:subscription_succeeded', (m) => {
+            if (disposed) return;
+            socketIdRef.current = pusher.connection?.socket_id || socketIdRef.current;
+            const list = [];
+            try { m?.each?.((member) => list.push({ id: member.id, info: member.info })); } catch (_) {}
+            setTaskViewers(list);
+          });
+          channel.bind('pusher:member_added', (member) => {
+            if (disposed) return;
+            setTaskViewers(prev => prev.some(v => v.id === member.id) ? prev : [...prev, { id: member.id, info: member.info }]);
+          });
+          channel.bind('pusher:member_removed', (member) => {
+            if (disposed) return;
+            setTaskViewers(prev => prev.filter(v => v.id !== member.id));
+          });
+          channel.bind('task-updated', () => {
+            if (disposed) return;
+            if (refetchTimer) clearTimeout(refetchTimer);
+            refetchTimer = setTimeout(() => { refetchTimer = null; refetchAndMerge(); }, 400);
+          });
+        })();
+
+        return () => {
+          disposed = true;
+          if (refetchTimer) clearTimeout(refetchTimer);
+          try { if (pusher) pusher.unsubscribe(channelName); } catch (_) {}
+          setTaskViewers([]);
+          socketIdRef.current = null;
+        };
+      }, [task?.id, isNew]);
+
       const generateAndSaveHistoryComment = (snapshot) => {
         const live = snapshot || getLiveFormData();
         if (isNew || !task) return;
+        // 比較基準は task prop（開いた時点）ではなく historyBaseRef:
+        //   他の人の同時更新を取り込んだフィールドは基準側も進んでいるため、
+        //   履歴コメントには「自分が変更した分」だけが載る。
+        const hist = historyBaseRef.current || task;
         const changes = [];
-        if (task.title !== live.title) {
+        if (hist.title !== live.title) {
           changes.push(`・件名を変更`);
         }
-        if (task.description !== live.description) {
-          const oldDesc = task.description || '（空）';
+        if (hist.description !== live.description) {
+          const oldDesc = hist.description || '（空）';
           const newDesc = live.description || '（空）';
           changes.push(
             `・詳細を更新しました\n` +
@@ -819,38 +1285,38 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
             `</details>`
           );
         }
-        if (task.type !== live.type) {
-          changes.push(`・種別を「${task.type || '未設定'}」から「${live.type || '未設定'}」に変更`);
+        if (hist.type !== live.type) {
+          changes.push(`・種別を「${hist.type || '未設定'}」から「${live.type || '未設定'}」に変更`);
         }
-        if (task.parentId !== live.parentId) {
-          changes.push(`・親課題を「${task.parentId || '未設定'}」から「${live.parentId || '未設定'}」に変更`);
+        if (hist.parentId !== live.parentId) {
+          changes.push(`・親課題を「${hist.parentId || '未設定'}」から「${live.parentId || '未設定'}」に変更`);
         }
-        if (task.status !== live.status) {
-          const oldLabel = STATUSES.find(s => s.id === task.status)?.label || '未設定';
+        if (hist.status !== live.status) {
+          const oldLabel = STATUSES.find(s => s.id === hist.status)?.label || '未設定';
           const newLabel = STATUSES.find(s => s.id === live.status)?.label || '未設定';
           changes.push(`・状態を「${oldLabel}」から「${newLabel}」に変更`);
         }
-        if (task.priority !== live.priority) {
-          const oldLabel = PRIORITIES.find(p => p.id === task.priority)?.label || '未設定';
+        if (hist.priority !== live.priority) {
+          const oldLabel = PRIORITIES.find(p => p.id === hist.priority)?.label || '未設定';
           const newLabel = PRIORITIES.find(p => p.id === live.priority)?.label || '未設定';
           changes.push(`・優先度を「${oldLabel}」から「${newLabel}」に変更`);
         }
-        if (task.assigneeEmail !== live.assigneeEmail) {
-          const oldName = task.assigneeName || '未設定';
+        if (hist.assigneeEmail !== live.assigneeEmail) {
+          const oldName = hist.assigneeName || '未設定';
           const newName = live.assigneeName || '未設定';
           changes.push(`・担当者を「${oldName}」から「${newName}」に変更`);
         }
-        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(live.subAssignees || [])) {
+        if (JSON.stringify(hist.subAssignees || []) !== JSON.stringify(live.subAssignees || [])) {
           changes.push(`・サブ担当を変更`);
         }
-        if (task.category !== live.category) {
-          changes.push(`・カテゴリを「${task.category || '未設定'}」から「${live.category || '未設定'}」に変更`);
+        if (hist.category !== live.category) {
+          changes.push(`・カテゴリを「${hist.category || '未設定'}」から「${live.category || '未設定'}」に変更`);
         }
-        if (task.dueDate !== live.dueDate) {
-          changes.push(`・期限日を「${task.dueDate || '未設定'}」から「${live.dueDate || '未設定'}」に変更`);
+        if (hist.dueDate !== live.dueDate) {
+          changes.push(`・期限日を「${hist.dueDate || '未設定'}」から「${live.dueDate || '未設定'}」に変更`);
         }
-        if (task.startDate !== live.startDate) {
-          changes.push(`・開始日を「${task.startDate || '未設定'}」から「${live.startDate || '未設定'}」に変更`);
+        if (hist.startDate !== live.startDate) {
+          changes.push(`・開始日を「${hist.startDate || '未設定'}」から「${live.startDate || '未設定'}」に変更`);
         }
         if (changes.length > 0) {
           const historyComment = {
@@ -880,7 +1346,7 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
               : t
           ));
         }
-        if (task.description !== live.description) {
+        if (hist.description !== live.description) {
           const descText = live.description || '';
           const mentionedMembers = members.filter(m => descText.includes(`@${m.name}`));
           for (const targetUser of mentionedMembers) {
@@ -926,36 +1392,27 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
       const autoSaveTimerRef = useRef(null);
 
       useEffect(() => {
-        if (isNew || !isDirty || !formData.title?.trim()) return;
+        // 発火判定は isDirty（task prop 比較）ではなくベースライン差分に任せる:
+        //   saveDiff は差分ゼロなら通信しないので、常にタイマーを掛けてよい。
+        //   （task prop 比較だと「一度自動保存した値を元へ戻す」編集が isDirty=false になり
+        //     保存されない取りこぼしがあった）
+        if (isNew || !formData.title?.trim()) return;
         if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = setTimeout(async () => {
           autoSaveTimerRef.current = null;
-          setSaveStatus('saving');
           try {
-            await onAutoSave({ ...formData, comments: task?.comments || [] });
-            setSaveStatus('saved');
-            setTimeout(() => setSaveStatus('idle'), 3000);
+            // 差分保存: ベースラインから実際に変わったフィールドだけを送る。
+            // 差分ゼロ（例: リモート反映で formData が動いただけ）なら通信しない。
+            const didSave = await saveDiff({ ...formDataRef.current });
+            if (didSave) setTimeout(() => setSaveStatus('idle'), 3000);
           } catch {
-            setSaveStatus('error');
+            /* saveDiff 内で saveStatus='error' 表示済み */
           }
         }, 800);
         return () => {
           if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
         };
-      }, [formData, isNew, isDirty]);
-
-      // task と live スナップショットを比較して、保存すべき変更があるかを判定する。
-      // stale になり得る useMemo の isDirty には依存せず、その場の最新値で再計算する。
-      const computeDirty = (live) => {
-        if (!task) return false;
-        const fields = ['title', 'description', 'status', 'priority', 'type', 'category', 'cardColor', 'parentId', 'startDate', 'dueDate', 'assigneeEmail'];
-        if (fields.some(f => (task[f] ?? null) !== (live[f] ?? null))) return true;
-        if (JSON.stringify(task.subAssignees || []) !== JSON.stringify(live.subAssignees || [])) return true;
-        const taskAttachmentIds = (task.attachments || []).map(a => a.id).join(',');
-        const liveAttachmentIds = (live.attachments || []).map(a => a.id).join(',');
-        if (taskAttachmentIds !== liveAttachmentIds) return true;
-        return false;
-      };
+      }, [formData, isNew]);
 
       const flushAutoSave = async (snapshot) => {
         if (autoSaveTimerRef.current) {
@@ -965,13 +1422,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
         if (isNew) return;
         // stale closure の formData/isDirty ではなく、エディタ実体から取り直した最新値で保存する。
         const live = snapshot || getLiveFormData();
-        if (live.title?.trim() && computeDirty(live)) {
-          setSaveStatus('saving');
+        if (live.title?.trim()) {
           try {
-            await onAutoSave({ ...live, comments: task?.comments || [] });
-            setSaveStatus('saved');
+            await saveDiff(live);
           } catch {
-            setSaveStatus('error');
+            /* saveDiff 内で saveStatus='error' 表示済み。閉じる動作は止めない */
           }
         }
       };
@@ -989,7 +1444,12 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
           try {
             setSaveStatus('saving');
-            await onAutoSave({ ...formDataRef.current, description: '', descriptionCleared: true, comments: task?.comments || [] });
+            // 差分保存: 全消去は description のみの明示更新（CAS はサーバ側で descriptionCleared により免除）
+            const res = await onAutoSave(
+              { ...formDataRef.current, description: '', descriptionCleared: true, comments: task?.comments || [] },
+              { changedFields: ['description'], socketId: socketIdRef.current || undefined }
+            );
+            if (res && res.savedTask) mergeRemoteTask(res.savedTask, { sentFields: ['description'] });
             setSaveStatus('saved');
             setTimeout(() => setSaveStatus('idle'), 3000);
           } catch (e) {
@@ -1073,7 +1533,14 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
           status: 'todo',
           comments: [],
           likes: [],
-          attachments: []
+          attachments: [],
+          // ネクストアクションは引き継がない。ここでリセットしないと、複製先モーダルが
+          // 元課題の action.id を持った行を表示し、そこでチェック/編集/削除すると
+          // 複製元の行を書き換えてしまう（複製は別課題なので必ず空から始める）。
+          actions: [],
+          actionTotal: 0,
+          actionDone: 0,
+          nextAction: null,
         };
         onOpenTask(duplicatedTask);
       };
@@ -1535,6 +2002,20 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 >
                   <MessageSquare size={16} className="text-olive-600" />
                 </button>
+                {/* 👀 同じ課題を開いている他のメンバー（presence-task チャンネル由来） */}
+                {!isNew && otherTaskViewers.length > 0 && (
+                  <span
+                    className="text-xs flex items-center gap-1 mr-1 shrink-0 px-2 py-1.5 rounded-full bg-olive-50 border border-olive-200 text-olive-700"
+                    title={'この課題を開いている他のメンバー: ' + otherTaskViewers.map(v => v.info?.name || v.id).join('、')}
+                  >
+                    <span>👀</span>
+                    {otherTaskViewers.slice(0, 5).map(v => {
+                      const mem = members.find(m => m.email === v.id);
+                      return <span key={v.id} title={v.info?.name || v.id}>{mem?.avatar || '👤'}</span>;
+                    })}
+                    <span className="hidden sm:inline font-bold">{otherTaskViewers.length}人が閲覧中</span>
+                  </span>
+                )}
                 {!isNew && saveStatus !== 'idle' && (
                   <span className="text-xs flex items-center gap-1 mr-1 shrink-0">
                     {saveStatus === 'saving' && <><Loader2 size={12} className="animate-spin text-gray-400"/><span className="text-gray-400 hidden sm:inline">保存中...</span></>}
@@ -1575,8 +2056,11 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
 
           <div className="flex-1 flex overflow-hidden relative">
 
+            {/* 左カラム = 本文（スクロール） ＋ ネクストアクション下ペイン（常時表示） */}
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-white">
+
             <div className="flex-1 min-w-0 overflow-y-auto p-4 md:p-8 flex flex-col gap-8 bg-white">
-              
+
               {/* 1. 件名 */}
               <div>
                 {/* 親課題へのパンくずリンク（自身が子課題の場合のみ） */}
@@ -1663,7 +2147,8 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                  </div>
               </div>
 
-              {/* 4. 状態〜期限日までの属性ブロック (横並びグリッド) */}
+              {/* 4. 状態〜期限日までの属性ブロック (横並びグリッド)
+                   ※ 旧「4. ネクストアクション」は左カラム下部の固定ペインへ移設（このカラム下端を参照） */}
               <div className="bg-olive-50 border border-olive-200 rounded-lg p-3 md:p-5 shadow-sm">
                 <h3 className="text-sm font-bold text-olive-900 mb-4 border-b border-olive-200 pb-2 flex items-center gap-2"><Settings size={16}/> 課題の属性</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
@@ -1916,8 +2401,281 @@ function TaskModal({ task, tasks, setTasks, categories, taskTypes, members, curr
                 </div>
               )}
 
+              {/* 関連制作チケット（オリジナル版限定・ENABLE_PRODUCTION）
+                  この事業チケットに紐づく制作チケット（businessTaskId が一致）を一覧表示し、
+                  クリックで制作チケットモーダルへ相互ジャンプする。 */}
+              {!isNew && onOpenProductionTask && (() => {
+                const linkedProdTasks = (productionTasks || []).filter(pt => pt.businessTaskId === formData.id);
+                if (linkedProdTasks.length === 0) return null;
+                return (
+                  <div className="border border-olive-200 bg-olive-50/50 rounded-lg p-3 md:p-5 shadow-sm">
+                    <h3 className="text-sm font-bold text-olive-800 flex items-center gap-2 mb-3">
+                      <Brush size={16}/> 関連制作チケット ({linkedProdTasks.length})
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {linkedProdTasks.map(pt => {
+                        const ps = PROD_STATUSES.find(s => s.id === pt.status);
+                        const deadline = getProdCurrentDeadline(pt);
+                        return (
+                          <div key={pt.id} onClick={() => onOpenProductionTask(pt)} className="flex items-center justify-between bg-white p-2.5 border border-olive-200 rounded shadow-sm text-sm cursor-pointer hover:border-olive-300 hover:shadow-md transition-all group">
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="font-mono text-[10px] text-gray-400 shrink-0">{pt.id}</span>
+                              <span className="font-medium text-gray-700 group-hover:text-olive-600 transition-colors truncate">{pt.title}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {deadline && <span className="text-[10px] text-gray-400 font-mono hidden sm:inline">{deadline.substring(5).replace('-','/')}</span>}
+                              <span className={`text-[10px] font-bold px-2 py-1 rounded border shrink-0 ${ps ? `${ps.bgColor} ${ps.textColor} ${ps.borderColor}` : 'bg-gray-100 border-gray-200'}`}>{ps?.label || pt.status}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ★ Sprint 2-E: コメント／履歴セクションは右ペインのタブ（コメント／履歴／AI）へ移設 */}
             </div>
+            {/* /本文スクロール領域 */}
+
+            {/* ========================================== */}
+            {/* ネクストアクション下ペイン（本文をスクロールしても常に見える）      */}
+            {/*   普段からいちばん見る項目なので、本文と一緒に流さず固定する。      */}
+            {/*   左ペインにすると本文の横幅がつぶれるため下に置いている。          */}
+            {/*   折りたたんでもヘッダは残り、「いま」の1行と進捗だけは常に見える。 */}
+            {/* ========================================== */}
+            <div className="shrink-0 border-t border-olive-200 bg-white flex flex-col">
+              {/* リサイザ（PC かつ展開時のみ）。
+                  高さはインラインで持つ（tailwind.css は静的ビルドで .h-1 を含まないため）。 */}
+              {!isActionPaneCollapsed && (
+                <div
+                  onMouseDown={startActionPaneResize}
+                  style={{ height: 4 }}
+                  className="hidden md:block bg-olive-200 hover:bg-olive-500 active:bg-olive-600 cursor-row-resize shrink-0 transition-colors"
+                  title="ドラッグで高さを変更"
+                />
+              )}
+
+              {/* ヘッダ。開閉は左端の ∨ ボタンだけに限定する（帯のどこでも閉じると
+                  高さ調整のつもりのドラッグで閉じてしまうため）。
+                  帯そのものは展開時のリサイズ用ハンドル（4px の境界線は狙いにくいので、
+                  帯を掴んでも高さを変えられるようにする。マウスのみ＝PC 幅のときだけ）。 */}
+              <div
+                onMouseDown={(e) => {
+                  if (isActionPaneCollapsed || window.innerWidth < 768) return;
+                  startActionPaneResize(e);
+                }}
+                title={isActionPaneCollapsed ? '' : 'ドラッグで高さを変更'}
+                style={!isActionPaneCollapsed ? { cursor: 'row-resize' } : undefined}
+                className="flex items-center gap-2 px-3 md:px-6 py-2 bg-olive-50 border-b border-olive-100 transition-colors select-none"
+              >
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => setIsActionPaneCollapsed(v => !v)}
+                  title={isActionPaneCollapsed ? 'ネクストアクションを開く' : 'ネクストアクションを閉じる'}
+                  aria-label={isActionPaneCollapsed ? 'ネクストアクションを開く' : 'ネクストアクションを閉じる'}
+                  aria-expanded={!isActionPaneCollapsed}
+                  className="shrink-0 text-olive-700 hover:text-olive-900 hover:bg-olive-100 rounded p-0.5 transition-colors cursor-pointer"
+                >
+                  {isActionPaneCollapsed ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}
+                </button>
+                <h3 className="text-sm font-bold text-gray-800 flex items-center gap-1.5 shrink-0">
+                  <CheckSquare size={15}/>
+                  <span className="hidden sm:inline">ネクストアクション</span>
+                  <span className="sm:hidden">次にやること</span>
+                </h3>
+                {actionTotal > 0 && (
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    <NextActionProgress total={actionTotal} done={actionDone} width={72} height={5} />
+                    <span className="text-[11px] text-gray-500">{actionDone}/{actionTotal}</span>
+                  </span>
+                )}
+                {/* 折りたたみ時のプレビュー: 先頭の未完了1行（＝ボードのカードに出る行） */}
+                {isActionPaneCollapsed && (() => {
+                  const cur = firstOpenIndex >= 0 ? actions[firstOpenIndex] : null;
+                  if (!cur) {
+                    return (
+                      <span className="flex-1 min-w-0 text-xs text-gray-400 truncate pl-1">
+                        {actionTotal > 0 ? 'すべて完了しています' : (pendingActions.length > 0 ? `${pendingActions.length}件（保存待ち）` : '次の一手が未設定')}
+                      </span>
+                    );
+                  }
+                  const info = getActionDueInfo(cur.dueDate);
+                  return (
+                    <span className="flex-1 min-w-0 flex items-center gap-2 pl-1">
+                      <span className="text-[10px] text-olive-800 border border-olive-300 rounded px-1 shrink-0">いま</span>
+                      {info
+                        ? <span className={`text-[11px] shrink-0 font-mono ${info.className}`} title={info.title}>{info.text}</span>
+                        : <span className="text-[11px] text-gray-400 shrink-0">期限なし</span>}
+                      <span className="text-sm text-gray-700 truncate">{cur.title}</span>
+                    </span>
+                  );
+                })()}
+              </div>
+
+              {!isActionPaneCollapsed && (
+                <div
+                  className="overflow-y-auto px-3 md:px-6 py-3"
+                  /* 行が少ないときは余白を作らず内容ぶんだけ。上限＝ドラッグで決めた高さ（画面の 52% まで） */
+                  style={{ maxHeight: `min(${actionPaneHeight}px, 52vh)` }}
+                >
+                  {actionTotal === 0 && pendingActions.length === 0 && (
+                    <p className="text-xs text-gray-400 mb-3">
+                      この課題の「次にやること」を1行ずつ、上から順番に書きます。先頭の未完了の1行がボードのカードに表示されます。
+                    </p>
+                  )}
+
+                  <div className="space-y-1.5">
+                    {actions.map((a, i) => {
+                      const isDone   = !!a.doneAt;
+                      const isNow    = i === firstOpenIndex;
+                      const busy     = busyActionId === a.id;
+                      const dueInfo  = getActionDueInfo(a.dueDate);
+                      const hovering = hoverCheckId === a.id;
+                      return (
+                        <div
+                          key={a.id}
+                          className={`flex items-center gap-1.5 rounded ${isNow ? 'bg-olive-50 py-2 px-2' : 'py-1'} ${isDone ? 'opacity-60' : ''}`}
+                          style={isNow ? { borderLeft: '3px solid #4D7A2D' } : undefined}
+                        >
+                          {/* 並べ替え（▲▼）。行数が少ないのでドラッグではなくボタンにしている */}
+                          <div className="flex flex-col shrink-0">
+                            <button type="button" title="1つ上へ" aria-label="1つ上へ移動"
+                                    disabled={i === 0 || isDeletingTask}
+                                    onClick={() => handleMoveAction(i, -1)}
+                                    className="text-gray-400 hover:text-olive-700 disabled:opacity-50 leading-none">
+                              <ArrowUp size={11}/>
+                            </button>
+                            <button type="button" title="1つ下へ" aria-label="1つ下へ移動"
+                                    disabled={i === actions.length - 1 || isDeletingTask}
+                                    onClick={() => handleMoveAction(i, 1)}
+                                    className="text-gray-400 hover:text-olive-700 disabled:opacity-50 leading-none">
+                              <ArrowDown size={11}/>
+                            </button>
+                          </div>
+
+                          {/* チェックボックス（当たり判定はボックス自身のみ） */}
+                          <button
+                            type="button"
+                            title={isDone ? '未完了に戻す' : '完了にする'}
+                            aria-label={`「${a.title}」を${isDone ? '未完了に戻す' : '完了にする'}`}
+                            disabled={busy || isDeletingTask}
+                            onMouseEnter={() => setHoverCheckId(a.id)}
+                            onMouseLeave={() => setHoverCheckId(null)}
+                            onClick={() => handleToggleAction(a)}
+                            className="shrink-0 flex items-center justify-center"
+                            style={{
+                              width: 16, height: 16, borderRadius: 3, padding: 0,
+                              border: `1.5px solid ${isDone || hovering ? '#4D7A2D' : '#9ca3af'}`,
+                              background: isDone ? '#4D7A2D' : (hovering ? '#F2F6EE' : '#fff'),
+                              boxShadow: hovering && !isDone ? '0 0 0 3px rgba(77,122,45,0.15)' : 'none',
+                              cursor: busy ? 'wait' : 'pointer',
+                            }}
+                          >
+                            {isDone && <Check size={11} color="#fff" strokeWidth={3}/>}
+                          </button>
+
+                          {/* 期限（内容の左側。完了行は「いつ・誰が終わらせたか」を同じ位置に出す） */}
+                          {isDone ? (
+                            <span className="text-[10px] text-gray-400 shrink-0 truncate" style={{ width: 140 }} title={a.doneAt || ''}>
+                              {formatUpdatedAt(a.doneAt)}{a.doneByName ? ` ${a.doneByName}が完了` : ''}
+                            </span>
+                          ) : (
+                            // SmartDateInput は relative な wrapper div を挟むため、幅は外側で固定する
+                            //（内側 input には pr-9 が足されるので 140px 程度ないと日付が読めない）
+                            <div className="shrink-0" style={{ width: 140 }}>
+                              <SmartDateInput
+                                name={`actionDue-${a.id}`}
+                                value={a.dueDate || ''}
+                                onChange={(e) => handleUpdateAction(a, { dueDate: e.target.value })}
+                                disabled={busy || isDeletingTask}
+                                ariaLabel="アクションの期限"
+                                placeholder="期限なし"
+                                className={`w-full text-xs bg-white border border-gray-200 rounded p-1 outline-none focus:ring-2 focus:ring-olive-500 hover:border-olive-300 disabled:opacity-50 ${dueInfo ? dueInfo.className : ''}`}
+                              />
+                            </div>
+                          )}
+
+                          {/* 内容（フォーカスを外した時点で確定） */}
+                          <ActionTitleInput
+                            action={a}
+                            isDone={isDone}
+                            disabled={busy || isDeletingTask}
+                            onCommit={(v) => handleUpdateAction(a, { title: v })}
+                            showToast={showToast}
+                          />
+
+                          {isNow && (
+                            <span className="text-[10px] text-olive-800 border border-olive-300 rounded px-1 shrink-0 whitespace-nowrap">いま</span>
+                          )}
+
+                          <button type="button" title="この行を削除" aria-label="この行を削除"
+                                  disabled={busy || isDeletingTask}
+                                  onClick={() => handleDeleteAction(a)}
+                                  className="shrink-0 text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50 disabled:opacity-50">
+                            <X size={13}/>
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {/* 未保存の新規課題でためている行（保存で ID 発番後に自動登録される） */}
+                    {pendingActions.map((p, i) => (
+                      <div key={`pending-${i}`} className="flex items-center gap-1.5 py-1 opacity-60">
+                        <span className="shrink-0" style={{ width: 16, height: 16, borderRadius: 3, border: '1.5px solid #9ca3af', display: 'inline-block' }} />
+                        <span className="text-[10px] text-gray-500 shrink-0 truncate" style={{ width: 140 }}>{p.dueDate || '期限なし'}</span>
+                        <span className="flex-1 min-w-0 text-sm truncate">{p.title}</span>
+                        <button type="button" title="この行を取り消す"
+                                onClick={() => setPendingActions(prev => prev.filter((_, j) => j !== i))}
+                                className="shrink-0 text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50">
+                          <X size={13}/>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 追加行。Enter で確定 → フォーカスが残るので続けて書ける */}
+                  <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-gray-100">
+                    <Plus size={15} className="shrink-0 text-gray-400"/>
+                    <div className="shrink-0" style={{ width: 140 }}>
+                      <SmartDateInput
+                        name="newActionDue"
+                        value={newActionDue}
+                        onChange={(e) => setNewActionDue(e.target.value)}
+                        disabled={isAddingAction || isDeletingTask}
+                        ariaLabel="追加するアクションの期限"
+                        placeholder="期限なし"
+                        className="w-full text-xs bg-white border border-gray-200 rounded p-1 outline-none focus:ring-2 focus:ring-olive-500 hover:border-olive-300 disabled:opacity-50"
+                      />
+                    </div>
+                    <input
+                      ref={newActionInputRef}
+                      type="text"
+                      value={newActionTitle}
+                      onChange={(e) => setNewActionTitle(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !window.isImeComposing?.(e)) { e.preventDefault(); handleAddAction(); } }}
+                      disabled={isAddingAction || isDeletingTask}
+                      placeholder="次にやることを追加（Enter で続けて追加）"
+                      className="flex-1 min-w-0 text-sm bg-white border border-gray-200 rounded p-1 outline-none focus:ring-2 focus:ring-olive-500 hover:border-olive-300 disabled:opacity-50"
+                    />
+                    <button type="button"
+                            onClick={handleAddAction}
+                            disabled={!newActionTitle.trim() || isAddingAction || isDeletingTask}
+                            className="shrink-0 text-xs font-bold px-2 py-1 rounded border border-olive-300 bg-olive-50 text-olive-800 hover:bg-olive-100 disabled:opacity-50">
+                      {isAddingAction ? <Loader2 size={13} className="animate-spin"/> : '追加'}
+                    </button>
+                  </div>
+                  {!task?.id && (
+                    <p className="text-[11px] text-gray-400 mt-1">※ 課題を保存すると、ここに書いた行がそのままの順番で登録されます。</p>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* /ネクストアクション下ペイン */}
+
+            </div>
+            {/* /左カラム */}
 
             {/* ========================================== */}
             {/* ★ Sprint 2-E: 右ペイン（コメント / 履歴 / AI壁打ち の 3 タブ） */}

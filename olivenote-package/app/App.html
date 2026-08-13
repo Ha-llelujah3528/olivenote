@@ -168,7 +168,9 @@ function OliveConcierge({ filteredTasks = [], members = [], categories = [], tas
 
   const handleKeyDown = (e) => {
     // MacはCmd+Enter, WindowsはCtrl+Enterで送信
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    // 変換中の Enter は IME の確定操作なので送信しない（送信すると入力欄が
+    // 作り替えられて日本語入力が壊れる）
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !window.isImeComposing?.(e)) {
       handleSend();
     }
   };
@@ -393,11 +395,32 @@ function readTaskFromUrl() {
 function writeTaskToUrl(taskId) {
   try {
     const url = new URL(window.location.href);
-    if (taskId) url.searchParams.set(TASK_URL_PARAM, taskId);
+    if (taskId) { url.searchParams.set(TASK_URL_PARAM, taskId); url.searchParams.delete(PROD_URL_PARAM); }
     else { url.searchParams.delete(TASK_URL_PARAM); url.searchParams.delete('pane'); }
     window.history.replaceState(null, '', url.toString());
   } catch (e) {
     /* 古い環境では URL API が無い等。サイレントに無視 */
+  }
+}
+// 制作チケット用ディープリンク（?prod=PROD-XXXX）。事業チケットの ?task= と同じ流儀。
+const PROD_URL_PARAM = 'prod';
+function readProdFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get(PROD_URL_PARAM);
+    return id && id.trim() ? id.trim() : null;
+  } catch (e) {
+    return null;
+  }
+}
+function writeProdToUrl(prodId) {
+  try {
+    const url = new URL(window.location.href);
+    if (prodId) { url.searchParams.set(PROD_URL_PARAM, prodId); url.searchParams.delete(TASK_URL_PARAM); }
+    else { url.searchParams.delete(PROD_URL_PARAM); url.searchParams.delete('pane'); }
+    window.history.replaceState(null, '', url.toString());
+  } catch (e) {
+    /* サイレントに無視 */
   }
 }
 // LINE WORKS 等の通知リンク（?task=...&pane=comments）からコメント欄を開くためのヒント。
@@ -487,6 +510,26 @@ function App() {
   const [categories, setCategories] = useState([]);
   const [taskTypes, setTaskTypes] = useState([]);
   const [tasks, setTasks] = useState([]);
+  // ===== 制作物管理（オリジナル版限定・ENABLE_PRODUCTION）=====
+  const [productionEnabled, setProductionEnabled] = useState(false);
+  const [productionTasks, setProductionTasks] = useState([]);
+  const [productionCreators, setProductionCreators] = useState([]);
+  const [productionMilestoneNames, setProductionMilestoneNames] = useState([]);
+  // マイルストーン名 → 直近で使われた★の色。既存の制作チケットから毎回導出する
+  //（settings に別マスタを持たない＝DB移行不要。updatedAt 昇順で走査し、後勝ち＝最新の色が残る）
+  const productionMilestoneColorByName = useMemo(() => {
+    const map = {};
+    [...(productionTasks || [])]
+      .sort((a, b) => String(a.updatedAt || '').localeCompare(String(b.updatedAt || '')))
+      .forEach(t => (t.milestones || []).forEach(m => {
+        if (m && m.name && m.color) map[m.name] = m.color;
+      }));
+    return map;
+  }, [productionTasks]);
+  const [isProdModalOpen, setIsProdModalOpen] = useState(false);
+  const [editingProdTask, setEditingProdTask] = useState(null);
+  const [prodModalInitialPane, setProdModalInitialPane] = useState(null);
+  const [prodSearchQuery, setProdSearchQuery] = useState('');
   const [docs, setDocs] = useState([]);
   const [docFolderRootId, setDocFolderRootId] = useState(null);
   const [taskTemplates, setTaskTemplates] = useState({});
@@ -653,8 +696,11 @@ function App() {
     
     return notifications.filter(notif => {
       const targetTask = tasks.find(t => t.id === notif.taskId);
-      if (!targetTask) return false; 
-      
+      // 制作チケット（PROD-）宛の通知はコメント本文照合の対象外＝存在すれば残す
+      if (!targetTask) {
+        return productionTasks.some(t => t.id === notif.taskId);
+      }
+
       if (notif.message.includes('メンション')) {
         const inDesc = targetTask.description && targetTask.description.includes(mentionStr);
         // コメント本文は一覧では未ロード（件数のみ）。読み込まれている課題のみ照合し、
@@ -665,9 +711,9 @@ function App() {
         if (!inDesc && commentsLoaded && !inComments) return false;
       }
       
-      return true; 
+      return true;
     });
-  }, [notifications, tasks, currentUser]);
+  }, [notifications, tasks, productionTasks, currentUser]);
 
   useEffect(() => {
     if (currentUser && currentUser.email) {
@@ -685,6 +731,10 @@ function App() {
     
     if (tasks.find(t => t.id === notif.taskId)) {
       await openTaskWithDetail(notif.taskId, null);
+    } else if (productionTasks.find(t => t.id === notif.taskId)) {
+      // 制作チケット宛の通知 → 制作タブへ切替して制作モーダルを開く
+      setActiveTab('production');
+      await openProdWithDetail(notif.taskId, 'comments');
     }
     setIsNotifOpen(false);
   };
@@ -746,6 +796,16 @@ function App() {
       loadedTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
       setTasks(loadedTasks);
 
+      // ★ 制作物管理（オリジナル版限定）
+      const prodOn = !!data.productionEnabled;
+      setProductionEnabled(prodOn);
+      let loadedProdTasks = data.productionTasks || [];
+      loadedProdTasks.forEach((t, i) => { if (typeof t.order === 'undefined') t.order = i * 1000; });
+      loadedProdTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
+      setProductionTasks(loadedProdTasks);
+      setProductionCreators(data.productionCreators || []);
+      setProductionMilestoneNames(data.productionMilestoneNames || []);
+
       // ★ URL ディープリンク復元: ?task=TASK-XXXX があれば該当タスクのモーダルを開く
       const initialTaskId = readTaskFromUrl();
       if (initialTaskId) {
@@ -757,6 +817,18 @@ function App() {
           writeTaskToUrl(null);
         }
       }
+      // ?prod=PROD-XXXX → 制作チケットモーダルを開く（制作タブへ切替も行う）
+      const initialProdId = readProdFromUrl();
+      if (initialProdId) {
+        const target = prodOn ? loadedProdTasks.find(t => t.id === initialProdId) : null;
+        if (target) {
+          setActiveTab('production');
+          openProdWithDetail(target, readPaneFromUrl());
+        } else {
+          // 機能無効環境や存在しない ID は黙って除去
+          writeProdToUrl(null);
+        }
+      }
 
       setIsInitializing(false);
     }).catch(err => {
@@ -764,16 +836,25 @@ function App() {
     });
   }, []);
 
-  // ★ ブラウザの戻る/進む（popstate）で URL の ?task= を拾ってモーダルを開閉
+  // ★ ブラウザの戻る/進む（popstate）で URL の ?task= / ?prod= を拾ってモーダルを開閉
   useEffect(() => {
     const onPopState = () => {
       const id = readTaskFromUrl();
-      if (!id) { setIsModalOpen(false); return; }
-      if (tasks.find(t => t.id === id)) { openTaskWithDetail(id, readPaneFromUrl()); }
+      if (id) {
+        if (tasks.find(t => t.id === id)) { openTaskWithDetail(id, readPaneFromUrl()); }
+      } else {
+        setIsModalOpen(false);
+      }
+      const prodId = readProdFromUrl();
+      if (prodId) {
+        if (productionTasks.find(t => t.id === prodId)) { openProdWithDetail(prodId, readPaneFromUrl()); }
+      } else {
+        setIsProdModalOpen(false);
+      }
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [tasks]);
+  }, [tasks, productionTasks]);
 
   useEffect(() => {
     if (isInitializing) return;
@@ -864,14 +945,46 @@ function App() {
       if (isNew) delete dataForSave.id;
       delete dataForSave.updatedAt;
 
-      const savedTask = await api.saveTask(dataForSave);
+      // 差分保存: state 上の現在値（＝最後にサーバと同期した値）との差分フィールドだけを送る。
+      // 触っていないフィールドが他の人の同時更新を巻き戻すのを防ぐ（既存課題のみ）。
+      // 差分ゼロ（例: コメント追加のみの onSave）は changedFields:[] のまま送り、サーバ側で
+      // no-op UPDATE になる。comments は saveComment が独立永続化しているため欠落しない。
+      // ※ここでフル保存にフォールバックしてはいけない（相互上書き防止が無効化される）。
+      let saveOpts = {};
+      const baseTask = isNew ? null : tasks.find(t => t.id === taskData.id);
+      if (!isNew && baseTask) {
+        const changedFields = computeTaskChangedFields(taskToSave, baseTask);
+        saveOpts = { changedFields };
+        if (changedFields.includes('description')) {
+          // 本文のみ CAS: ベース本文のハッシュを添え、他の人が先に本文を更新していたら上書きしない
+          const h = await sha256Hex(baseTask.description ?? '');
+          if (h) saveOpts.descBaseHash = h;
+        }
+      }
+
+      const savedRaw = await api.saveTask(dataForSave, saveOpts);
+      const { descConflict, ...savedTask } = savedRaw;
+      if (descConflict) {
+        showToast('本文が他の方の更新と競合したため、本文の変更は保存されませんでした', 'error');
+      }
 
       setTasks(prev => {
         // savedTask は description・comments を持つ（モーダル保存＝詳細ロード済み）が、
         // commentCount と _detailLoaded は含まないため手元の値を維持する。これが無いと
         // ボードのコメントバッジ計算が狂い、再オープン時に getTaskDetail が二重発火する。
+        // ネクストアクションも saveTask のレスポンスには含まれない（task_actions は別系統で
+        // 永続化されている）。手元の値を維持しないとカードのアクション行が保存のたびに
+        // 消えてしまうため、commentCount と同様に引き継ぐ。
         return prev.map(t => t.id === tempId
-          ? { ...savedTask, commentCount: t.commentCount ?? savedTask.commentCount, _detailLoaded: t._detailLoaded ?? true }
+          ? {
+              ...savedTask,
+              commentCount:  t.commentCount ?? savedTask.commentCount,
+              _detailLoaded: t._detailLoaded ?? true,
+              actions:     t.actions     ?? [],
+              actionTotal: t.actionTotal ?? 0,
+              actionDone:  t.actionDone  ?? 0,
+              nextAction:  t.nextAction  ?? null,
+            }
           : t).sort((a, b) => (a.order || 0) - (b.order || 0));
       });
 
@@ -885,10 +998,12 @@ function App() {
     }
   };
 
-  const handleAutoSave = async (taskData) => {
+  const handleAutoSave = async (taskData, opts = {}) => {
     const dataForSave = { ...taskData };
     delete dataForSave.updatedAt;
-    const savedTask = await api.saveTask(dataForSave);
+    // opts = { changedFields, descBaseHash, socketId } … TaskModal が差分保存情報を添えてくる
+    const savedRaw = await api.saveTask(dataForSave, opts);
+    const { descConflict, ...savedTask } = savedRaw;
     setTasks(prev =>
       prev.map(t => {
         if (t.id !== taskData.id) return t;
@@ -897,10 +1012,71 @@ function App() {
         // autosave は古いクロージャの task.comments を送るため、savedTask.comments で上書きすると
         // 直前に追加されたコメントが client 状態から巻き戻り、閉じて開き直すと消える不具合になる。
         // よって client 側で保持している最新の comments（prev の t.comments）を優先して残す。
-        return { ...savedTask, comments: t.comments ?? savedTask.comments ?? [] };
+        // ネクストアクション（task_actions）も同様に saveTask のレスポンスに含まれないため、
+        // 手元の値を引き継ぐ（引き継がないと自動保存のたびにカードのアクション行が消える）。
+        return {
+          ...savedTask,
+          comments:    t.comments ?? savedTask.comments ?? [],
+          actions:     t.actions     ?? [],
+          actionTotal: t.actionTotal ?? 0,
+          actionDone:  t.actionDone  ?? 0,
+          nextAction:  t.nextAction  ?? null,
+        };
       }).sort((a, b) => (a.order || 0) - (b.order || 0))
     );
     // setEditingTask は呼ばない → task prop を変えず、履歴差分の基点を保持
+    // TaskModal がベースライン更新・競合トーストに使うため、保存結果を返す
+    return { savedTask, descConflict: !!descConflict };
+  };
+
+  // ============================================================
+  // ネクストアクション（task_actions）
+  //   サーバは操作ごとに「その課題のサマリ＋全行」を返す。楽観更新はせず確定値で差し替える
+  //   （1行のトグルは軽く、UI が一瞬遅れても実害が無い一方、サマリと全行が食い違うと
+  //     カードの表示と中身がズレるため。確定値の一括差し替えが最も壊れにくい）。
+  // ============================================================
+  const applyTaskActions = (payload) => {
+    if (!payload || !payload.taskId) return;
+    // サーバが書いた履歴コメント（課題モーダルの「履歴」タブ用）も手元へ積む。
+    //   comments 未取得（_detailLoaded=false）の課題に1件だけ足すと、カードの件数表示が
+    //   `comments.length || commentCount` の順で 1 と出てしまうため、件数だけを進める。
+    const hist = payload.historyComment || null;
+    setTasks(prev => prev.map(t => {
+      if (t.id !== payload.taskId) return t;
+      const isNewHist = !!hist && !(t.comments || []).some(c => c.id === hist.id);
+      return {
+        ...t,
+        actions:     payload.actions,
+        actionTotal: payload.actionTotal,
+        actionDone:  payload.actionDone,
+        nextAction:  payload.nextAction,
+        comments:     isNewHist && t._detailLoaded ? [...(t.comments || []), hist] : t.comments,
+        commentCount: isNewHist ? (t.commentCount || 0) + 1 : t.commentCount,
+      };
+    }));
+  };
+
+  // ボードカードのチェックボックスから呼ばれる。誤クリック救済のため「元に戻す」トーストを出す。
+  const handleToggleTaskAction = async (actionId, done) => {
+    try {
+      const res = await api.toggleTaskAction(actionId, done);
+      applyTaskActions(res);
+      if (done) {
+        showToast('アクションを完了にしました', 'success', {
+          actionLabel: '元に戻す',
+          onAction: async () => {
+            try {
+              applyTaskActions(await api.toggleTaskAction(actionId, false));
+              dismissToast();
+            } catch (e) {
+              showToast('元に戻せませんでした: ' + e.message, 'error');
+            }
+          },
+        });
+      }
+    } catch (e) {
+      showToast('アクションの更新に失敗しました: ' + e.message, 'error');
+    }
   };
 
   const handleDeleteTask = async (taskId) => {
@@ -952,13 +1128,20 @@ function App() {
     try {
       const taskToSave = { ...updatedTask };
       delete taskToSave.updatedAt;
-      
-      const saved = await api.saveTask(taskToSave);
+
+      // D&D で変わるのは status と order だけ → 差分保存で他フィールドを巻き戻さない
+      const savedRaw = await api.saveTask(taskToSave, { changedFields: ['status', 'order'] });
+      const { descConflict: _dc, ...saved } = savedRaw;
       // 保存エコーには commentCount が無く comments も一覧では空。全置換するとコメント
       // バッジが消える＆画像込みフル本文が状態に流入するため、軽量フィールド
       // （description / comments / commentCount / _detailLoaded）は手元の値を維持する。
+      // ネクストアクション（task_actions）も保存エコーには含まれないため手元の値を維持する
       setTasks(prev => prev.map(t => t.id === saved.id
-        ? { ...saved, description: t.description, comments: t.comments, commentCount: t.commentCount, _detailLoaded: t._detailLoaded }
+        ? {
+            ...saved,
+            description: t.description, comments: t.comments, commentCount: t.commentCount, _detailLoaded: t._detailLoaded,
+            actions: t.actions, actionTotal: t.actionTotal, actionDone: t.actionDone, nextAction: t.nextAction,
+          }
         : t).sort((a, b) => (a.order || 0) - (b.order || 0)));
     } catch (e) {
       alert("エラー: " + (e.message || "更新に失敗しました"));
@@ -985,7 +1168,8 @@ function App() {
     try {
       const taskToSave = { ...draggedTask, order: currentTasks.find(t=>t.id===draggedId).order };
       delete taskToSave.updatedAt;
-      await api.saveTask(taskToSave);
+      // 並べ替えで変わるのは order だけ → 差分保存
+      await api.saveTask(taskToSave, { changedFields: ['order'] });
     } catch (e) {
       console.error(e);
     }
@@ -1033,7 +1217,17 @@ function App() {
     setIsOpeningTask(true); // クリック直後にローディング表示（低スペック機で無反応に見えるのを防ぐ）
     try {
       const detail = await api.getTaskDetail(base.id);
-      full = { ...base, description: detail?.description ?? '', comments: detail?.comments ?? [], _detailLoaded: true };
+      full = {
+        ...base,
+        description: detail?.description ?? '',
+        comments:    detail?.comments ?? [],
+        // ネクストアクションは全行をここで取得する（一覧は先頭1行＋件数しか持たない）
+        actions:     detail?.actions ?? [],
+        actionTotal: detail?.actionTotal ?? 0,
+        actionDone:  detail?.actionDone ?? 0,
+        nextAction:  detail?.nextAction ?? null,
+        _detailLoaded: true,
+      };
       setTasks(prev => prev.map(t => t.id === full.id ? full : t));
     } catch (e) {
       showToast('課題詳細の取得に失敗しました: ' + e.message, 'error');
@@ -1062,6 +1256,247 @@ function App() {
     setIsModalOpen(false);
     writeTaskToUrl(null);
     evictTaskDetails(null); // 閉じたらフル本文を解放（保存直後は echo で1件だけ再保持し、次回オープン時に解放）
+  };
+
+  // ============================================================
+  // 制作チケット（オリジナル版限定・ENABLE_PRODUCTION）ハンドラ群
+  //   事業チケットの各ハンドラと同じ流儀（楽観更新＋差分保存＋遅延ロード＋evict）。
+  // ============================================================
+  const PROD_DIFF_FIELDS = ['title','description','status','priority','cardColor','businessTaskId','creator','assignees','startDate','statusDeadlines','milestones','productUrls','smoutUrl','smoutMeta','attachments','likes','order'];
+  const computeProdChangedFields = (next, base) => {
+    const changed = [];
+    const norm = (v) => (v === undefined || v === null || v === '') ? null : v;
+    const isObj = (v) => v !== null && v !== undefined && typeof v === 'object';
+    PROD_DIFF_FIELDS.forEach(f => {
+      const a = next[f], b = base[f];
+      if (isObj(a) || isObj(b)) {
+        if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) changed.push(f);
+      } else if (norm(a) !== norm(b)) {
+        changed.push(f);
+      }
+    });
+    return changed;
+  };
+
+  const evictProdDetails = (keepId = null) => {
+    setProductionTasks(prev => prev.map(t => {
+      if (t.id === keepId || !t._detailLoaded) return t;
+      return {
+        ...t,
+        description: stripBase64Client(t.description),
+        comments: [],
+        commentCount: (Array.isArray(t.comments) && t.comments.length) ? t.comments.length : t.commentCount,
+        _detailLoaded: false,
+      };
+    }));
+  };
+
+  const openProdWithDetail = async (taskOrId, pane = null) => {
+    const id = typeof taskOrId === 'string' ? taskOrId : (taskOrId && taskOrId.id);
+    const base = typeof taskOrId === 'string' ? productionTasks.find(t => t.id === id) : taskOrId;
+    if (!base || !id) return;
+    setProdModalInitialPane(pane);
+    evictProdDetails(id);
+    if (base._detailLoaded) {
+      setEditingProdTask(base);
+      setIsProdModalOpen(true);
+      writeProdToUrl(base.id);
+      return;
+    }
+    let full = base;
+    setIsOpeningTask(true);
+    try {
+      const detail = await api.getProductionTaskDetail(base.id);
+      full = { ...base, description: detail?.description ?? '', comments: detail?.comments ?? [], _detailLoaded: true };
+      setProductionTasks(prev => prev.map(t => t.id === full.id ? full : t));
+    } catch (e) {
+      showToast('制作チケット詳細の取得に失敗しました: ' + e.message, 'error');
+    } finally {
+      setIsOpeningTask(false);
+    }
+    setEditingProdTask(full);
+    setIsProdModalOpen(true);
+    writeProdToUrl(full.id);
+  };
+
+  const handleOpenProdTask = (task) => {
+    if (!task || !task.id || String(task.id).startsWith('PROD-TEMP-')) {
+      setProdModalInitialPane(null);
+      setEditingProdTask(task);
+      setIsProdModalOpen(true);
+      writeProdToUrl(task?.id ?? null);
+      return;
+    }
+    openProdWithDetail(task, null);
+  };
+
+  const closeProdModal = () => {
+    setIsProdModalOpen(false);
+    writeProdToUrl(null);
+    evictProdDetails(null);
+  };
+
+  // 相互ジャンプ: 制作モーダル → 事業チケット / 事業モーダル → 制作チケット
+  const openBusinessFromProd = (bizTask) => { closeProdModal(); openTaskWithDetail(bizTask, null); };
+  const openProdFromBusiness = (prodTask) => { closeTaskModal(); openProdWithDetail(prodTask, null); };
+
+  const handleSaveProdTask = async (taskData, closeModal = true) => {
+    const isNew = !taskData.id || String(taskData.id).startsWith('PROD-TEMP-');
+    const tempId = isNew ? (taskData.id || 'PROD-TEMP-' + Date.now()) : taskData.id;
+    let taskToSave = { ...taskData, id: tempId };
+    if (isNew && typeof taskToSave.order === 'undefined') {
+      const minOrder = productionTasks.length > 0 ? Math.min(...productionTasks.map(t => t.order || 0)) : 0;
+      taskToSave.order = minOrder - 1000;
+    }
+    setProductionTasks(prev => {
+      const exists = prev.find(t => t.id === tempId);
+      const list = exists ? prev.map(t => t.id === tempId ? taskToSave : t) : [...prev, taskToSave];
+      return list.sort((a, b) => (a.order || 0) - (b.order || 0));
+    });
+    if (closeModal) closeProdModal();
+    try {
+      const dataForSave = { ...taskToSave };
+      if (isNew) delete dataForSave.id;
+      delete dataForSave.updatedAt;
+      // 差分保存: 触っていないフィールドが他の人の同時更新を巻き戻さないように
+      let saveOpts = {};
+      const baseTask = isNew ? null : productionTasks.find(t => t.id === taskData.id);
+      if (!isNew && baseTask) {
+        saveOpts = { changedFields: computeProdChangedFields(taskToSave, baseTask) };
+      }
+      const savedRawProd = await api.saveProductionTask(dataForSave, saveOpts);
+      // サーバー側で保存できなかった項目がある場合（DB列未適用など）は黙って捨てずに知らせる
+      if (savedRawProd?._warning) showToast(savedRawProd._warning, 'error');
+      const { _warning: _prodWarning, ...savedTask } = savedRawProd || {};
+      setProductionTasks(prev => prev.map(t => t.id === tempId
+        ? { ...savedTask, commentCount: t.commentCount ?? savedTask.commentCount, _detailLoaded: t._detailLoaded ?? true }
+        : t).sort((a, b) => (a.order || 0) - (b.order || 0)));
+      // 制作者・マイルストーン名マスタをローカルにも反映（リロード無しでプルダウン候補に出す）
+      if (savedTask.creator) {
+        setProductionCreators(prev => prev.includes(savedTask.creator) ? prev : [...prev, savedTask.creator]);
+      }
+      const newNames = (savedTask.milestones || []).map(m => m && m.name).filter(Boolean);
+      if (newNames.length) {
+        setProductionMilestoneNames(prev => {
+          const add = newNames.filter(n => !prev.includes(n));
+          return add.length ? [...prev, ...add] : prev;
+        });
+      }
+      if (!closeModal && savedTask?.id) {
+        setEditingProdTask(savedTask);
+        writeProdToUrl(savedTask.id);
+      }
+    } catch (e) {
+      alert('保存に失敗しました: ' + e.message);
+    }
+  };
+
+  const handleDeleteProdTask = async (taskId) => {
+    try {
+      await api.deleteProductionTask(taskId);
+      setProductionTasks(prev => prev.filter(t => t.id !== taskId));
+      closeProdModal();
+      showToast('制作チケットをゴミ箱に移動しました');
+    } catch (e) {
+      showToast('削除に失敗しました: ' + e.message, 'error');
+    }
+  };
+
+  // 制作チケットの複製 — 表示中の内容をコピーして新規チケットを作り、そのまま編集モーダルを開く。
+  //   コメント・いいね・最終更新は引き継がない（複製先は「新しく作ったチケット」として扱う）。
+  const handleDuplicateProdTask = async (sourceTask) => {
+    if (!sourceTask) return null;
+    const {
+      id: _srcId, comments: _srcComments, commentCount: _srcCommentCount, likes: _srcLikes,
+      updatedAt: _srcUpdatedAt, order: _srcOrder, _detailLoaded: _srcDetailLoaded,
+      ...rest
+    } = sourceTask;
+    const minOrder = productionTasks.length > 0 ? Math.min(...productionTasks.map(t => t.order || 0)) : 0;
+    const dataForSave = {
+      ...rest,
+      title: `${(sourceTask.title || '').trim()} のコピー`,
+      comments: [],
+      likes: [],
+      order: minOrder - 1000,
+    };
+    try {
+      const savedRawProd = await api.saveProductionTask(dataForSave, {});
+      if (savedRawProd?._warning) showToast(savedRawProd._warning, 'error');
+      const { _warning: _prodWarning, ...savedTask } = savedRawProd || {};
+      if (!savedTask.id) throw new Error('複製したチケットのIDを取得できませんでした');
+      const full = { ...savedTask, comments: [], commentCount: 0, _detailLoaded: true };
+      setProductionTasks(prev => [...prev.filter(t => t.id !== full.id), full]
+        .sort((a, b) => (a.order || 0) - (b.order || 0)));
+      if (savedTask.creator) {
+        setProductionCreators(prev => prev.includes(savedTask.creator) ? prev : [...prev, savedTask.creator]);
+      }
+      const newNames = (savedTask.milestones || []).map(m => m && m.name).filter(Boolean);
+      if (newNames.length) {
+        setProductionMilestoneNames(prev => {
+          const add = newNames.filter(n => !prev.includes(n));
+          return add.length ? [...prev, ...add] : prev;
+        });
+      }
+      // 複製元のモーダルを閉じて、複製先を開く（key が変わるのでモーダルは作り直される）
+      evictProdDetails(full.id);
+      setProdModalInitialPane(null);
+      setEditingProdTask(full);
+      setIsProdModalOpen(true);
+      writeProdToUrl(full.id);
+      showToast(`「${savedTask.title}」として複製しました`);
+      return full;
+    } catch (e) {
+      showToast('複製に失敗しました: ' + e.message, 'error');
+      return null;
+    }
+  };
+
+  // ボードD&D（ステータス変更＋並び順）— handleDrop の制作版
+  const handleProdDrop = async (draggedId, newStatusId, targetId = null) => {
+    const previousTasks = [...productionTasks];
+    let updatedTasks = [...productionTasks];
+    const draggedIndex = updatedTasks.findIndex(t => t.id === draggedId);
+    if (draggedIndex === -1) return;
+    const draggedTask = updatedTasks[draggedIndex];
+    updatedTasks.splice(draggedIndex, 1);
+    const updatedTask = { ...draggedTask, status: newStatusId };
+    if (targetId) {
+      const targetIndex = updatedTasks.findIndex(t => t.id === targetId);
+      if (targetIndex !== -1) updatedTasks.splice(targetIndex, 0, updatedTask);
+      else updatedTasks.push(updatedTask);
+    } else {
+      const statusTasks = updatedTasks.filter(t => t.status === newStatusId);
+      if (statusTasks.length > 0) {
+        const lastIndex = updatedTasks.findIndex(t => t.id === statusTasks[statusTasks.length - 1].id);
+        updatedTasks.splice(lastIndex + 1, 0, updatedTask);
+      } else {
+        updatedTasks.push(updatedTask);
+      }
+    }
+    const statusTasksList = updatedTasks.filter(t => t.status === newStatusId);
+    const statusIndex = statusTasksList.findIndex(t => t.id === draggedId);
+    const prevTask = statusTasksList[statusIndex - 1];
+    const nextTask = statusTasksList[statusIndex + 1];
+    if (prevTask && nextTask) updatedTask.order = (prevTask.order + nextTask.order) / 2;
+    else if (prevTask) updatedTask.order = prevTask.order + 1000;
+    else if (nextTask) updatedTask.order = nextTask.order - 1000;
+    else updatedTask.order = 1000;
+    const newIndex = updatedTasks.findIndex(t => t.id === draggedId);
+    updatedTasks[newIndex] = updatedTask;
+    updatedTasks.sort((a, b) => (a.order || 0) - (b.order || 0));
+    setProductionTasks(updatedTasks);
+    try {
+      const taskToSave = { ...updatedTask };
+      delete taskToSave.updatedAt;
+      const saved = await api.saveProductionTask(taskToSave, { changedFields: ['status', 'order'] });
+      // 保存エコーで軽量フィールドを巻き戻さない（事業ボードD&Dと同じガード）
+      setProductionTasks(prev => prev.map(t => t.id === saved.id
+        ? { ...saved, description: t.description, comments: t.comments, commentCount: t.commentCount, _detailLoaded: t._detailLoaded }
+        : t).sort((a, b) => (a.order || 0) - (b.order || 0)));
+    } catch (e) {
+      alert('エラー: ' + (e.message || '更新に失敗しました'));
+      setProductionTasks(previousTasks);
+    }
   };
 
   const clearFilters = () => setFilters({
@@ -1473,7 +1908,7 @@ function App() {
 
           <div className="flex md:hidden items-center gap-2">
             <span className="text-xl">{currentUser?.avatar}</span>
-            {activeTab !== 'files' && activeTab !== 'wiki' && (
+            {activeTab !== 'files' && activeTab !== 'wiki' && activeTab !== 'production' && (
               <>
                 <button
                   onClick={() => setIsAutoGenOpen(true)}
@@ -1580,6 +2015,10 @@ function App() {
           <button onClick={() => setActiveTab('board')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'board' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Columns size={16} /> ボード</button>
           <button onClick={() => setActiveTab('list')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'list' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><List size={16} /> 一覧</button>
           <button onClick={() => setActiveTab('gantt')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'gantt' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><CalendarDays size={16} /> ガント</button>
+          {/* 制作物管理（オリジナル版限定・ENABLE_PRODUCTION）。ガントとドキュメントの間に配置 */}
+          {productionEnabled && (
+            <button onClick={() => setActiveTab('production')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'production' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><Brush size={16} /> 制作</button>
+          )}
           {/* カレンダービューは廃止（非表示）。誰も使っていないため 2026-07-13 にタブを撤去。
               CalendarView コンポーネント本体と holidays 取得は残置（再有効化時はこのボタンと下の描画分岐を戻す）。 */}
           <button onClick={() => setActiveTab('wiki')} className={`shrink-0 snap-start px-3 md:px-4 py-2 text-xs md:text-sm font-medium flex items-center gap-1.5 md:gap-2 transition-colors ${activeTab === 'wiki' ? 'bg-olive-600 text-white' : 'text-olive-200 hover:bg-olive-600/50'}`}><BookOpen size={16} /> ドキュメント</button>
@@ -1681,7 +2120,7 @@ function App() {
           >
             <LogOut size={18} />
           </button>
-          {activeTab !== 'files' && activeTab !== 'wiki' && activeTab !== 'whiteboard' && (
+          {activeTab !== 'files' && activeTab !== 'wiki' && activeTab !== 'whiteboard' && activeTab !== 'production' && (
             <>
               <button
                 onClick={() => setIsAutoGenOpen(true)}
@@ -2053,7 +2492,7 @@ function App() {
           const compact = !!userPrefs['board.compactMode'];
           const split   = !!userPrefs['board.splitByAssignee'] && isPcViewport && currentUser?.email;
           if (!split) {
-            return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} />;
+            return <BoardView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} />;
           }
           // 分割表示は担当者フィルターに従う:
           //   filter 空（すべて） → メイン: 担当者が割当てられた全タスク / サブ: サブ担当が割当てられた全タスク（メイン側と重複したものは除外）
@@ -2075,13 +2514,13 @@ function App() {
               upper={
                 <div className="flex flex-col h-full min-h-0">
                   <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>メイン担当 <span className="text-gray-400 font-normal">({mainTasks.length})</span></div>
-                  <BoardView tasks={mainTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} splitArea="main" />
+                  <BoardView tasks={mainTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} splitArea="main" />
                 </div>
               }
               lower={
                 <div className="flex flex-col h-full min-h-0">
                   <div className="text-xs font-bold text-olive-700 px-1 py-1 shrink-0 flex items-center gap-1"><Rows size={12}/>サブ担当 <span className="text-gray-400 font-normal">({subTasks.length})</span></div>
-                  <BoardView tasks={subTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} compactMode={compact} splitArea="sub" hideColumnHeaders={true} />
+                  <BoardView tasks={subTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onDropTask={handleDrop} onToggleAction={handleToggleTaskAction} compactMode={compact} splitArea="sub" hideColumnHeaders={true} />
                 </div>
               }
             />
@@ -2128,10 +2567,24 @@ function App() {
         })()}
 
         {activeTab === 'gantt' && <GanttView tasks={filteredTasks} members={members} categories={categories} onTaskClick={handleOpenTask} onSaveTask={handleSaveTask} onReorderTask={handleReorderTask} holidays={holidays} />}
+        {activeTab === 'production' && productionEnabled && (
+          <ProductionView
+            tasks={productionTasks}
+            members={members}
+            businessTasks={tasks}
+            currentUser={currentUser}
+            onTaskClick={handleOpenProdTask}
+            onNewTask={() => handleOpenProdTask(null)}
+            onDropTask={handleProdDrop}
+            holidays={holidays}
+            searchQuery={prodSearchQuery}
+            onSearchChange={setProdSearchQuery}
+          />
+        )}
         {activeTab === 'files' && <FilesView docs={docs} setDocs={setDocs} docTags={docTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} currentUser={currentUser} docFolderRootId={docFolderRootId} />}
         {activeTab === 'wiki' && <WikiView currentUser={currentUser} members={members} wikiTargetPageId={wikiTargetPageId} setWikiTargetPageId={setWikiTargetPageId} showToast={showToast} />}
         {activeTab === 'whiteboard' && <WhiteboardView currentUser={currentUser} members={members} categories={categories} onCreateTask={handleSaveTask} showToast={showToast} />}
-        {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} />}
+        {activeTab === 'settings' && <SettingsView categories={categories} setCategories={setCategories} taskTypes={taskTypes} setTaskTypes={setTaskTypes} members={members} setMembers={setMembers} tasks={tasks} setTasks={setTasks} taskTemplates={taskTemplates} setTaskTemplates={setTaskTemplates} docTags={docTags} setDocTags={setDocTags} docFileTags={docFileTags} setDocFileTags={setDocFileTags} docTemplates={docTemplates} setDocTemplates={setDocTemplates} releaseDocUrl={releaseDocUrl} setReleaseDocUrl={setReleaseDocUrl} setProductionTasks={productionEnabled ? setProductionTasks : null} />}
       </main>
 
       {isOpeningTask && (
@@ -2152,6 +2605,29 @@ function App() {
           showToast={showToast}
           aiModelAdvisor={sanitizeAiModel(userPrefs['aiModelAdvisor'])}
           onAdvisorModelChange={(v) => savePref('aiModelAdvisor', v)}
+          productionTasks={productionEnabled ? productionTasks : []}
+          onOpenProductionTask={productionEnabled ? openProdFromBusiness : null}
+        />
+      )}
+      {isProdModalOpen && (
+        <ProductionTaskModal
+          key={editingProdTask?.id || 'new-prod'}
+          task={editingProdTask}
+          setProductionTasks={setProductionTasks}
+          members={members}
+          businessTasks={tasks}
+          currentUser={currentUser}
+          creators={productionCreators}
+          milestoneNames={productionMilestoneNames}
+          milestoneColorByName={productionMilestoneColorByName}
+          holidays={holidays}
+          onClose={closeProdModal}
+          onSave={handleSaveProdTask}
+          onDelete={handleDeleteProdTask}
+          onDuplicate={handleDuplicateProdTask}
+          onOpenBusinessTask={openBusinessFromProd}
+          showToast={showToast}
+          initialPane={prodModalInitialPane}
         />
       )}
       <OliveConcierge
@@ -2161,7 +2637,7 @@ function App() {
         taskTypes={taskTypes}
         filters={filters}
         searchQuery={searchQuery}
-        hidden={isModalOpen}
+        hidden={isModalOpen || isProdModalOpen}
         aiModel={sanitizeAiModel(userPrefs['aiModelConciergeTasks'])}
         onAiModelChange={(v) => savePref('aiModelConciergeTasks', v)}
       />
